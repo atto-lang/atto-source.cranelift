@@ -74,3 +74,12 @@ The CLI integration suite also embeds the six positive and five negative
 source examples from Forge's scalar/v1 contract. These are candidate
 differential test cases; the repository does not yet pin a shared fixture
 blob or provide executed cross-backend equivalence evidence.
+
+## Unix source file admission
+
+The CLI opens source descriptors nonblocking before validating that the
+*opened descriptor* is a regular file. This rejects FIFO inputs, including
+symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
+A dedicated native CLI regression imposes a three-second hang guard.
+Non-Unix systems retain the existing source-file handling behavior and do
+not claim that nonblocking POSIX guarantee.
