@@ -97,15 +97,18 @@ fn native_signed_remainder_literal_divisor() {
         false,
         "",
     );
-    for source in [
-        "fnc main(x:int):int{return x%0;}",
-        "fnc main(x:int,y:int):int{return x%y;}",
-        "fnc main(x:int):int{return x%(1+1);}",
-        "fnc main(x:int):int{return x%-x;}",
-        "fnc main(x:int):int{return x%-9223372036854775809;}",
-        "fnc main(x:int):int{return x/2;}",
+    for (source, args) in [
+        ("fnc main(x:int):int{return x%0;}", &["7"][..]),
+        ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
+        ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
+        ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775809;}",
+            &["7"][..],
+        ),
+        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
     ] {
-        fixture(source, &["7","2"][..source.contains("y:int").then_some(2).unwrap_or(1)], false, "");
+        fixture(source, args, false, "");
     }
 }
 
