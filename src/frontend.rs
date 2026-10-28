@@ -27,6 +27,8 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    // The divisor is compiler-proven to be a nonzero signed i64 literal.
+    Rem(Box<Expr>, i64),
 }
 
 #[derive(Debug)]
@@ -106,7 +108,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
-        } else if b"()+-*{};:,>".contains(&first) {
+        } else if b"()+-*%{};:,>".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -199,6 +201,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
+                Token::Punct(b'%') => (3, 4, b'%'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -210,6 +213,32 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'%' => {
+                    // Stage-0 parity with LLVM's literal-divisor remainder:
+                    // never lower dynamic or zero divisors into native JIT code.
+                    let divisor = match rhs {
+                        Expr::Literal(value) => value,
+                        Expr::Neg(inner) => match *inner {
+                            Expr::Literal(value) => value
+                                .checked_neg()
+                                .ok_or("remainder divisor out of range")?,
+                            _ => {
+                                return Err(
+                                    "remainder requires a signed integer literal divisor".into()
+                                );
+                            }
+                        },
+                        _ => {
+                            return Err(
+                                "remainder requires a signed integer literal divisor".into()
+                            );
+                        }
+                    };
+                    if divisor == 0 {
+                        return Err("remainder divisor cannot be zero".into());
+                    }
+                    Expr::Rem(Box::new(lhs), divisor)
+                }
                 _ => unreachable!(),
             })?;
         }
@@ -294,6 +323,14 @@ mod tests {
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::Rem(lhs, divisor) => {
+                let numerator = eval(lhs, args)?;
+                if *divisor == -1 {
+                    Ok(0) // Java signed remainder: even i64::MIN % -1 is zero.
+                } else {
+                    numerator.checked_rem(*divisor).ok_or("overflow")
+                }
+            }
         }
     }
     #[test]
@@ -314,6 +351,28 @@ mod tests {
         assert!(parse("fnc main():int{return 9223372036854775808;}").is_err());
         let under = parse("fnc main():int{return --9223372036854775808;}").unwrap();
         assert!(eval(&under.result, &[]).is_err());
+    }
+    #[test]
+    fn signed_literal_remainder() {
+        for (source, expected) in [
+            ("fnc main():int{return -7%3;}", -1),
+            ("fnc main():int{return 7%-3;}", 1),
+            ("fnc main():int{return -7%-3;}", -1),
+            ("fnc main():int{return 8%3*2;}", 4),
+            ("fnc main():int{return 20%6%3;}", 2),
+            ("fnc main():int{return -9223372036854775808%-1;}", 0),
+        ] {
+            let p = parse(source).unwrap();
+            assert_eq!(eval(&p.result, &[]), Ok(expected));
+        }
+        for source in [
+            "fnc main(x:int):int{return x%0;}",
+            "fnc main(x:int,y:int):int{return x%y;}",
+            "fnc main(x:int):int{return x%(1+1);}",
+            "fnc main(x:int):int{return x%-x;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
     }
     #[test]
     fn fail_closed() {

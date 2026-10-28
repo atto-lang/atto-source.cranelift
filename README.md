@@ -22,14 +22,20 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - * and line comments.
+grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
+literal divisor (`%`), and line comments.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division,
+classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
 structural types, UTF-8 identifiers, and any trailing code.
+
+Signed remainder follows Java truncation-toward-zero semanticsSigned remainder follows Java truncation-toward-zero semantics, including
+`i64::MIN % -1 == 0`. This intentionally matches the restricted LLVM
+literal-divisor parity slice, not general Java runtime expression coverage.
+The numerator still executes checked arithmetic before computing remainder.
 
 ## Explicit security boundary
 
