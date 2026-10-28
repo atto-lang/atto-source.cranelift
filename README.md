@@ -49,3 +49,10 @@ branch is experimental and must not become a release gate without that lockfile.
 - Cross-check source results against LLVM and Forge on their **actual** common
   scalar subset, never assume parity from shared fixture names.
 - Keep the branch draft until CI actually allocates a runner and executes tests.
+
+## Forge scalar/v1 intersection tests
+
+The CLI integration suite also embeds the six positive and five negative
+source examples from Forge's scalar/v1 contract. These are candidate
+differential test cases; the repository does not yet pin a shared fixture
+blob or provide executed cross-backend equivalence evidence.
