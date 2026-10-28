@@ -79,9 +79,24 @@ fn native_execution_and_negative_controls() {
 fn native_integer_bitxor_source_execution() {
     // Real Oreslang-shaped source -> frontend -> CLIF native JIT -> result.
     // Signed64 edge vectors correspond to Java strict named arithmetic v1.
-    fixture("fnc main():int{return Integer.bitXor(0,0);}", &[], true, "0\n");
-    fixture("fnc main():int{return Integer.bitXor(5,3);}", &[], true, "6\n");
-    fixture("fnc main():int{return Integer.bitXor(-1,0);}", &[], true, "-1\n");
+    fixture(
+        "fnc main():int{return Integer.bitXor(0,0);}",
+        &[],
+        true,
+        "0\n",
+    );
+    fixture(
+        "fnc main():int{return Integer.bitXor(5,3);}",
+        &[],
+        true,
+        "6\n",
+    );
+    fixture(
+        "fnc main():int{return Integer.bitXor(-1,0);}",
+        &[],
+        true,
+        "-1\n",
+    );
     fixture(
         "fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}",
         &[],
@@ -96,9 +111,82 @@ fn native_integer_bitxor_source_execution() {
     );
     // Arity, unsupported builtins, and the removed XOR operator fail closed.
     fixture("fnc main():int{return Integer.bitXor(1);}", &[], false, "");
-    fixture("fnc main():int{return Integer.bitXor(1,2,3);}", &[], false, "");
+    fixture(
+        "fnc main():int{return Integer.bitXor(1,2,3);}",
+        &[],
+        false,
+        "",
+    );
     fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
+    fixture(
+        "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
+        &[],
+        true,
+        "7\n",
+    );
+    for expression in [
+        "Integer.bitXor(9223372036854775807+1,0)",
+        "Integer.bitXor(0,9223372036854775807+1)",
+        "Integer.bitXor((9223372036854775807+1)%-1,0)",
+        "7%Integer.bitXor(1,2)",
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            false,
+            "",
+        );
+    }
+}
+
+#[test]
+fn native_signed_remainder_literal_divisor() {
+    for (source, args, expected) in [
+        ("fnc main():int{return -7%3;}", &[][..], "-1\n"),
+        ("fnc main():int{return 7%-3;}", &[][..], "1\n"),
+        ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
+        ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
+        ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
+        (
+            "fnc main(x:int):int{return x%-1;}",
+            &["-9223372036854775808"][..],
+            "0\n",
+        ),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775808;}",
+            &["-9223372036854775808"][..],
+            "0\n",
+        ),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775808;}",
+            &["9223372036854775807"][..],
+            "9223372036854775807\n",
+        ),
+        ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
+    ] {
+        fixture(source, args, true, expected);
+    }
+    // A -1 divisor must not erase a checked overflow in its numerator.
+    fixture(
+        "fnc main(x:int):int{return (x+1)%-1;}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+    for (source, args) in [
+        ("fnc main(x:int):int{return x%0;}", &["7"][..]),
+        ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
+        ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
+        ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775809;}",
+            &["7"][..],
+        ),
+        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
+    ] {
+        fixture(source, args, false, "");
+    }
 }
 
 #[test]
@@ -133,4 +221,58 @@ fn forge_scalar_v1_intersection() {
     ] {
         fixture(source, &[], false, "");
     }
+}
+
+#[test]
+fn java_scalar_grammar_and_integer_boundaries() {
+    fixture(
+        "fnc main(int x, y:int):int{return x*1_000+y;}",
+        &["4", "2"],
+        true,
+        "4002\n",
+    );
+    fixture(
+        "fnc main():int{return -9_223_372_036_854_775_808;}",
+        &[],
+        true,
+        "-9223372036854775808\n",
+    );
+    fixture(
+        "fnc main():int{return 9_223_372_036_854_775_807;}",
+        &[],
+        true,
+        "9223372036854775807\n",
+    );
+    fixture(
+        "fnc main():int{return -09223372036854775808;}",
+        &[],
+        false,
+        "",
+    );
+    // The separator path must preserve native arithmetic overflow checks.
+    fixture(
+        "fnc main(int x):int{return x+1_000;}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+    for source in [
+        "fnc main():int{return 1__0;}",
+        "fnc main():int{return 1_;}",
+        "fnc main():int{return -9__223_372_036_854_775_808;}",
+        "fnc main():int{return 9_223_372_036_854_775_808;}",
+        "fnc main(int x,x:int):int{return x;}",
+        "fnc main(int x,int y,int z,int w,int v):int{return x;}",
+        "fnc main(int return):int{return return;}",
+        "fnc main(unsafe:int):int{return unsafe;}",
+        "fnc main():int{return unsafe;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    fixture(
+        "fnc main():int{return 42;} // unsafe is text in this comment",
+        &[],
+        true,
+        "42\n",
+    );
 }

@@ -4,6 +4,21 @@ const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_PARAMS: usize = 4;
 
+fn integer_digits(token: &str) -> Result<String, String> {
+    let bytes = token.as_bytes();
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte == b'_'
+            && (i == 0
+                || i + 1 == bytes.len()
+                || !bytes[i - 1].is_ascii_digit()
+                || !bytes[i + 1].is_ascii_digit())
+        {
+            return Err("invalid i64 digit separator".into());
+        }
+    }
+    Ok(token.replace('_', ""))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(i64),
@@ -13,6 +28,8 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
+    // The divisor is compiler-proven to be a nonzero signed i64 literal.
+    Rem(Box<Expr>, i64),
 }
 
 #[derive(Debug)]
@@ -84,12 +101,15 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            if self.current == Token::Word("unsafe") {
+                return Err("unsafe source is not supported".into());
+            }
         } else if first.is_ascii_digit() {
-            while self.pos < b.len() && b[self.pos].is_ascii_digit() {
+            while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
-        } else if b"()+-*{};:,>.".contains(&first) {
+        } else if b"()+-*%{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -136,7 +156,7 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'-'))? {
             if let Token::Number(n) = self.current {
                 // Special-case the only negative literal outside positive i64.
-                if n == "9223372036854775808" {
+                if integer_digits(n)? == "9223372036854775808" {
                     self.next()?;
                     return self.node(Expr::Literal(i64::MIN));
                 }
@@ -154,7 +174,9 @@ impl<'a> Parser<'a> {
         }
         match self.current {
             Token::Number(n) => {
-                let value = n.parse::<i64>().map_err(|_| "i64 literal out of range")?;
+                let value = integer_digits(n)?
+                    .parse::<i64>()
+                    .map_err(|_| "i64 literal out of range")?;
                 self.next()?;
                 self.node(Expr::Literal(value))
             }
@@ -193,6 +215,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
+                Token::Punct(b'%') => (3, 4, b'%'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -204,6 +227,32 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'%' => {
+                    // Stage-0 parity with LLVM's literal-divisor remainder:
+                    // never lower dynamic or zero divisors into native JIT code.
+                    let divisor = match rhs {
+                        Expr::Literal(value) => value,
+                        Expr::Neg(inner) => match *inner {
+                            Expr::Literal(value) => value
+                                .checked_neg()
+                                .ok_or("remainder divisor out of range")?,
+                            _ => {
+                                return Err(
+                                    "remainder requires a signed integer literal divisor".into()
+                                );
+                            }
+                        },
+                        _ => {
+                            return Err(
+                                "remainder requires a signed integer literal divisor".into()
+                            );
+                        }
+                    };
+                    if divisor == 0 {
+                        return Err("remainder divisor cannot be zero".into());
+                    }
+                    Expr::Rem(Box::new(lhs), divisor)
+                }
                 _ => unreachable!(),
             })?;
         }
@@ -232,12 +281,27 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b'('))?;
         if !self.take(Token::Punct(b')'))? {
             loop {
+                let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
-                if name == "int" || name == "Integer" || self.parameters.contains(&name) {
+                if matches!(
+                    name.as_str(),
+                    "Integer"
+                        | "int"
+                        | "return"
+                        | "pub"
+                        | "define"
+                        | "fnc"
+                        | "async"
+                        | "await"
+                        | "actor"
+                ) || self.parameters.contains(&name)
+                {
                     return Err("invalid or duplicate parameter".into());
                 }
-                self.expect(Token::Punct(b':'))?;
-                self.expect(Token::Word("int"))?;
+                if !type_first {
+                    self.expect(Token::Punct(b':'))?;
+                    self.expect(Token::Word("int"))?;
+                }
                 if self.parameters.len() == MAX_PARAMS {
                     return Err("parameter count exceeds four".into());
                 }
@@ -282,6 +346,14 @@ mod tests {
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
+            Expr::Rem(lhs, divisor) => {
+                let numerator = eval(lhs, args)?;
+                if *divisor == -1 {
+                    Ok(0) // Java signed remainder: even i64::MIN % -1 is zero.
+                } else {
+                    numerator.checked_rem(*divisor).ok_or("overflow")
+                }
+            }
         }
     }
     #[test]
@@ -307,8 +379,33 @@ mod tests {
     fn guest_bitxor_parsing_and_eager_eval() {
         let program = parse("fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}").unwrap();
         assert_eq!(eval(&program.result, &[4, 3]), Ok(3));
-        let edge = parse("fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}").unwrap();
+        let edge = parse(
+            "fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}",
+        )
+        .unwrap();
         assert_eq!(eval(&edge.result, &[]), Ok(-1));
+    }
+    #[test]
+    fn signed_literal_remainder() {
+        for (source, expected) in [
+            ("fnc main():int{return -7%3;}", -1),
+            ("fnc main():int{return 7%-3;}", 1),
+            ("fnc main():int{return -7%-3;}", -1),
+            ("fnc main():int{return 8%3*2;}", 4),
+            ("fnc main():int{return 20%6%3;}", 2),
+            ("fnc main():int{return -9223372036854775808%-1;}", 0),
+        ] {
+            let p = parse(source).unwrap();
+            assert_eq!(eval(&p.result, &[]), Ok(expected));
+        }
+        for source in [
+            "fnc main(x:int):int{return x%0;}",
+            "fnc main(x:int,y:int):int{return x%y;}",
+            "fnc main(x:int):int{return x%(1+1);}",
+            "fnc main(x:int):int{return x%-x;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
     }
     #[test]
     fn fail_closed() {

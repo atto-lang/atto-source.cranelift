@@ -28,6 +28,21 @@ fn emit(
             let rhs = emit(y, b, params, error);
             b.ins().bxor(lhs, rhs)
         }
+        Rem(lhs, divisor) => {
+            // Evaluation of lhs (including checked overflow) is mandatory.
+            let numerator = emit(lhs, b, params, error);
+            // Signed remainder by -1 is always zero under Java semantics,
+            // but native srem(i64::MIN, -1) can trap/produce poison.
+            if *divisor == -1 {
+                b.ins().iconst(types::I64, 0)
+            } else {
+                // The parser proved this is a nonzero literal. Reject any
+                // untrusted AST that would introduce a zero divisor.
+                assert_ne!(*divisor, 0, "internal invalid remainder divisor");
+                let denominator = b.ins().iconst(types::I64, *divisor);
+                b.ins().srem(numerator, denominator)
+            }
+        }
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
