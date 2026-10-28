@@ -76,6 +76,32 @@ fn native_execution_and_negative_controls() {
 }
 
 #[test]
+fn native_integer_bitxor_source_execution() {
+    // Real Oreslang-shaped source -> frontend -> CLIF native JIT -> result.
+    // Signed64 edge vectors correspond to Java strict named arithmetic v1.
+    fixture("fnc main():int{return Integer.bitXor(0,0);}", &[], true, "0\n");
+    fixture("fnc main():int{return Integer.bitXor(5,3);}", &[], true, "6\n");
+    fixture("fnc main():int{return Integer.bitXor(-1,0);}", &[], true, "-1\n");
+    fixture(
+        "fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}",
+        &[],
+        true,
+        "-1\n",
+    );
+    fixture(
+        "fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}",
+        &["4", "3"],
+        true,
+        "3\n",
+    );
+    // Arity, unsupported builtins, and the removed XOR operator fail closed.
+    fixture("fnc main():int{return Integer.bitXor(1);}", &[], false, "");
+    fixture("fnc main():int{return Integer.bitXor(1,2,3);}", &[], false, "");
+    fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
+    fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
+}
+
+#[test]
 fn forge_scalar_v1_intersection() {
     // The 6 positive and 5 negative sources from Forge scalar/v1.
     // The actual shared-fixture blob comparison remains a separate parity gate.
