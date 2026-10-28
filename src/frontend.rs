@@ -38,9 +38,19 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Result<Self, String> {
-        if input.len() > MAX_SOURCE { return Err("source exceeds 1 MiB limit".into()); }
-        if input.as_bytes().contains(&0) { return Err("source contains NUL byte".into()); }
-        let mut p = Self { input, pos: 0, current: Token::End, nodes: 0, parameters: Vec::new() };
+        if input.len() > MAX_SOURCE {
+            return Err("source exceeds 1 MiB limit".into());
+        }
+        if input.as_bytes().contains(&0) {
+            return Err("source contains NUL byte".into());
+        }
+        let mut p = Self {
+            input,
+            pos: 0,
+            current: Token::End,
+            nodes: 0,
+            parameters: Vec::new(),
+        };
         p.next()?;
         Ok(p)
     }
@@ -53,23 +63,30 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' { self.pos += 1; }
+                while self.pos < b.len() && b[self.pos] != b'\n' {
+                    self.pos += 1;
+                }
                 continue;
             }
             break;
         }
-        if self.pos == b.len() { self.current = Token::End; return Ok(()); }
+        if self.pos == b.len() {
+            self.current = Token::End;
+            return Ok(());
+        }
         let start = self.pos;
         let first = b[self.pos];
         self.pos += 1;
         if first.is_ascii_alphabetic() || first == b'_' {
-            while self.pos < b.len() &&
-                (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_') {
+            while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
+            {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
         } else if first.is_ascii_digit() {
-            while self.pos < b.len() && b[self.pos].is_ascii_digit() { self.pos += 1; }
+            while self.pos < b.len() && b[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
             self.current = Token::Number(&self.input[start..self.pos]);
         } else if b"()+-*{};:,>".contains(&first) {
             self.current = Token::Punct(first);
@@ -80,26 +97,41 @@ impl<'a> Parser<'a> {
     }
 
     fn take(&mut self, t: Token<'a>) -> Result<bool, String> {
-        if self.current == t { self.next()?; Ok(true) } else { Ok(false) }
+        if self.current == t {
+            self.next()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
     fn expect(&mut self, t: Token<'a>) -> Result<(), String> {
-        if self.take(t)? { Ok(()) } else {
+        if self.take(t)? {
+            Ok(())
+        } else {
             Err(format!("unexpected token at byte {}", self.pos))
         }
     }
     fn name(&mut self) -> Result<String, String> {
         match self.current {
-            Token::Word(s) => { let out = s.to_owned(); self.next()?; Ok(out) },
+            Token::Word(s) => {
+                let out = s.to_owned();
+                self.next()?;
+                Ok(out)
+            }
             _ => Err("expected identifier".into()),
         }
     }
     fn node(&mut self, x: Expr) -> Result<Expr, String> {
         self.nodes += 1;
-        if self.nodes > MAX_NODES { return Err("AST node budget exceeded".into()); }
+        if self.nodes > MAX_NODES {
+            return Err("AST node budget exceeded".into());
+        }
         Ok(x)
     }
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
-        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+        if depth > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
         if self.take(Token::Punct(b'-'))? {
             if let Token::Number(n) = self.current {
                 // Special-case the only negative literal outside positive i64.
@@ -111,7 +143,9 @@ impl<'a> Parser<'a> {
             let rhs = self.atom(depth + 1)?;
             return self.node(Expr::Neg(Box::new(rhs)));
         }
-        if self.take(Token::Punct(b'+'))? { return self.atom(depth + 1); }
+        if self.take(Token::Punct(b'+'))? {
+            return self.atom(depth + 1);
+        }
         if self.take(Token::Punct(b'('))? {
             let e = self.expr(0, depth + 1)?;
             self.expect(Token::Punct(b')'))?;
@@ -124,32 +158,39 @@ impl<'a> Parser<'a> {
                 self.node(Expr::Literal(value))
             }
             Token::Word(s) => {
-                let index = self.parameters.iter().position(|p| p == s)
+                let index = self
+                    .parameters
+                    .iter()
+                    .position(|p| p == s)
                     .ok_or_else(|| format!("unbound or unsupported identifier: {s}"))?;
                 self.next()?;
                 self.node(Expr::Param(index))
             }
-            _ => Err(format!("expected scalar expression at byte {}", self.pos))
+            _ => Err(format!("expected scalar expression at byte {}", self.pos)),
         }
     }
     fn expr(&mut self, min_bp: u8, depth: usize) -> Result<Expr, String> {
-        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+        if depth > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
         let mut lhs = self.atom(depth + 1)?;
         loop {
             let (l_bp, r_bp, op) = match self.current {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
-                _ => break
+                _ => break,
             };
-            if l_bp < min_bp { break; }
+            if l_bp < min_bp {
+                break;
+            }
             self.next()?;
             let rhs = self.expr(r_bp, depth + 1)?;
             lhs = self.node(match op {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
-                _ => unreachable!()
+                _ => unreachable!(),
             })?;
         }
         Ok(lhs)
@@ -159,12 +200,18 @@ impl<'a> Parser<'a> {
         let mut seen_pub = false;
         loop {
             if self.take(Token::Word("define"))? {
-                if seen_define { return Err("duplicate define modifier".into()); }
+                if seen_define {
+                    return Err("duplicate define modifier".into());
+                }
                 seen_define = true;
             } else if self.take(Token::Word("pub"))? {
-                if seen_pub { return Err("duplicate pub modifier".into()); }
+                if seen_pub {
+                    return Err("duplicate pub modifier".into());
+                }
                 seen_pub = true;
-            } else { break; }
+            } else {
+                break;
+            }
         }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
@@ -181,7 +228,9 @@ impl<'a> Parser<'a> {
                     return Err("parameter count exceeds four".into());
                 }
                 self.parameters.push(name);
-                if !self.take(Token::Punct(b','))? { break; }
+                if !self.take(Token::Punct(b','))? {
+                    break;
+                }
             }
             self.expect(Token::Punct(b')'))?;
         }
@@ -196,11 +245,16 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         self.expect(Token::End)?;
-        Ok(Program { parameters: self.parameters, result })
+        Ok(Program {
+            parameters: self.parameters,
+            result,
+        })
     }
 }
 
-pub fn parse(text: &str) -> Result<Program, String> { Parser::new(text)?.program() }
+pub fn parse(text: &str) -> Result<Program, String> {
+    Parser::new(text)?.program()
+}
 
 #[cfg(test)]
 mod tests {
@@ -210,34 +264,48 @@ mod tests {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
-            Expr::Add(a,b) => eval(a,args)?.checked_add(eval(b,args)?).ok_or("overflow"),
-            Expr::Sub(a,b) => eval(a,args)?.checked_sub(eval(b,args)?).ok_or("overflow"),
-            Expr::Mul(a,b) => eval(a,args)?.checked_mul(eval(b,args)?).ok_or("overflow"),
+            Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
+            Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
+            Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
         }
     }
-    #[test] fn precedence_and_arguments() {
+    #[test]
+    fn precedence_and_arguments() {
         let p = parse("define pub fnc main(x:int,y:int):int{return (x+2)*y-1;}").unwrap();
-        assert_eq!(eval(&p.result, &[3,4]), Ok(19));
-        assert_eq!(parse("fnc main():int{return 2+3*4;}").and_then(|p|
-            Ok(eval(&p.result, &[]).unwrap())).unwrap(), 14);
+        assert_eq!(eval(&p.result, &[3, 4]), Ok(19));
+        assert_eq!(
+            parse("fnc main():int{return 2+3*4;}")
+                .and_then(|p| Ok(eval(&p.result, &[]).unwrap()))
+                .unwrap(),
+            14
+        );
     }
-    #[test] fn integer_edges() {
-        let min=parse("fnc main():int{return -9223372036854775808;}").unwrap();
-        assert_eq!(eval(&min.result,&[]),Ok(i64::MIN));
+    #[test]
+    fn integer_edges() {
+        let min = parse("fnc main():int{return -9223372036854775808;}").unwrap();
+        assert_eq!(eval(&min.result, &[]), Ok(i64::MIN));
         assert!(parse("fnc main():int{return 9223372036854775808;}").is_err());
-        let under=parse("fnc main():int{return --9223372036854775808;}").unwrap();
-        assert!(eval(&under.result,&[]).is_err());
+        let under = parse("fnc main():int{return --9223372036854775808;}").unwrap();
+        assert!(eval(&under.result, &[]).is_err());
     }
-    #[test] fn fail_closed() {
-        for source in ["fnc main():int{return 1/0;}", "fnc main():float{return 1;}",
-            "fnc main():int{return x;}", "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/", "fnc main():int{return 1.0;}",
-            "fnc main(x:int,x:int):int{return x;}", "fnc main():int{return 1;} unsafe",
-            "fnc main():int{return 1;}\0", "fnc main():int{return 1;}\u{00a0}"] {
+    #[test]
+    fn fail_closed() {
+        for source in [
+            "fnc main():int{return 1/0;}",
+            "fnc main():float{return 1;}",
+            "fnc main():int{return x;}",
+            "fnc main():int{return 1;} fnc foo():int{return 2;}",
+            "fnc main():int{return 1;} /*no*/",
+            "fnc main():int{return 1.0;}",
+            "fnc main(x:int,x:int):int{return x;}",
+            "fnc main():int{return 1;} unsafe",
+            "fnc main():int{return 1;}\0",
+            "fnc main():int{return 1;}\u{00a0}",
+        ] {
             assert!(parse(source).is_err(), "{source:?}");
         }
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
-        assert!(parse(&" ".repeat(MAX_SOURCE+1)).is_err());
+        assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
     }
 }
