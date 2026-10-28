@@ -1,0 +1,33 @@
+name: Cranelift native scalar smoke
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-x86_64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision and Git tree
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet
+          echo "SOURCE_COMMIT=$EXPECTED"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Compile and execute native JIT tests
+        run: cargo test --all-targets --verbose
+      - name: Executable source smoke
+        run: |
+          set -euo pipefail
+          printf 'fnc main(x:int):int{return (x+2)*3;}\n' > "$RUNNER_TEMP/smoke.ores"
+          test "$(cargo run --quiet -- run "$RUNNER_TEMP/smoke.ores" 12)" = 42

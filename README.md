@@ -1,11 +1,51 @@
 # Oreslang Cranelift backend
 
-Experimental **independent** Rust/Cranelift code-generation backend for Oreslang.
+An **independent Rust + Cranelift** experimental backend for Oreslang. It is
+**not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
+path, and must never link to Cranelift.
 
-This repository is **not Forge** and must never become a compiler or runtime dependency of `oreslang-source.forge`. Forge is intended to become self-hosted in Oreslang; this backend uses Rust and the upstream Cranelift code generator.
+## Stage-0 executable scalar profile
 
-**Status:** bootstrap repository initialized; no compiler on `main` yet. Native functionality must be demonstrated by executed tests before the backend is called working. A first compiler implementation is proposed in a review branch.
+This review branch compiles a deliberately narrow Oreslang-like source subset
+into **actual Cranelift native JIT machine code**, with a checked overflow
+status rather than an unchecked wrap or process trap.
 
-Security: Cranelift JIT machine code runs inside the host process. JIT compilation alone does not provide actor isolation or an untrusted-code sandbox. Keep actor heap, mailbox, capability and supervisor acceptance separate from codegen.
+```oreslang
+fnc main(x:int,y:int):int{return (x+2)*y;}
+```
 
-Do not claim language parity or self-hosting without exact-head execution evidence.
+```sh
+cargo run -- run example.ores 7 8 # 72
+cargo run -- ir example.ores      # generated Cranelift IR
+cargo test --all-targets
+```
+
+Supported: one `main` function, 0–4 typed `int` parameters, signed i64
+literals (including MIN), grouping, unary +/-, binary + - * and line comments.
+Both return syntax variants `:int` and `->int` are accepted. Precedence and
+arithmetic overflow match the checked-i64 scalar contract, not floating
+point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
+
+Rejected: **everything else**, including imports, helper functions, calls,
+classes, actors, heaps, ownership, recursion, async, control flow, division,
+structural types, UTF-8 identifiers, and any trailing code.
+
+## Explicit security boundary
+
+Native JIT code executes inside this process. **It is not a sandbox** and
+there is no guest actor heap isolation or untrusted-source support.
+The entry ABI is internal (four i64 operands plus an output pointer returning
+an i32 status), not a published Oreslang or foreign-call ABI.
+
+Direct Cranelift crates are pinned to 0.137.0. Transitive dependencies are
+**not** locked until a reviewed Cargo.lock is generated and committed. This
+branch is experimental and must not become a release gate without that lockfile.
+
+## Acceptance
+
+- Run native positive and negative cases, including overflow at runtime.
+- Require malformed/unsupported syntax to fail without stdout.
+- Record exact source commit/tree, compiler versions, and executed CI steps.
+- Cross-check source results against LLVM and Forge on their **actual** common
+  scalar subset, never assume parity from shared fixture names.
+- Keep the branch draft until CI actually allocates a runner and executes tests.
