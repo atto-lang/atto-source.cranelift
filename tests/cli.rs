@@ -132,8 +132,8 @@ fn java_scalar_grammar_and_integer_boundaries() {
     fixture(
         "fnc main():int{return -09223372036854775808;}",
         &[],
-        true,
-        "-9223372036854775808\n",
+        false,
+        "",
     );
     // The separator path must preserve native arithmetic overflow checks.
     fixture(

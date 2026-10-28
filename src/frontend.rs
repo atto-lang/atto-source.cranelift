@@ -153,7 +153,7 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'-'))? {
             if let Token::Number(n) = self.current {
                 // Special-case the only negative literal outside positive i64.
-                if integer_digits(n)?.trim_start_matches('0') == "9223372036854775808" {
+                if integer_digits(n)? == "9223372036854775808" {
                     self.next()?;
                     return self.node(Expr::Literal(i64::MIN));
                 }
