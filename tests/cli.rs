@@ -38,6 +38,52 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     }
 }
 #[test]
+fn actor_supervisor_authority_fails_before_ir_or_execution() {
+    // Neither host-native execution nor CLIF emission is allowed to interpret
+    // actor authority without a real guest actor runtime and capability model.
+    for source in [
+        "define actor Worker as end",
+        "define supervisor actor Manager as end",
+        "define proxy actor Remote as end",
+        "fnc main():int{return spawn Worker();}",
+        "fnc main():int{return stop;}",
+        "fnc main(ActorRef:int):int{return 42;}",
+        "fnc main():int{return 42;} actor",
+    ] {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-authority-{}-{sequence}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{mode} unexpectedly admitted {source}");
+            assert!(output.stdout.is_empty(), "{mode} emitted native output or CLIF");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(
+                    "actor and supervisor capabilities are unsupported in Cranelift stage-0"
+                ),
+                "{mode} did not produce capability-specific denial: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    // Authority words in comments are not executable syntax.
+    fixture(
+        "fnc main():int{return 42;} // actor supervisor spawn stop ActorRef",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
 fn native_execution_and_negative_controls() {
     fixture("fnc main():int{return 2+3*4;}", &[], true, "14\n");
     fixture(
