@@ -1,0 +1,16 @@
+[package]
+name = "orescranelift"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Pin direct dependencies to one Cranelift release. A Cargo.lock is required
+# before release; without it transitive dependency resolution is not frozen.
+[dependencies]
+cranelift-codegen = "=0.137.0"
+cranelift-frontend = "=0.137.0"
+cranelift-jit = "=0.137.0"
+cranelift-module = "=0.137.0"
+
+[profile.release]
+overflow-checks = true
