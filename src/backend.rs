@@ -21,6 +21,13 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        BitXor(x, y) => {
+            // Both operands are emitted in lexical order. bxor is an actual
+            // native Cranelift instruction, not a host-side reference oracle.
+            let lhs = emit(x, b, params, error);
+            let rhs = emit(y, b, params, error);
+            b.ins().bxor(lhs, rhs)
+        }
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
