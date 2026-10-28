@@ -30,7 +30,7 @@ Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
-Rejected: **everything else**, including imports, helper functions, calls,
+Rejected: **everything else**, including imports, helper functions, user-defined calls,
 classes, actors, heaps, ownership, recursion, async, control flow, division,
 structural types, UTF-8 identifiers, and any trailing code.
 
