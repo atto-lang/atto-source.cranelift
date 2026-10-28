@@ -104,6 +104,23 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Stage-0 has no actor runtime, supervisory CONTROL channel, or
+            // minted ActorRef capability. Reject reserved authority syntax
+            // lexically, including in unconsumed trailing source, before CLIF.
+            // Comments are already skipped above.
+            if matches!(
+                self.current,
+                Token::Word("actor")
+                    | Token::Word("supervisor")
+                    | Token::Word("proxy")
+                    | Token::Word("spawn")
+                    | Token::Word("stop")
+                    | Token::Word("ActorRef")
+            ) {
+                return Err(
+                    "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
+                );
+            }
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
