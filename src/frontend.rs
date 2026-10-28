@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(eval(&p.result, &[3, 4]), Ok(19));
         assert_eq!(
             parse("fnc main():int{return 2+3*4;}")
-                .and_then(|p| Ok(eval(&p.result, &[]).unwrap()))
+                .map(|p| eval(&p.result, &[]).unwrap())
                 .unwrap(),
             14
         );
