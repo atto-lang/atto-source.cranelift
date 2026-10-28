@@ -288,9 +288,8 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     // Real CLI invocation is required; a parser unit test cannot detect a
     // blocking open, which happens before the parser sees a single byte.
     let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let fifo = std::env::temp_dir().join(format!(
-        "orescranelift-fifo-{}-{nonce}", std::process::id()
-    ));
+    let fifo =
+        std::env::temp_dir().join(format!("orescranelift-fifo-{}-{nonce}", std::process::id()));
     let link = fifo.with_extension("link");
     let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: the CString provides a valid NUL-terminated POSIX pathname.
@@ -319,11 +318,16 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             let result = child.wait_with_output().unwrap();
-            assert!(!result.status.success(), "{mode} admitted non-regular source");
-            assert!(result.stdout.is_empty(), "{mode} emitted stdout on rejection");
             assert!(
-                String::from_utf8_lossy(&result.stderr)
-                    .contains("source must be a regular file"),
+                !result.status.success(),
+                "{mode} admitted non-regular source"
+            );
+            assert!(
+                result.stdout.is_empty(),
+                "{mode} emitted stdout on rejection"
+            );
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("source must be a regular file"),
                 "{mode} returned wrong diagnostic: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
