@@ -83,9 +83,21 @@ fn native_signed_remainder_literal_divisor() {
         ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
         ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
         ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
-        ("fnc main(x:int):int{return x%-1;}", &["-9223372036854775808"][..], "0\n"),
-        ("fnc main(x:int):int{return x%-9223372036854775808;}", &["-9223372036854775808"][..], "0\n"),
-        ("fnc main(x:int):int{return x%-9223372036854775808;}", &["9223372036854775807"][..], "9223372036854775807\n"),
+        (
+            "fnc main(x:int):int{return x%-1;}",
+            &["-9223372036854775808"][..],
+            "0\n",
+        ),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775808;}",
+            &["-9223372036854775808"][..],
+            "0\n",
+        ),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775808;}",
+            &["9223372036854775807"][..],
+            "9223372036854775807\n",
+        ),
         ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
     ] {
         fixture(source, args, true, expected);

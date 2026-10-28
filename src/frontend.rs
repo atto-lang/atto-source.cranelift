@@ -330,7 +330,7 @@ mod tests {
                 } else {
                     numerator.checked_rem(*divisor).ok_or("overflow")
                 }
-            },
+            }
         }
     }
     #[test]
