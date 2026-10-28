@@ -276,3 +276,59 @@ fn java_scalar_grammar_and_integer_boundaries() {
         "42\n",
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn source_path_fifo_and_symlink_admission_never_blocks() {
+    use std::ffi::CString;
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    // Real CLI invocation is required; a parser unit test cannot detect a
+    // blocking open, which happens before the parser sees a single byte.
+    let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let fifo = std::env::temp_dir().join(format!(
+        "orescranelift-fifo-{}-{nonce}", std::process::id()
+    ));
+    let link = fifo.with_extension("link");
+    let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: the CString provides a valid NUL-terminated POSIX pathname.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    symlink(&fifo, &link).unwrap();
+
+    for source in [&fifo, &link] {
+        for mode in ["run", "ir"] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(source)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("{mode} blocked on non-regular source: {}", source.display());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let result = child.wait_with_output().unwrap();
+            assert!(!result.status.success(), "{mode} admitted non-regular source");
+            assert!(result.stdout.is_empty(), "{mode} emitted stdout on rejection");
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("source must be a regular file"),
+                "{mode} returned wrong diagnostic: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+    std::fs::remove_file(link).unwrap();
+    std::fs::remove_file(fifo).unwrap();
+}

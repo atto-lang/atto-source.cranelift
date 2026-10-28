@@ -12,7 +12,16 @@ fn run() -> Result<(), String> {
         return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
-    let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    // Nonblocking admission is essential before descriptor-level validation:
+    // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    let file = options.open(&path).map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("source must be a regular file".into());
     }

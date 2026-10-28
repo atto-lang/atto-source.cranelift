@@ -11,6 +11,7 @@ cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"
 cranelift-module = "=0.137.0"
+libc = "=0.2.191"
 
 [profile.release]
 overflow-checks = true
