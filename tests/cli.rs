@@ -108,3 +108,57 @@ fn forge_scalar_v1_intersection() {
         fixture(source, &[], false, "");
     }
 }
+
+#[test]
+fn java_scalar_grammar_and_integer_boundaries() {
+    fixture(
+        "fnc main(int x, y:int):int{return x*1_000+y;}",
+        &["4", "2"],
+        true,
+        "4002\n",
+    );
+    fixture(
+        "fnc main():int{return -9_223_372_036_854_775_808;}",
+        &[],
+        true,
+        "-9223372036854775808\n",
+    );
+    fixture(
+        "fnc main():int{return 9_223_372_036_854_775_807;}",
+        &[],
+        true,
+        "9223372036854775807\n",
+    );
+    fixture(
+        "fnc main():int{return -09223372036854775808;}",
+        &[],
+        false,
+        "",
+    );
+    // The separator path must preserve native arithmetic overflow checks.
+    fixture(
+        "fnc main(int x):int{return x+1_000;}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+    for source in [
+        "fnc main():int{return 1__0;}",
+        "fnc main():int{return 1_;}",
+        "fnc main():int{return -9__223_372_036_854_775_808;}",
+        "fnc main():int{return 9_223_372_036_854_775_808;}",
+        "fnc main(int x,x:int):int{return x;}",
+        "fnc main(int x,int y,int z,int w,int v):int{return x;}",
+        "fnc main(int return):int{return return;}",
+        "fnc main(unsafe:int):int{return unsafe;}",
+        "fnc main():int{return unsafe;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    fixture(
+        "fnc main():int{return 42;} // unsafe is text in this comment",
+        &[],
+        true,
+        "42\n",
+    );
+}

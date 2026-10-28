@@ -4,6 +4,21 @@ const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_PARAMS: usize = 4;
 
+fn integer_digits(token: &str) -> Result<String, String> {
+    let bytes = token.as_bytes();
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte == b'_'
+            && (i == 0
+                || i + 1 == bytes.len()
+                || !bytes[i - 1].is_ascii_digit()
+                || !bytes[i + 1].is_ascii_digit())
+        {
+            return Err("invalid i64 digit separator".into());
+        }
+    }
+    Ok(token.replace('_', ""))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(i64),
@@ -83,8 +98,11 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            if self.current == Token::Word("unsafe") {
+                return Err("unsafe source is not supported".into());
+            }
         } else if first.is_ascii_digit() {
-            while self.pos < b.len() && b[self.pos].is_ascii_digit() {
+            while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
@@ -135,7 +153,7 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'-'))? {
             if let Token::Number(n) = self.current {
                 // Special-case the only negative literal outside positive i64.
-                if n == "9223372036854775808" {
+                if integer_digits(n)? == "9223372036854775808" {
                     self.next()?;
                     return self.node(Expr::Literal(i64::MIN));
                 }
@@ -153,7 +171,9 @@ impl<'a> Parser<'a> {
         }
         match self.current {
             Token::Number(n) => {
-                let value = n.parse::<i64>().map_err(|_| "i64 literal out of range")?;
+                let value = integer_digits(n)?
+                    .parse::<i64>()
+                    .map_err(|_| "i64 literal out of range")?;
                 self.next()?;
                 self.node(Expr::Literal(value))
             }
@@ -218,12 +238,19 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b'('))?;
         if !self.take(Token::Punct(b')'))? {
             loop {
+                let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
-                if name == "int" || self.parameters.contains(&name) {
+                if matches!(
+                    name.as_str(),
+                    "int" | "return" | "pub" | "define" | "fnc" | "async" | "await" | "actor"
+                ) || self.parameters.contains(&name)
+                {
                     return Err("invalid or duplicate parameter".into());
                 }
-                self.expect(Token::Punct(b':'))?;
-                self.expect(Token::Word("int"))?;
+                if !type_first {
+                    self.expect(Token::Punct(b':'))?;
+                    self.expect(Token::Word("int"))?;
+                }
                 if self.parameters.len() == MAX_PARAMS {
                     return Err("parameter count exceeds four".into());
                 }
