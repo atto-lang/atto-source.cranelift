@@ -27,6 +27,7 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    BitXor(Box<Expr>, Box<Expr>),
     // The divisor is compiler-proven to be a nonzero signed i64 literal.
     Rem(Box<Expr>, i64),
 }
@@ -108,7 +109,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
-        } else if b"()+-*%{};:,>".contains(&first) {
+        } else if b"()+-*%{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -178,6 +179,19 @@ impl<'a> Parser<'a> {
                     .map_err(|_| "i64 literal out of range")?;
                 self.next()?;
                 self.node(Expr::Literal(value))
+            }
+            Token::Word("Integer") => {
+                // Recognize only this typed intrinsic. Unknown Integer.* calls
+                // must reject before emitting native code.
+                self.next()?;
+                self.expect(Token::Punct(b'.'))?;
+                self.expect(Token::Word("bitXor"))?;
+                self.expect(Token::Punct(b'('))?;
+                let lhs = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b','))?;
+                let rhs = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b')'))?;
+                self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
             }
             Token::Word(s) => {
                 let index = self
@@ -271,7 +285,15 @@ impl<'a> Parser<'a> {
                 let name = self.name()?;
                 if matches!(
                     name.as_str(),
-                    "int" | "return" | "pub" | "define" | "fnc" | "async" | "await" | "actor"
+                    "Integer"
+                        | "int"
+                        | "return"
+                        | "pub"
+                        | "define"
+                        | "fnc"
+                        | "async"
+                        | "await"
+                        | "actor"
                 ) || self.parameters.contains(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
@@ -323,6 +345,7 @@ mod tests {
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
             Expr::Rem(lhs, divisor) => {
                 let numerator = eval(lhs, args)?;
                 if *divisor == -1 {
@@ -353,6 +376,16 @@ mod tests {
         assert!(eval(&under.result, &[]).is_err());
     }
     #[test]
+    fn guest_bitxor_parsing_and_eager_eval() {
+        let program = parse("fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}").unwrap();
+        assert_eq!(eval(&program.result, &[4, 3]), Ok(3));
+        let edge = parse(
+            "fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}",
+        )
+        .unwrap();
+        assert_eq!(eval(&edge.result, &[]), Ok(-1));
+    }
+    #[test]
     fn signed_literal_remainder() {
         for (source, expected) in [
             ("fnc main():int{return -7%3;}", -1),
@@ -378,6 +411,11 @@ mod tests {
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
+            "fnc main():int{return 5 ^ 3;}",
+            "fnc main():int{return Integer.rem(5,3);}",
+            "fnc main():int{return Integer.bitXor(5);}",
+            "fnc main():int{return Integer.bitXor(5,3,1);}",
+            "fnc main(Integer:int):int{return Integer;}",
             "fnc main():float{return 1;}",
             "fnc main():int{return x;}",
             "fnc main():int{return 1;} fnc foo():int{return 2;}",
