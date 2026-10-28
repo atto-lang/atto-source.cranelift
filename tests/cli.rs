@@ -1,8 +1,14 @@
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Cargo runs integration tests in parallel. Never let fixtures overwrite or
+// unlink each other's source files: doing so masks compiler outcomes.
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
-    let path=std::env::temp_dir().join(format!("orescranelift-{}-{}.ores",
-        std::process::id(), source.len()));
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path=std::env::temp_dir().join(format!("orescranelift-{}-{}-{}.ores",
+        std::process::id(), sequence, source.len()));
     std::fs::write(&path,source).unwrap();
     let output=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run").arg(&path).args(args).output().unwrap();
