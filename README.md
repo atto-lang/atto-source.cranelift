@@ -22,6 +22,10 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters, signed i64
 literals (including MIN), grouping, unary +/-, binary + - * and line comments.
+The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
+values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
+native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
+named functions (including `rem`, `mod`, and `pow`) remain unsupported.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
@@ -47,6 +51,10 @@ establish full Oreslang support, actor isolation or Forge self-hosting.
 ## Acceptance
 
 - Run native positive and negative cases, including overflow at runtime.
+- Verify the four signed64 `bit_xor` vectors against the normative Java #2193
+  fixture through **actual Cranelift native guest execution**, not a host oracle.
+  The tests have been authored on a draft branch; no exact-head executed CI
+  result has yet been confirmed for this change.
 - Require malformed/unsupported syntax to fail without stdout.
 - Record exact source commit/tree, compiler versions, and executed CI steps.
 - Cross-check source results against LLVM and Forge on their **actual** common
