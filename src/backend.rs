@@ -1,6 +1,6 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
 use crate::frontend::{Expr, Program};
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, types};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
@@ -76,7 +76,7 @@ pub fn compile(source: &Program) -> Result<Compiled,String> {
     b.seal_block(entry);
     let p=b.block_params(entry).to_vec();
     let value=emit(&source.result,&mut b,&p[..4],failure);
-    b.ins().store(MemFlags::from_u32(0),value,p[4],0);
+    b.ins().store(MemFlagsData::new(),value,p[4],0);
     let ok=b.ins().iconst(types::I32,0);
     b.ins().return_(&[ok]);
     b.switch_to_block(failure);
