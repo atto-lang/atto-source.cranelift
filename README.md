@@ -15,9 +15,9 @@ fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
-cargo run -- run example.ores 7 8 # 72
-cargo run -- ir example.ores      # generated Cranelift IR
-cargo test --all-targets
+cargo run --locked -- run example.ores 7 8 # 72
+cargo run --locked -- ir example.ores      # generated Cranelift IR
+cargo test --locked --all-targets
 ```
 
 Supported: one `main` function, 0–4 typed `int` parameters, signed i64
@@ -37,9 +37,12 @@ there is no guest actor heap isolation or untrusted-source support.
 The entry ABI is internal (four i64 operands plus an output pointer returning
 an i32 status), not a published Oreslang or foreign-call ABI.
 
-Direct Cranelift crates are pinned to 0.137.0. Transitive dependencies are
-**not** locked until a reviewed Cargo.lock is generated and committed. This
-branch is experimental and must not become a release gate without that lockfile.
+Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
+are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
+`rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
+
+This branch remains experimental. Passing its scalar JIT tests does **not**
+establish full Oreslang support, actor isolation or Forge self-hosting.
 
 ## Acceptance
 
