@@ -76,14 +76,14 @@ pub fn compile(source: &Program) -> Result<Compiled,String> {
     b.seal_block(entry);
     let p=b.block_params(entry).to_vec();
     let value=emit(&source.result,&mut b,&p[..4],failure);
-    b.ins().store(MemFlags::new(),value,p[4],0);
+    b.ins().store(MemFlags::from_u32(0),value,p[4],0);
     let ok=b.ins().iconst(types::I32,0);
     b.ins().return_(&[ok]);
     b.switch_to_block(failure);
     let fail=b.ins().iconst(types::I32,1);
     b.ins().return_(&[fail]);
     b.seal_all_blocks();
-    b.finalize();
+    b.finalize(module.target_config());
     let clif=ctx.func.display().to_string();
     module.define_function(id,&mut ctx).map_err(|e|e.to_string())?;
     module.clear_context(&mut ctx);
