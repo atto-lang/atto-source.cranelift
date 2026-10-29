@@ -67,3 +67,29 @@ versioned isolate context to Cranelift-generated guest code and then
 define an authenticated out-of-process executor for hostile guests.
 `cargo test --locked --all-targets` must be executed in a real runner;
 Rust 1.99.1 was unavailable in the local container.
+
+## First compiled machine-code tenant execution (new experimental slice)
+
+The Cranelift backend now exposes `Compiled::run_for_isolate(&OresVM,
+&IsolateHandle, delta)` for exactly one trusted two-argument signed-i64
+function. The function is **compiled once to real native Cranelift JIT code**;
+the OresVM host loads each tenant's private scalar state, calls the same
+compiled function with `(old, delta)`, and writes the result into that tenant
+only when the native call succeeds. Checked arithmetic errors leave tenant
+state unchanged; negative results remain valid.
+
+`OresVM::invoke_trusted_step` pins a queued/running guest call, serializes
+*within a tenant* (not across tenants), rechecks admission after waiting,
+and prevents shutdown while any native call remains active. Quiescence
+denies new work; already admitted and running calls may finish.
+The integration tests execute the actual compiled Cranelift code for
+two tenants, assert independent state, overflow nonmutation, reincarnation
+and active-call shutdown fencing.
+
+**Security limitation:** the compiled function's existing ABI is still
+four i64 operands + result pointer, returning status; the OresVM host
+mediates tenant state rather than exposing a raw IsolateVM pointer to JIT
+code. This is **not** a native sandbox, a general actor scheduler, or a
+versioned foreign IsolateContext ABI. Guest code is trusted in-process
+and must not retain runtime pointers. Untrusted native code requires
+a supervised OS worker. Real cargo tests remain mandatory before merge.
