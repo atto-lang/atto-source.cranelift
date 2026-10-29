@@ -120,7 +120,7 @@ fn native_integer_bitxor_source_execution() {
     fixture("fnc main():int{return Integer.div(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
-        "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
+        "fnc main():int{return Integer.bitXor(Integer.rem(7,3),Integer.bitXor(4,2));}",
         &[],
         true,
         "7\n",
@@ -128,7 +128,7 @@ fn native_integer_bitxor_source_execution() {
     for expression in [
         "Integer.bitXor(9223372036854775807+1,0)",
         "Integer.bitXor(0,9223372036854775807+1)",
-        "Integer.bitXor((9223372036854775807+1)%-1,0)",
+        "Integer.bitXor(Integer.rem(9223372036854775807+1,-1),0)",
         "7%Integer.bitXor(1,2)",
     ] {
         fixture(
@@ -141,51 +141,31 @@ fn native_integer_bitxor_source_execution() {
 }
 
 #[test]
-fn native_signed_remainder_literal_divisor() {
+fn native_named_remainder_only_and_infix_denial() {
     for (source, args, expected) in [
-        ("fnc main():int{return -7%3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 7%-3;}", &[][..], "1\n"),
-        ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
-        ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
-        (
-            "fnc main(x:int):int{return x%-1;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["9223372036854775807"][..],
-            "9223372036854775807\n",
-        ),
-        ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
+        ("fnc main():int{return Integer.rem(-7,3);}", &[][..], "-1\n"),
+        ("fnc main():int{return Integer.rem(7,-3);}", &[][..], "1\n"),
+        ("fnc main():int{return Integer.rem(-7,-3);}", &[][..], "-1\n"),
+        ("fnc main():int{return Integer.rem(8,3)*2;}", &[][..], "4\n"),
+        ("fnc main():int{return Integer.rem(Integer.rem(20,6),3);}", &[][..], "2\n"),
+        ("fnc main(x:int):int{return Integer.rem(x,-1);}", &["-9223372036854775808"][..], "0\n"),
+        ("fnc main(x:int):int{return Integer.mod(x,3);}", &["-7"][..], "2\n"),
     ] {
         fixture(source, args, true, expected);
     }
-    // A -1 divisor must not erase a checked overflow in its numerator.
-    fixture(
-        "fnc main(x:int):int{return (x+1)%-1;}",
+    fixture_diagnostic(
+        "fnc main(x:int):int{return Integer.rem(x+1,-1);}",
         &["9223372036854775807"],
-        false,
-        "",
+        "i64 arithmetic overflow",
     );
-    for (source, args) in [
-        ("fnc main(x:int):int{return x%0;}", &["7"][..]),
-        ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
-        ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
-        ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775809;}",
-            &["7"][..],
-        ),
-        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
+    for source in [
+        "fnc main():int{return 7%3;}",
+        "fnc main():int{return 7%0;}",
+        "fnc main(x:int,y:int):int{return x%y;}",
+        "fnc main():int{return 5^3;}",
+        "fnc main():int{return 5^^3;}",
     ] {
-        fixture(source, args, false, "");
+        fixture(source, &[], false, "");
     }
 }
 

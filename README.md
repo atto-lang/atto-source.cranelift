@@ -22,8 +22,7 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
-literal divisor (`%`), and line comments.
+grouping, unary +/-, binary + - *, and line comments.
 Java-defined named signed64 source expressions `Integer.bitXor(a,b)`,
 `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` are supported
 for typed `int` operands. Each operand is evaluated once in lexical order.
@@ -31,21 +30,19 @@ Cranelift emits native bitwise XOR, guarded signed remainder, nonnegative
 Euclidean modulus, and checked exponentiation-by-squaring, respectively.
 These are source-level compiler paths, not host reference-only helpers.
 Divisor zero, checked multiply overflow, and negative exponents map to distinct
-runtime error statuses. Legacy caret operators remain rejected; stage-0
-literal-divisor `%` remains temporarily for migration and does not support
-runtime variable divisors.
+runtime error statuses. Infix `%`, `^` and `^^` are rejected for all operands;
+use the named `Integer.*` operations instead.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic `%` remainder,
+classes, actors, heaps, ownership, recursion, async, control flow, division, infix `%` / `^` / `^^`,
 structural types, UTF-8 identifiers, and any trailing code.
 
 Signed remainder follows Java truncation-toward-zero semantics, including
-`i64::MIN % -1 == 0`. This intentionally matches the restricted LLVM
-literal-divisor parity slice, not general Java runtime expression coverage.
-The numerator still executes checked arithmetic before computing remainder.
+`Integer.rem(i64::MIN, -1) == 0`. The numerator still executes checked arithmetic
+before computing remainder, including when its divisor is negative one.
 
 ## Explicit security boundary
 
