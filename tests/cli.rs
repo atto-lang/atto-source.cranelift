@@ -62,7 +62,7 @@ fn source_fixture_never_truncates_an_existing_file() {
         "orescranelift-fixture-existing-{}-{sequence}",
         std::process::id()
     ));
-    std::fs::write(&path, "KEEP").unwrap();
+    write_fixture_source(&path, "KEEP").unwrap();
     let error = write_fixture_source(&path, "REPLACE").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "KEEP");
@@ -81,7 +81,7 @@ fn source_fixture_rejects_symlinks_and_uses_private_permissions() {
     ));
     let link = target.with_extension("link");
     let private = target.with_extension("ores");
-    std::fs::write(&target, "KEEP").unwrap();
+    write_fixture_source(&target, "KEEP").unwrap();
     symlink(&target, &link).unwrap();
     let error = write_fixture_source(&link, "REPLACE").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
