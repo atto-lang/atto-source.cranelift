@@ -1,5 +1,6 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
 use crate::frontend::{Expr, Program};
+use crate::isolate::{IsolateHandle, OresVM};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -8,6 +9,7 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
+    arity: usize,
     pub clif: String,
 }
 
@@ -116,10 +118,21 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         .map_err(|e| e.to_string())?;
     module.clear_context(&mut ctx);
     module.finalize_definitions().map_err(|e| e.to_string())?;
-    Ok(Compiled { module, id, clif })
+    Ok(Compiled { module, id, arity: source.parameters.len(), clif })
 }
 
 impl Compiled {
+    // This is a trusted, host-mediated tenant step, not a native pointer ABI.
+    // The same compiled machine code is reused for multiple IsolateVMs while
+    // mutable scalar state remains owned by the OresVM tenant host.
+    pub fn run_for_isolate(&self, vm: &OresVM, handle: &IsolateHandle, delta: i64)
+        -> Result<i64, String> {
+        if self.arity != 2 {
+            return Err("isolate scalar entry requires (old, delta)".into());
+        }
+        vm.invoke_trusted_step(handle, delta, |old, change| self.run(&[old, change]))
+    }
+
     pub fn run(&self, args: &[i64]) -> Result<i64, String> {
         if args.len() > 4 {
             return Err("too many runtime arguments".into());
