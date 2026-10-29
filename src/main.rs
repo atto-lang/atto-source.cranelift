@@ -1,5 +1,6 @@
 mod backend;
 mod frontend;
+mod isolate;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
