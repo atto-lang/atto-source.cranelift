@@ -1,6 +1,8 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
 use crate::frontend::{Expr, Program};
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, types};
+use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::instructions::BlockArg;
+use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
@@ -11,12 +13,146 @@ pub struct Compiled {
     pub clif: String,
 }
 
+// All signed remainder paths guard the dangerous (MIN, -1) pair before
+// lowering to native srem. Both operands are evaluated exactly once first.
+fn checked_rem_values(
+    left: Value,
+    right: Value,
+    b: &mut FunctionBuilder,
+    divisor_error: Block,
+) -> Value {
+    let is_zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
+    let nonzero = b.create_block();
+    b.ins().brif(is_zero, divisor_error, &[], nonzero, &[]);
+    b.switch_to_block(nonzero);
+    b.seal_block(nonzero);
+
+    let min = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
+    let neg_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
+    let special = b.ins().band(min, neg_one);
+    let min_minus_one = b.create_block();
+    let general = b.create_block();
+    let done = b.create_block();
+    b.append_block_param(done, types::I64);
+    b.ins().brif(special, min_minus_one, &[], general, &[]);
+
+    b.switch_to_block(min_minus_one);
+    b.seal_block(min_minus_one);
+    let zero = b.ins().iconst(types::I64, 0);
+    b.ins().jump(done, &[BlockArg::Value(zero)]);
+
+    b.switch_to_block(general);
+    b.seal_block(general);
+    let rem = b.ins().srem(left, right);
+    b.ins().jump(done, &[BlockArg::Value(rem)]);
+
+    b.switch_to_block(done);
+    b.seal_block(done);
+    b.block_params(done)[0]
+}
+
+// Iterative exponentiation by squaring, with checked multiplication at every
+// required step. Squaring is skipped after the final exponent bit to prevent
+// spurious overflow for e.g. Integer.pow(-2, 63) or pow(0, i64::MAX).
+fn checked_pow_values(
+    base: Value,
+    exponent: Value,
+    b: &mut FunctionBuilder,
+    overflow_error: Block,
+    negative_exponent_error: Block,
+) -> Value {
+    let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, exponent, 0);
+    let admitted = b.create_block();
+    b.ins()
+        .brif(neg, negative_exponent_error, &[], admitted, &[]);
+    b.switch_to_block(admitted);
+    b.seal_block(admitted);
+
+    let loop_head = b.create_block();
+    for _ in 0..3 {
+        b.append_block_param(loop_head, types::I64);
+    }
+    let loop_body = b.create_block();
+    let odd = b.create_block();
+    let even = b.create_block();
+    let joined = b.create_block();
+    b.append_block_param(joined, types::I64);
+    let square = b.create_block();
+    let finished = b.create_block();
+    b.append_block_param(finished, types::I64);
+
+    let one = b.ins().iconst(types::I64, 1);
+    b.ins().jump(
+        loop_head,
+        &[
+            BlockArg::Value(one),
+            BlockArg::Value(base),
+            BlockArg::Value(exponent),
+        ],
+    );
+    b.switch_to_block(loop_head);
+    let state = b.block_params(loop_head).to_vec();
+    let done = b.ins().icmp_imm_s(IntCC::Equal, state[2], 0);
+    b.ins()
+        .brif(done, finished, &[BlockArg::Value(state[0])], loop_body, &[]);
+
+    b.switch_to_block(loop_body);
+    b.seal_block(loop_body);
+    let bit = b.ins().band_imm_u(state[2], 1);
+    let multiply = b.ins().icmp_imm_s(IntCC::NotEqual, bit, 0);
+    b.ins().brif(multiply, odd, &[], even, &[]);
+
+    b.switch_to_block(odd);
+    b.seal_block(odd);
+    let (product, overflow) = b.ins().smul_overflow(state[0], state[1]);
+    let product_ok = b.create_block();
+    b.ins().brif(overflow, overflow_error, &[], product_ok, &[]);
+    b.switch_to_block(product_ok);
+    b.seal_block(product_ok);
+    b.ins().jump(joined, &[BlockArg::Value(product)]);
+
+    b.switch_to_block(even);
+    b.seal_block(even);
+    b.ins().jump(joined, &[BlockArg::Value(state[0])]);
+
+    b.switch_to_block(joined);
+    b.seal_block(joined);
+    let result = b.block_params(joined)[0];
+    let remaining = b.ins().ushr_imm_u(state[2], 1);
+    let final_bit = b.ins().icmp_imm_s(IntCC::Equal, remaining, 0);
+    b.ins()
+        .brif(final_bit, finished, &[BlockArg::Value(result)], square, &[]);
+
+    b.switch_to_block(square);
+    b.seal_block(square);
+    let (base_sq, overflow) = b.ins().smul_overflow(state[1], state[1]);
+    let square_ok = b.create_block();
+    b.ins().brif(overflow, overflow_error, &[], square_ok, &[]);
+    b.switch_to_block(square_ok);
+    b.seal_block(square_ok);
+    b.ins().jump(
+        loop_head,
+        &[
+            BlockArg::Value(result),
+            BlockArg::Value(base_sq),
+            BlockArg::Value(remaining),
+        ],
+    );
+    b.seal_block(loop_head);
+
+    b.switch_to_block(finished);
+    b.seal_block(finished);
+    b.block_params(finished)[0]
+}
+
 fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
     params: &[cranelift_codegen::ir::Value],
-    error: cranelift_codegen::ir::Block,
-) -> cranelift_codegen::ir::Value {
+    error: Block,
+    divisor_error: Block,
+    negative_exponent_error: Block,
+) -> Value {
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
@@ -24,13 +160,42 @@ fn emit(
         BitXor(x, y) => {
             // Both operands are emitted in lexical order. bxor is an actual
             // native Cranelift instruction, not a host-side reference oracle.
-            let lhs = emit(x, b, params, error);
-            let rhs = emit(y, b, params, error);
+            let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
             b.ins().bxor(lhs, rhs)
+        }
+        NamedRem(x, y) | NamedMod(x, y) => {
+            let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let right = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let rem = checked_rem_values(left, right, b, divisor_error);
+            if matches!(e, NamedRem(_, _)) {
+                rem
+            } else {
+                // Nonnegative Euclidean modulus. The selected adjustment is
+                // representable even for divisor == i64::MIN; no abs(MIN).
+                let positive = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, right, 0);
+                let plus = b.ins().iadd(rem, right);
+                let minus = b.ins().isub(rem, right);
+                let adjusted = b.ins().select(positive, plus, minus);
+                let negative = b.ins().icmp_imm_s(IntCC::SignedLessThan, rem, 0);
+                b.ins().select(negative, adjusted, rem)
+            }
+        }
+        NamedPow(x, y) => {
+            let base = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let exponent = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
         Rem(lhs, divisor) => {
             // Evaluation of lhs (including checked overflow) is mandatory.
-            let numerator = emit(lhs, b, params, error);
+            let numerator = emit(
+                lhs,
+                b,
+                params,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             // Signed remainder by -1 is always zero under Java semantics,
             // but native srem(i64::MIN, -1) can trap/produce poison.
             if *divisor == -1 {
@@ -46,23 +211,23 @@ fn emit(
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
-                    let rhs = emit(x, b, params, error);
+                    let rhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
                 Add(x, y) => {
-                    let lhs = emit(x, b, params, error);
-                    let rhs = emit(y, b, params, error);
+                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
-                    let lhs = emit(x, b, params, error);
-                    let rhs = emit(y, b, params, error);
+                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
-                    let lhs = emit(x, b, params, error);
-                    let rhs = emit(y, b, params, error);
+                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -97,17 +262,32 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
     let entry = b.create_block();
     let failure = b.create_block();
+    let divisor_error = b.create_block();
+    let negative_exponent_error = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
     let p = b.block_params(entry).to_vec();
-    let value = emit(&source.result, &mut b, &p[..4], failure);
+    let value = emit(
+        &source.result,
+        &mut b,
+        &p[..4],
+        failure,
+        divisor_error,
+        negative_exponent_error,
+    );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     let ok = b.ins().iconst(types::I32, 0);
     b.ins().return_(&[ok]);
     b.switch_to_block(failure);
     let fail = b.ins().iconst(types::I32, 1);
     b.ins().return_(&[fail]);
+    b.switch_to_block(divisor_error);
+    let divisor_zero = b.ins().iconst(types::I32, 2);
+    b.ins().return_(&[divisor_zero]);
+    b.switch_to_block(negative_exponent_error);
+    let negative = b.ins().iconst(types::I32, 3);
+    b.ins().return_(&[negative]);
     b.seal_all_blocks();
     b.finalize(module.target_config());
     let clif = ctx.func.display().to_string();
@@ -139,6 +319,10 @@ impl Compiled {
             Ok(out)
         } else if status == 1 {
             Err("i64 arithmetic overflow".into())
+        } else if status == 2 {
+            Err("integer divisor zero".into())
+        } else if status == 3 {
+            Err("negative integer exponent".into())
         } else {
             Err("invalid generated native status".into())
         }

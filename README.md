@@ -24,16 +24,22 @@ Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`
 signed i64 literals (including MIN and digit separators such as `1_000`),
 grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
 literal divisor (`%`), and line comments.
-The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
-values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
-named functions (including `rem`, `mod`, and `pow`) remain unsupported.
+Java-defined named signed64 source expressions `Integer.bitXor(a,b)`,
+`Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` are supported
+for typed `int` operands. Each operand is evaluated once in lexical order.
+Cranelift emits native bitwise XOR, guarded signed remainder, nonnegative
+Euclidean modulus, and checked exponentiation-by-squaring, respectively.
+These are source-level compiler paths, not host reference-only helpers.
+Divisor zero, checked multiply overflow, and negative exponents map to distinct
+runtime error statuses. Legacy caret operators remain rejected; stage-0
+literal-divisor `%` remains temporarily for migration and does not support
+runtime variable divisors.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
+classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic `%` remainder,
 structural types, UTF-8 identifiers, and any trailing code.
 
 Signed remainder follows Java truncation-toward-zero semantics, including
@@ -58,15 +64,15 @@ establish full Oreslang support, actor isolation or Forge self-hosting.
 ## Acceptance
 
 - Run native positive and negative cases, including overflow at runtime.
-- Verify the four signed64 `bit_xor` vectors against the normative Java #2193
-  fixture through **actual Cranelift native guest execution**, not a host oracle.
-  The tests have been authored on a draft branch; no exact-head executed CI
-  result has yet been confirmed for this change.
+- Verify the **26 signed64 rem/mod/pow/bit_xor cases** from Java draft #2193
+  (pinned source fixture blob `3f65f557f06e8cd0d34a738a0d357d6c2e477665`)
+  through actual generated native guest code, not host-only reference logic.
+  Tests are authored but **not execution-verified** for this PR head.
 - Require malformed/unsupported syntax to fail without stdout.
 - Record exact source commit/tree, compiler versions, and executed CI steps.
 - Cross-check source results against LLVM and Forge on their **actual** common
   scalar subset, never assume parity from shared fixture names.
-- Keep the branch draft until CI actually allocates a runner and executes tests.
+- Keep the PR draft until CI actually allocates a runner and executes tests.
 
 ## Forge scalar/v1 intersection tests
 
