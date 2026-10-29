@@ -307,10 +307,10 @@ impl OresVM {
         }
         impl Drop for Pin<'_> {
             fn drop(&mut self) {
-                if let Ok(mut guard) = self.vm.inner.lock() {
-                    if let Ok(s) = guard.check_mut(&self.handle) {
-                        s.active_guest_calls -= 1;
-                    }
+                if let Ok(mut guard) = self.vm.inner.lock()
+                    && let Ok(s) = guard.check_mut(&self.handle)
+                {
+                    s.active_guest_calls -= 1;
                 }
             }
         }
