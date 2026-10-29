@@ -31,6 +31,8 @@ pub struct Snapshot {
     pub generation: u64,
     pub actors: usize,
     pub active_pins: usize,
+    pub active_guest_calls: usize,
+    pub scalar_state: i64,
 }
 struct ActorState { epoch: u64, authority: Arc<()>, pins: usize }
 struct PinState { actor_id: u64, actor_epoch: u64, authority: Arc<()> }
@@ -44,6 +46,9 @@ struct Tenant {
     next_pin: u64,
     actors: HashMap<u64, ActorState>,
     pins: HashMap<u64, PinState>,
+    scalar_state: i64,
+    active_guest_calls: usize,
+    guest_turn: Arc<Mutex<()>>,
 }
 struct Inner {
     max_tenants: usize,
@@ -97,7 +102,8 @@ impl OresVM {
         g.tenants.insert(tenant.to_owned(),Tenant {
             phase:Phase::Created,generation,authority:authority.clone(),
             max_actors,max_pins,next_actor_epoch:1,next_pin:1,
-            actors:HashMap::new(),pins:HashMap::new()
+            actors:HashMap::new(),pins:HashMap::new(),scalar_state:0,
+            active_guest_calls:0,guest_turn:Arc::new(Mutex::new(()))
         });
         Ok(IsolateHandle {tenant:tenant.to_owned(),generation,authority})
     }
@@ -147,6 +153,54 @@ impl OresVM {
         s.actors.get_mut(&actor.id).expect("validated actor").pins-=1;
         Ok(())
     }
+    // Trusted scalar bridge into REAL compiled Cranelift code. The host
+    // loads/stores tenant scalar state; generated native code receives only
+    // two scalar values, NOT an unrestricted host-VM pointer. This is not
+    // a general tenant-owned native heap, AOT, or untrusted JIT sandbox.
+    //
+    // Pin before waiting for the tenant's serial turn. Quiescence closes
+    // queued admission but lets already-running turns finish and commit.
+    pub fn invoke_trusted_step<F>(&self,h:&IsolateHandle, delta:i64, step:F)
+        -> Result<i64,String>
+        where F: FnOnce(i64,i64)->Result<i64,String>
+    {
+        struct Pin<'a>{ vm:&'a OresVM, handle:IsolateHandle }
+        impl Drop for Pin<'_> {
+            fn drop(&mut self) {
+                if let Ok(mut guard)=self.vm.inner.lock() {
+                    if let Ok(s)=guard.check_mut(&self.handle) {
+                        s.active_guest_calls -= 1;
+                    }
+                }
+            }
+        }
+        let turn = {
+            let mut guard=self.inner.lock().map_err(|_|"poisoned host".to_owned())?;
+            let state=guard.check_mut(h).map_err(str::to_owned)?;
+            if state.phase != Phase::Running {return Err("guest admission closed".into())}
+            if state.active_guest_calls >= 64 {return Err("guest quota exceeded".into())}
+            state.active_guest_calls+=1;
+            Arc::clone(&state.guest_turn)
+        };
+        let _pin=Pin{vm:self,handle:h.clone()};
+        let _serial=turn.lock().map_err(|_|"poisoned tenant turn".to_owned())?;
+        let old = {
+            let guard=self.inner.lock().map_err(|_|"poisoned host".to_owned())?;
+            let state=guard.check(h).map_err(str::to_owned)?;
+            if state.phase != Phase::Running {return Err("guest cancelled during quiescence".into())}
+            state.scalar_state
+        };
+        let next=step(old,delta)?;
+        {
+            let mut guard=self.inner.lock().map_err(|_|"poisoned host".to_owned())?;
+            let state=guard.check_mut(h).map_err(str::to_owned)?;
+            if state.phase != Phase::Running && state.phase != Phase::Quiescing {
+                return Err("guest has no live tenant to commit to".into());
+            }
+            state.scalar_state=next;
+        }
+        Ok(next)
+    }
     pub fn retire_actor(&self,h:&IsolateHandle,actor:&ActorTicket)->Result<(),&'static str>{
         let mut g=self.inner.lock().map_err(|_|"poisoned host")?;
         let s=g.check_mut(h)?;
@@ -162,7 +216,7 @@ impl OresVM {
     pub fn complete_shutdown(&self,h:&IsolateHandle)->Result<(),&'static str>{
         let mut g=self.inner.lock().map_err(|_|"poisoned host")?;
         let s=g.check_mut(h)?;
-        if s.phase!=Phase::Quiescing||!s.actors.is_empty()||!s.pins.is_empty(){
+        if s.phase!=Phase::Quiescing||!s.actors.is_empty()||!s.pins.is_empty()||s.active_guest_calls!=0{
             return Err("isolate still has active work");
         }
         s.phase=Phase::Stopped;Ok(())
@@ -175,7 +229,7 @@ impl OresVM {
     pub fn snapshot(&self,h:&IsolateHandle)->Result<Snapshot,&'static str>{
         let g=self.inner.lock().map_err(|_|"poisoned host")?;
         let s=g.check(h)?;
-        Ok(Snapshot{phase:s.phase,generation:s.generation,actors:s.actors.len(),active_pins:s.pins.len()})
+        Ok(Snapshot{phase:s.phase,generation:s.generation,actors:s.actors.len(),active_pins:s.pins.len(),active_guest_calls:s.active_guest_calls,scalar_state:s.scalar_state})
     }
 }
 
