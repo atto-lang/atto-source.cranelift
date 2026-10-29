@@ -9,6 +9,12 @@ fn native_generated_scalar_step_is_tenant_private() {
     let a = vm.create_isolate("tenant-a", 2, 2).unwrap();
     let b = vm.create_isolate("tenant-b", 2, 2).unwrap();
     vm.start(&a).unwrap(); vm.start(&b).unwrap();
+    // Nested entry must fail immediately rather than deadlock the same
+    // carrier while holding the tenant's serial-turn lock.
+    assert!(vm.invoke_trusted_step(&a, 1, |_, _| {
+        vm.invoke_trusted_step(&a, 1, |_, _| Ok(1))
+    }).is_err());
+    assert_eq!(vm.snapshot(&a).unwrap().active_guest_calls, 0);
     assert_eq!(compiled.run_for_isolate(&vm, &a, -1).unwrap(), -1);
     assert_eq!(compiled.run_for_isolate(&vm, &b, 100).unwrap(), 100);
     assert_eq!(compiled.run_for_isolate(&vm, &a, -2).unwrap(), -3);
