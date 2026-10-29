@@ -1,5 +1,12 @@
 # Oreslang Cranelift backend
 
+## VM isolate execution architecture
+
+The Rust `isolate` module now has OresVM tenant admission, actor-incarnation and physical-operation retirement accounting, but Cranelift JIT entrypoints are not yet routed through it; JIT native code is **not** sandboxed.
+
+See [the shared tenant IsolateVM contract](docs/VM_ISOLATE_CONTRACT.md) for lifecycle, V8 lessons, resource retirement, restrictions and remaining acceptance gates.
+
+
 An **independent Rust + Cranelift** experimental backend for Oreslang. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
