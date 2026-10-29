@@ -2,7 +2,7 @@
 
 ## VM isolate execution architecture
 
-The Rust `isolate` module now has OresVM tenant admission, actor-incarnation and physical-operation retirement accounting, but Cranelift JIT entrypoints are not yet routed through it; JIT native code is **not** sandboxed.
+The Rust `isolate` module now has OresVM tenant admission, actor-incarnation and physical-operation retirement accounting, and the scalar two-argument JIT path now has a trusted host-mediated tenant entry; JIT native code is **not** sandboxed.
 
 See [the shared tenant IsolateVM contract](docs/VM_ISOLATE_CONTRACT.md) for lifecycle, V8 lessons, resource retirement, restrictions and remaining acceptance gates.
 
