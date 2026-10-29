@@ -118,15 +118,24 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         .map_err(|e| e.to_string())?;
     module.clear_context(&mut ctx);
     module.finalize_definitions().map_err(|e| e.to_string())?;
-    Ok(Compiled { module, id, arity: source.parameters.len(), clif })
+    Ok(Compiled {
+        module,
+        id,
+        arity: source.parameters.len(),
+        clif,
+    })
 }
 
 impl Compiled {
     // This is a trusted, host-mediated tenant step, not a native pointer ABI.
     // The same compiled machine code is reused for multiple IsolateVMs while
     // mutable scalar state remains owned by the OresVM tenant host.
-    pub fn run_for_isolate(&self, vm: &OresVM, handle: &IsolateHandle, delta: i64)
-        -> Result<i64, String> {
+    pub fn run_for_isolate(
+        &self,
+        vm: &OresVM,
+        handle: &IsolateHandle,
+        delta: i64,
+    ) -> Result<i64, String> {
         if self.arity != 2 {
             return Err("isolate scalar entry requires (old, delta)".into());
         }
