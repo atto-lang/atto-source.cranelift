@@ -494,6 +494,37 @@ fn java_scalar_grammar_and_integer_boundaries() {
     );
 }
 
+#[test]
+fn cli_arg_preflight_rejects_excess_before_opening_source() {
+    let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let missing_path = std::env::temp_dir().join(format!(
+        "orescranelift-missing-{}-{nonce}.ores",
+        std::process::id()
+    ));
+    for (mode, args, diagnostic) in [
+        ("ir", &["1"][..], "ir mode does not accept arguments"),
+        (
+            "run",
+            &["1", "2", "3", "4", "5"][..],
+            "runtime argument count exceeds four",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&missing_path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{mode} accepted excess arguments");
+        assert!(output.stdout.is_empty(), "rejected CLI printed stdout");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+            "unexpected {mode} diagnostic: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn source_path_fifo_and_symlink_admission_never_blocks() {

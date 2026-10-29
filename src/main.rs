@@ -12,6 +12,14 @@ fn run() -> Result<(), String> {
         return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
+    // Reject impossible CLI arities before opening or parsing untrusted source.
+    // The guest frontend accepts at most four typed i64 parameters.
+    if mode == "ir" && argv.len() != 0 {
+        return Err("ir mode does not accept arguments".into());
+    }
+    if mode == "run" && argv.len() > 4 {
+        return Err("runtime argument count exceeds four".into());
+    }
     // Nonblocking admission is essential before descriptor-level validation:
     // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
     let mut options = std::fs::OpenOptions::new();
