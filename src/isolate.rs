@@ -164,6 +164,24 @@ impl OresVM {
         -> Result<i64,String>
         where F: FnOnce(i64,i64)->Result<i64,String>
     {
+        // Nested entry on the same carrier could deadlock the serial-turn
+        // mutex. Reject before pinning; only the outer invocation may reset it.
+        thread_local! {
+            static IN_NATIVE_TURN: std::cell::Cell<bool> =
+                const { std::cell::Cell::new(false) };
+        }
+        let nested=IN_NATIVE_TURN.with(|flag| {
+            if flag.get() {true} else {flag.set(true);false}
+        });
+        if nested {return Err("nested tenant native entry forbidden".into())}
+        struct EntryGuard;
+        impl Drop for EntryGuard {
+            fn drop(&mut self) {
+                IN_NATIVE_TURN.with(|flag|flag.set(false));
+            }
+        }
+        let _entry_guard=EntryGuard;
+
         struct Pin<'a>{ vm:&'a OresVM, handle:IsolateHandle }
         impl Drop for Pin<'_> {
             fn drop(&mut self) {
