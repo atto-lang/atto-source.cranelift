@@ -5,6 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // unlink each other's source files: doing so masks compiler outcomes.
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
+
+// Source fixtures may contain private compiler inputs. Never truncate a
+// preexisting file, follow a preplanted symlink, or make them world-readable.
+fn write_fixture_source(path: &std::path::Path, source: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(source.as_bytes())
+}
+
 fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
@@ -13,7 +30,7 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
         sequence,
         source.len()
     ));
-    std::fs::write(&path, source).unwrap();
+    write_fixture_source(&path, source).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
         .arg(&path)
@@ -37,6 +54,50 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
         assert!(!output.stderr.is_empty(), "rejection requires a diagnostic");
     }
 }
+
+#[test]
+fn source_fixture_never_truncates_an_existing_file() {
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-fixture-existing-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::write(&path, "KEEP").unwrap();
+    let error = write_fixture_source(&path, "REPLACE").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "KEEP");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn source_fixture_rejects_symlinks_and_uses_private_permissions() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let target = std::env::temp_dir().join(format!(
+        "orescranelift-fixture-target-{}-{sequence}",
+        std::process::id()
+    ));
+    let link = target.with_extension("link");
+    let private = target.with_extension("ores");
+    std::fs::write(&target, "KEEP").unwrap();
+    symlink(&target, &link).unwrap();
+    let error = write_fixture_source(&link, "REPLACE").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "KEEP");
+
+    write_fixture_source(&private, "fnc main():int{return 42;}").unwrap();
+    assert_eq!(
+        std::fs::metadata(&private).unwrap().permissions().mode() & 0o077,
+        0,
+        "private source fixture must not be readable by group/other"
+    );
+    std::fs::remove_file(private).unwrap();
+    std::fs::remove_file(link).unwrap();
+    std::fs::remove_file(target).unwrap();
+}
+
 #[test]
 fn native_execution_and_negative_controls() {
     fixture("fnc main():int{return 2+3*4;}", &[], true, "14\n");
@@ -298,7 +359,7 @@ fn fixture_diagnostic(source: &str, args: &[&str], expected_fragment: &str) {
         sequence,
         source.len()
     ));
-    std::fs::write(&path, source).unwrap();
+    write_fixture_source(&path, source).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
         .arg(&path)
