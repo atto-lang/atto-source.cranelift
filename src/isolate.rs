@@ -267,3 +267,7 @@ mod tests {
         vm.begin_shutdown(&b).unwrap();vm.complete_shutdown(&b).unwrap();vm.destroy(&b).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "isolate_integration_tests.rs"]
+mod integration_tests;
