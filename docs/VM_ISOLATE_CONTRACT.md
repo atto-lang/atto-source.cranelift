@@ -58,8 +58,8 @@ Architecture reference: LLVM draft PR #1158,
 `src/isolate.rs` implements OresVM host registry, strongly owned
 generation-fenced IsolateHandle/ActorTicket identities and explicit
 resource-pin retirement gates in pure Rust. It is compiled as a module
-of the existing Rust/Cranelift binary and has a unit test. It is not
-connected to native Cranelift JIT entrypoints yet: code executed through
+of the existing Rust/Cranelift binary and has a unit test. A first trusted scalar Cranelift JIT entrypoint is now connected
+through a host-mediated per-tenant state bridge: code executed through
 the current in-process JIT still has host-process memory access and is
 **not** untrusted multi-tenant sandboxing. Never link Forge to Cranelift:
 these backends remain independent. The next implementation must pass a
