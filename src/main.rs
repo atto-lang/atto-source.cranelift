@@ -52,7 +52,10 @@ fn run() -> Result<(), String> {
         // Experimental *trusted* native scalar VM entry. The source must
         // accept (old, delta) i64; this is NOT a sandbox or actor scheduler.
         if parsed.parameters.len() != 2 || values.len() != 2 {
-            return Err("isolate mode expects a two-argument (old, delta) entry and two tenant deltas".into());
+            return Err(
+                "isolate mode expects a two-argument (old, delta) entry and two tenant deltas"
+                    .into(),
+            );
         }
         let vm = isolate::OresVM::new(2)?;
         let a = vm.create_isolate("tenant-a", 1, 1)?;
