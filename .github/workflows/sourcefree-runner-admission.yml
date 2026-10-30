@@ -22,5 +22,5 @@ jobs:
           test -n "${RUNNER_NAME:-}"
           test "${RUNNER_OS:-}" = "Linux"
           test "${CI:-}" = "true"
-          printf 'SOURCE_FREE_RUNNER_ADMITTED run=%s attempt=%s os=%s\\n' \
+          printf 'SOURCE_FREE_RUNNER_ADMITTED run=%s attempt=%s os=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_OS"
