@@ -12,6 +12,17 @@ fn run() -> Result<(), String> {
         return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
+    // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
+    // argv BEFORE opening files, parsing source or allocating executable
+    // memory. Reading at most five elements also avoids collecting an
+    // unbounded attacker-supplied argument vector.
+    let supplied: Vec<String> = argv.by_ref().take(5).collect();
+    if mode == "ir" && !supplied.is_empty() {
+        return Err("ir mode does not accept arguments".into());
+    }
+    if supplied.len() > 4 {
+        return Err("too many runtime arguments".into());
+    }
     // Nonblocking admission is essential before descriptor-level validation:
     // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
     let mut options = std::fs::OpenOptions::new();
@@ -34,15 +45,13 @@ fn run() -> Result<(), String> {
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
     let parsed = frontend::parse(source)?;
-    let values = argv
+    let values = supplied
+        .into_iter()
         .map(|v| {
             v.parse::<i64>()
                 .map_err(|_| "invalid i64 argument".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if mode == "ir" && !values.is_empty() {
-        return Err("ir mode does not accept arguments".into());
-    }
     if mode == "run" && values.len() != parsed.parameters.len() {
         return Err("runtime argument count mismatch".into());
     }
