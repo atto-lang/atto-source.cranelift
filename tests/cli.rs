@@ -430,3 +430,62 @@ fn scalar_cast_and_ownership_features_fail_closed_before_jit_lowering() {
         fixture(source, &[], false, "");
     }
 }
+
+#[test]
+fn orestra_capacity_arithmetic_is_checked_in_native_jit() {
+    // Orestra reservation math depends on subtract-first i64 arithmetic.
+    // These are scalar intermediates only: this backend does NOT run the
+    // allocator, sealed actor state, a container, or any Orestra controller.
+    for (expression, expected) in [
+        ("(1000 - 600) - 358", "42\n"),
+        ("(9223372036854775807 - 9223372036854775700) - 65", "42\n"),
+        ("(9223372036854775807 - 9223372036854775765)", "42\n"),
+        ("(-9223372036854775808 + 100) + 9223372036854775750", "42\n"),
+        ("1000000 - 999958", "42\n"),
+        ("(0 - 1) * -42", "42\n"),
+        ("(9223372036854775807 - 9223372036854775806) * 42", "42\n"),
+        ("(0 - 9223372036854775807) + 9223372036854775807", "0\n"),
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+    // Checked overflow in an intermediate cannot be disguised by
+    // multiplication by zero or subtraction of another huge value.
+    for expression in [
+        "9223372036854775807 - (-1)",
+        "-9223372036854775808 - 1",
+        "(9223372036854775807 + 1) * 0",
+        "(9223372036854775807 * 2) - 9223372036854775807",
+        "(-9223372036854775808 * -1)",
+        "-(-9223372036854775808)",
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            false,
+            "",
+        );
+    }
+    fixture(
+        "pub fnc main(x:int):int{return x+1;}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+    fixture(
+        "pub fnc main(x:int):int{return x-1;}",
+        &["-9223372036854775808"],
+        false,
+        "",
+    );
+    fixture(
+        "pub fnc main(x:int,y:int):int{return x*y;}",
+        &["4611686018427387904", "2"],
+        false,
+        "",
+    );
+}
