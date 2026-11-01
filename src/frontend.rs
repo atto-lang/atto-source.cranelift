@@ -452,7 +452,7 @@ mod tests {
             "fnc main():int{return 7 as int as? int;}",
             "fnc main():int{return 9223372036854775808 as int;}",
             "fnc main():int{return 7 as int + 9223372036854775808;}",
-            "fnc main():int{return 7 as int;} ",
+            "fnc main():int{return 7 as int;}\0",
             "fnc main():int{return 7 as int; unsafe}",
             "fnc main():int{return 7 as int",
         ] {
