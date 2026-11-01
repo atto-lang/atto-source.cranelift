@@ -120,7 +120,7 @@ fn native_integer_bitxor_source_execution() {
     fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
-        "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
+        "fnc main():int{return Integer.bitXor(1,Integer.bitXor(4,2));}",
         &[],
         true,
         "7\n",
@@ -141,52 +141,19 @@ fn native_integer_bitxor_source_execution() {
 }
 
 #[test]
-fn native_signed_remainder_literal_divisor() {
-    for (source, args, expected) in [
-        ("fnc main():int{return -7%3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 7%-3;}", &[][..], "1\n"),
-        ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
-        ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
-        (
-            "fnc main(x:int):int{return x%-1;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["9223372036854775807"][..],
-            "9223372036854775807\n",
-        ),
-        ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
+fn removed_percent_operator_fails_closed_at_native_cli() {
+    // The signed-remainder implementation was a stage-0 extension. The shared
+    // portable scalar/v1 language contract removes %. Never claim parity while
+    // a native JIT still accepts those earlier source forms.
+    for expression in [
+        "7%3", "-7%3", "7%-3", "-7%-3", "8%3*2", "20%6%3",
+        "-9223372036854775808%-1", "7%0", "7%(1+1)",
+        "Integer.bitXor(7%3,1)", "7%Integer.bitXor(1,2)",
     ] {
-        fixture(source, args, true, expected);
+        fixture(&format!("fnc main():int{{return {expression};}}"), &[], false, "");
     }
-    // A -1 divisor must not erase a checked overflow in its numerator.
-    fixture(
-        "fnc main(x:int):int{return (x+1)%-1;}",
-        &["9223372036854775807"],
-        false,
-        "",
-    );
-    for (source, args) in [
-        ("fnc main(x:int):int{return x%0;}", &["7"][..]),
-        ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
-        ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
-        ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775809;}",
-            &["7"][..],
-        ),
-        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
-    ] {
-        fixture(source, args, false, "");
-    }
+    fixture("fnc main(x:int):int{return x%2;}", &["7"], false, "");
+    fixture("fnc main():int{return 42;} // % is only a comment", &[], true, "42\n");
 }
 
 #[test]
