@@ -1,0 +1,33 @@
+name: Continuation locality contract v1
+on:
+  pull_request:
+    paths:
+      - "contracts/v2/CONTINUATION_LOCALITY_V1.md"
+      - "contracts/v2/test_continuation_locality_v1.py"
+      - "src/**"
+      - "runtime/**"
+      - "tests/**"
+      - "verification/**"
+      - ".github/workflows/continuation-locality-v1.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reference-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exact checkout SHA
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || exit 1
+          git rev-parse HEAD
+      - name: Run host-only reference policy checks (NOT guest parity)
+        run: python3 -m unittest -v contracts/v2/test_continuation_locality_v1.py
+  native-cranelift-syntax-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actual scalar JIT guest rejection suite
+        run: cargo test --locked --test cli unsupported_suspension_and_critical_syntax_fail_closed_before_jit -- --exact
