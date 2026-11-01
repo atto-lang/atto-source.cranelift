@@ -30,11 +30,18 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     if ok {
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     } else {
-        assert!(
-            output.stdout.is_empty(),
-            "rejected compilation printed stdout"
-        );
-        assert!(!output.stderr.is_empty(), "rejection requires a diagnostic");
+        // The scalar CLI's owned compiler rejection is exit(1) with a
+        // structured diagnostic. A SIGABRT/panic/loader error is not a pass.
+        assert_eq!(output.status.code(), Some(1),
+            "negative fixture must reject through the native compiler");
+        assert!(output.stdout.is_empty(),
+            "rejected compilation printed stdout");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.starts_with("orescranelift: "),
+            "rejection requires a compiler-owned diagnostic: {diagnostic}");
+        assert!(!diagnostic.contains("panicked at")
+                && !diagnostic.contains("thread 'main' panicked"),
+            "compiler crash is not an admitted negative fixture");
     }
 }
 #[test]
