@@ -33,7 +33,7 @@ arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, mutable `let`,
+classes, actors, heaps, ownership, recursion, async, control flow,
 division, dynamic/zero-divisor remainder, `as?`, bool/string/nominal casts,
 structural types, UTF-8 identifiers, and any trailing code.
 
@@ -128,11 +128,32 @@ implemented signed-i64 subset:
   and type-first `int x = e` all produce fixed bindings; runtime-dependent
   initializers are valid and execute once in source order.
 - `e as int` is a checked identity proof and emits no conversion instruction.
-- `as?`, bool/string casts, nominal/dynamic casts, and mutable `let` fail
-  closed before JIT code publication because their type/runtime representation
-  is not implemented in this stage-0 backend.
+- `let x = e` is explicitly rebindable in the signed-i64-only profile. Each
+  assignment eagerly evaluates exactly once, appends an SSA version, and
+  retains any earlier `const`/`val` snapshot. Inferred scalar type cannot
+  change across rebindings.
+- `as?`, bool/string casts and nominal/dynamic casts fail closed before JIT
+  code publication because their type/runtime representation is not yet owned
+  by this stage-0 backend.
 - Parentheses are required when arithmetic follows a checked cast, matching
   the Java/LLVM cast-vs-arithmetic precedence instead of inventing a
   Cranelift-specific interpretation.
 
 This is bounded scalar parity, not full Java/LLVM type-system parity.
+
+## Scalar SSA and hardened casting audit (2026-11-01)
+
+The draft inference branch additionally tests actual JIT execution of mutable
+`let` with versioned scalar SSA, runtime const initializers, snapshot safety,
+and eager checked-overflow propagation. It rejects reserved names such as
+`as`, `bool`, `true`, `rt` and `val`, rather than parsing these lexical
+operators or future scalar types as local declarations.
+
+Existing `tests/cli.rs` expectations that runtime-dependent `const` and
+`val int x` should fail were stale and have been corrected. The old
+`%` operator remains removed, including in dead initializer code.
+
+**Evidence:** source changes and tests are authored, but no exact-head Rust
+compile, Cranelift native execution or Clippy result is claimed until a
+stepful runner executes `cargo test --locked --all-targets` and
+`cargo clippy --locked --all-targets -- -D warnings`.
