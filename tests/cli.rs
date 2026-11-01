@@ -91,7 +91,7 @@ fn actor_declarations_fail_closed_before_cranelift_ir_or_native_jit() {
         "fnc main():int{return 42;} // define actor A1 as end",
         &[],
         true,
-        "42\\n",
+        "42\n",
     );
 }
 
