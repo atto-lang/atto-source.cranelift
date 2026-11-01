@@ -147,8 +147,8 @@ fn unsupported_ml_features_fail_before_native_ir_or_execution() {
             );
             let diagnostics = String::from_utf8_lossy(&result.stderr);
             assert!(
-                !diagnostics.trim().is_empty(),
-                "{name} {mode}: missing compiler rejection diagnostic"
+                diagnostics.starts_with("orescranelift: "),
+                "{name} {mode}: compiler rejected without structured frontend diagnostic: {diagnostics}"
             );
             assert!(
                 !diagnostics.contains("panicked at"),
@@ -172,7 +172,8 @@ fn checked_overflow_occurs_in_native_execution_not_ir_acceptance() {
         "IR emission must produce real Cranelift IR, not silently skip"
     );
     let runtime = execute(source, "run");
-    assert!(!runtime.status.success(), "checked overflow was accepted");
+    assert_eq!(runtime.status.code(), Some(1), "checked overflow must be a native runtime error, not crash/signal");
     assert!(runtime.stdout.is_empty(), "overflow published a native result");
-    assert!(!runtime.stderr.is_empty(), "overflow needs a diagnostic");
+    assert_eq!(runtime.stderr, b"orescranelift: i64 arithmetic overflow\n",
+        "exact native checked-overflow diagnostic must not be confused with infrastructure failure");
 }
