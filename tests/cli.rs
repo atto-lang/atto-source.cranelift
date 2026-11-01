@@ -451,3 +451,143 @@ fn native_entry_parameter_count_and_i64_arguments_fail_closed() {
         "42\n",
     );
 }
+
+#[test]
+fn native_four_parameter_order_is_stable() {
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a*1000+b*100+c*10+d;}",
+        &["1", "2", "3", "4"],
+        true,
+        "1234\\n",
+    );
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a-b-c-d;}",
+        &["100", "20", "10", "5"],
+        true,
+        "65\\n",
+    );
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a+b+c+d;}",
+        &["1", "2", "3", "4"],
+        true,
+        "10\\n",
+    );
+}
+
+#[test]
+fn native_signed_parameter_extremes_preserve_full_i64() {
+    for (arg, expected) in [
+        ("-9223372036854775808", "-9223372036854775808\\n"),
+        ("9223372036854775807", "9223372036854775807\\n"),
+        ("-9007199254740993", "-9007199254740993\\n"),
+        ("9007199254740993", "9007199254740993\\n"),
+        ("0", "0\\n"),
+        ("-1", "-1\\n"),
+    ] {
+        fixture("fnc main(x:int):int{return x;}", &[arg], true, expected);
+    }
+}
+
+#[test]
+fn malformed_numeric_digit_separators_reject_without_stdout() {
+    for expression in [
+        "1_",
+        "1__0",
+        "9_223__372",
+        "99___99",
+        "-1__0",
+        "-9_223_372_036__854_775_808",
+        "-9223372036854775808_",
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            false,
+            "",
+        );
+    }
+}
+
+#[test]
+fn checked_scalar_arithmetic_rejects_all_overflow_signs() {
+    for (source, args) in [
+        (
+            "fnc main(x:int):int{return x+1;}",
+            &["9223372036854775807"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return -x;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x*x;}",
+            &["3037000500"][..],
+        ),
+        (
+            "fnc main(x:int):int{return 0-x;}",
+            &["-9223372036854775808"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn native_xor_intrinsic_handles_repeated_and_extreme_values() {
+    for (expression, expected) in [
+        ("Integer.bitXor(0,0)", "0\\n"),
+        ("Integer.bitXor(-1,-1)", "0\\n"),
+        ("Integer.bitXor(7,7)", "0\\n"),
+        ("Integer.bitXor(7,0)", "7\\n"),
+        ("Integer.bitXor(0,7)", "7\\n"),
+        (
+            "Integer.bitXor(9223372036854775807,-1)",
+            "-9223372036854775808\\n",
+        ),
+        ("Integer.bitXor(5,Integer.bitXor(3,6))", "0\\n"),
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+}
+
+#[test]
+fn commented_out_unsupported_tokens_are_not_guest_source() {
+    fixture(
+        "// unsafe actor invalid % ^ \\nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\\n",
+    );
+    fixture(
+        "fnc main():int{return 42;} // ^ never parsed",
+        &[],
+        true,
+        "42\\n",
+    );
+    fixture(
+        "fnc main():int{return 1;} // ignored \\nunsafe",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn oversized_and_deeply_nested_sources_fail_closed() {
+    fixture(&" ".repeat(1024 * 1024 + 1), &[], false, "");
+    let deep = format!(
+        "fnc main():int{{return {}1{};}}",
+        "(".repeat(140),
+        ")".repeat(140)
+    );
+    fixture(&deep, &[], false, "");
+}
