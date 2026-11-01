@@ -124,3 +124,25 @@ fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
     assert!(!ir.stdout.is_empty(),"scalar native IR not emitted");
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn identical_portable_scalar_step_executes_as_native_cranelift_guest() {
+    const SOURCE: &str = include_str!("fixtures/actor-ml-scalar-step.ores");
+    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-shared-step-{}-{nonce}.ores", std::process::id()
+    ));
+    std::fs::write(&path, SOURCE).expect("materialize exact canonical fixture bytes");
+    for mode in ["run", "ir"] {
+        let result=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode).arg(&path).output().expect("execute real compiler");
+        assert!(result.status.success(), "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr));
+        if mode == "run" {
+            assert_eq!(String::from_utf8_lossy(&result.stdout), "42\\n");
+        } else {
+            assert!(!result.stdout.is_empty(), "real CLIF IR required");
+        }
+    }
+    std::fs::remove_file(path).expect("clean up source fixture");
+}
