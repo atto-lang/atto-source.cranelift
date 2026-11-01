@@ -378,6 +378,26 @@ mod tests {
         }
     }
     #[test]
+    fn model_declarations_fail_closed_without_reserving_model_identifiers() {
+        for source in [
+            "define model x as Identity() end",
+            "define model PriceEstimate() as Identity() end",
+            "define pub model x as Identity() end",
+            "pub define model x as Identity() end",
+            "define // comment\nmodel x as Identity() end",
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(
+                error.contains("MODEL_LOWERING_UNSUPPORTED"),
+                "wrong admission diagnostic for {source}: {error}"
+            );
+        }
+        let ordinary = parse("fnc main(model:int):int{return model+1;}").unwrap();
+        assert_eq!(eval(&ordinary.result, &[41]), Ok(42));
+        let commented = parse("fnc main():int{return 42;} // define model Fake").unwrap();
+        assert_eq!(eval(&commented.result, &[]), Ok(42));
+    }
+    #[test]
     fn precedence_and_arguments() {
         let p = parse("define pub fnc main(x:int,y:int):int{return (x+2)*y-1;}").unwrap();
         assert_eq!(eval(&p.result, &[3, 4]), Ok(19));
