@@ -117,7 +117,7 @@ fn native_integer_bitxor_source_execution() {
         false,
         "",
     );
-    fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
+    fixture("fnc main():int{return Integer.pow(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
         "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
@@ -186,6 +186,78 @@ fn native_signed_remainder_literal_divisor() {
         ("fnc main(x:int):int{return x/2;}", &["7"][..]),
     ] {
         fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn native_java_named_remainder_modulus_intersection() {
+    // All successful cases execute Oreslang-shaped source in actual Cranelift
+    // native code; no host-only numerical oracle is used in this integration.
+    for (expression, args, expected) in [
+        ("Integer.rem(x,4)", &["-9"][..], "-1\n"),
+        ("Integer.rem(x,-4)", &["9"][..], "1\n"),
+        ("Integer.rem(x,-4)", &["-9"][..], "-1\n"),
+        ("Integer.rem(x,-1)", &["-9223372036854775808"][..], "0\n"),
+        (
+            "Integer.rem(x,9223372036854775807)",
+            &["-9223372036854775808"][..],
+            "-1\n",
+        ),
+        ("Integer.mod(x,4)", &["9"][..], "1\n"),
+        ("Integer.mod(x,4)", &["-9"][..], "3\n"),
+        ("Integer.mod(x,-4)", &["9"][..], "1\n"),
+        ("Integer.mod(x,-4)", &["-9"][..], "3\n"),
+        ("Integer.mod(x,-1)", &["-9223372036854775808"][..], "0\n"),
+        (
+            "Integer.mod(x,-9223372036854775808)",
+            &["-1"][..],
+            "9223372036854775807\n",
+        ),
+        (
+            "Integer.mod(x,9223372036854775807)",
+            &["-9223372036854775808"][..],
+            "9223372036854775806\n",
+        ),
+    ] {
+        fixture(
+            &format!("fnc main(x:int):int{{return {expression};}}"),
+            args,
+            true,
+            expected,
+        );
+    }
+
+    // An overflow in the first operand must not disappear behind the safe
+    // special-case result for the signed divisor -1.
+    for operation in ["rem", "mod"] {
+        fixture(
+            &format!("fnc main(x:int):int{{return Integer.{operation}(x+1,-1);}}"),
+            &["9223372036854775807"],
+            false,
+            "",
+        );
+        for expression in [
+            format!("Integer.{operation}(x,0)"),
+            format!("Integer.{operation}(x,y)"),
+            format!("Integer.{operation}(x,1+1)"),
+        ] {
+            let parameters = if expression.contains(",y)") {
+                "x:int,y:int"
+            } else {
+                "x:int"
+            };
+            let args = if parameters.contains(",y:") {
+                &["9", "2"][..]
+            } else {
+                &["9"][..]
+            };
+            fixture(
+                &format!("fnc main({parameters}):int{{return {expression};}}"),
+                args,
+                false,
+                "",
+            );
+        }
     }
 }
 
