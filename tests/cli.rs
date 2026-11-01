@@ -608,3 +608,40 @@ fn unsupported_checked_cast_emits_no_clif_or_guest_output() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+
+// Same eight exact UTF-8 expressions pinned in
+// oreslang-platform-conformance PR #275 (six values + two checked overflows).
+// This executes *real* Cranelift JIT guest code when cargo tests actually run.
+// Merely authoring these cases does NOT prove native execution or other backends.
+#[test]
+fn pinned_eight_case_checked_i64_parity_guest() {
+    for (source, stdout) in [
+        ("pub fnc main(): int { return 42; }\n", "42\n"),
+        ("pub fnc main(): int { return 4 + 6 * (5 - 1); }\n", "28\n"),
+        ("pub fnc main(): int { return -(7 * 3); }\n", "-21\n"),
+        ("pub fnc main(): int { return -9223372036854775808; }\n", "-9223372036854775808\n"),
+        ("pub fnc main(): int { return 9223372036854775807; }\n", "9223372036854775807\n"),
+        ("pub fnc main(): int { return 9223372036854775807 - 1; }\n", "9223372036854775806\n"),
+    ] {
+        fixture(source, &[], true, stdout);
+    }
+    for source in [
+        "pub fnc main(): int { return 9223372036854775807 + 1; }\n",
+        "pub fnc main(): int { return 4611686018427387904 * 2; }\n",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn checked_i64_parity_overflow_never_uses_wrapped_intermediates() {
+    for (source, args) in [
+        ("fnc main(x:int):int{return x+1;}", &["9223372036854775807"][..]),
+        ("fnc main(x:int):int{return x-1;}", &["-9223372036854775808"][..]),
+        ("fnc main(x:int):int{return x*2;}", &["4611686018427387904"][..]),
+        ("fnc main(x:int):int{return (x+1)%-1;}", &["9223372036854775807"][..]),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
