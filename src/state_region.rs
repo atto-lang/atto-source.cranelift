@@ -6,6 +6,9 @@
 //! NO compiler lowering or state-container execution is implied by this module.
 #![allow(dead_code)]
 
+// 1.0 JSON/WASM interchange stores IDs in IEEE-754 exact integer range.
+const MAX_JSON_SAFE_ID: u64 = 9_007_199_254_740_991;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoanKind { Read, Write }
 
@@ -33,7 +36,9 @@ impl<'a> StateRegionLoanRequirement<'a> {
     ) -> Result<Self, &'static str> {
         if region_binding.trim().is_empty() { return Err("region binding required"); }
         if !generation_fence { return Err("state loan must be generation fenced"); }
-        if loan_id == 0 { return Err("loan id must be nonzero"); }
+        if loan_id == 0 || loan_id > MAX_JSON_SAFE_ID {
+            return Err("loan id must be an exact positive JSON/WASM integer");
+        }
         if place.trim().is_empty() { return Err("state loan place required"); }
         Ok(Self { region_binding, generation_fence, loan_id, place, kind, action })
     }
@@ -50,7 +55,8 @@ impl<'a> StateRegionLoanRequirement<'a> {
 
     fn valid(&self) -> bool {
         !self.region_binding.trim().is_empty() && self.generation_fence
-            && self.loan_id != 0 && !self.place.trim().is_empty()
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.loan_id)
+            && !self.place.trim().is_empty()
     }
 }
 
@@ -94,10 +100,14 @@ impl<'a> StateRegionLoanProvenance<'a> {
     }
 
     fn valid(&self) -> bool {
-        self.region_id != 0 && self.region_generation != 0
-            && self.runtime_domain != 0 && self.execution_id != 0
-            && self.execution_slot != 0 && self.execution_generation != 0
-            && self.loan_id != 0 && !self.place.trim().is_empty()
+        (1..=MAX_JSON_SAFE_ID).contains(&self.region_id)
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.region_generation)
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.runtime_domain)
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.execution_id)
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.execution_slot)
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.execution_generation)
+            && (1..=MAX_JSON_SAFE_ID).contains(&self.loan_id)
+            && !self.place.trim().is_empty()
     }
 
     pub fn authorizes_release(&self, release: &Self) -> bool {
@@ -212,6 +222,43 @@ mod tests {
         assert!(StateRegionLoanRequirement::new(
             "region", true, 0, "x", LoanKind::Read, LoanAction::Borrow
         ).is_err());
+    }
+
+    #[test]
+    fn wasm_json_identity_boundary_never_aliases_64_bit_values() {
+        let max = MAX_JSON_SAFE_ID;
+        let good = StateRegionLoanProvenance::new(
+            max, max, max, max, max, max, max, "inventory.stock",
+            LoanKind::Write, LoanAction::Borrow,
+        ).unwrap();
+        assert!(good.authorizes_release(&good.release_record().unwrap()));
+        for component in 0..7 {
+            let mut bad = good;
+            match component {
+                0 => bad.region_id = max + 1,
+                1 => bad.region_generation = max + 1,
+                2 => bad.runtime_domain = max + 1,
+                3 => bad.execution_id = max + 1,
+                4 => bad.execution_slot = max + 1,
+                5 => bad.execution_generation = max + 1,
+                _ => bad.loan_id = max + 1,
+            }
+            assert!(!bad.authorizes_release(&good.release_record().unwrap()));
+            assert!(bad.release_record().is_err());
+        }
+        assert!(StateRegionLoanProvenance::new(
+            max + 1, 3, 7, 1001, 41, 6, 501, "inventory.stock",
+            LoanKind::Write, LoanAction::Borrow,
+        ).is_err());
+        let requirement = StateRegionLoanRequirement::new(
+            "inventory", true, max, "inventory.stock",
+            LoanKind::Read, LoanAction::Borrow,
+        ).unwrap();
+        assert!(StateRegionLoanRequirement::new(
+            "inventory", true, max + 1, "inventory.stock",
+            LoanKind::Read, LoanAction::Borrow,
+        ).is_err());
+        assert!(requirement.valid());
     }
 
     #[test]
