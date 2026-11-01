@@ -81,3 +81,37 @@ symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
+
+## Shared Java/LLVM/Wasm/.NET/Cranelift scalar intersection
+
+The exact-byte shared contract `contracts/parity/portable-scalar-v1-20261101.json`
+has Git blob `001e8894cbeb87509878a4de36263a1a327805b1`, matching the
+corresponding candidate in Java, LLVM, Wasm and .NET. It contains **16 positive
+checked-i64 expressions and 6 compiler-negative admission vectors**. The
+`tests/portable_scalar_v1.rs` integration runner pins the contract blob,
+compiles each expression with the Cranelift frontend and executes the real
+native JIT for positive cases. Negative cases must fail without stdout and
+have a compiler-owned diagnostic. No independent Rust arithmetic is used
+to credit guest execution.
+
+Eight additional `tests/parity/34-*.ores` through `41-*.ores` guest files are
+byte-identical (same Git blob SHA per file) to programs 34–41 in
+`oreslang-compilers-parity-testing` draft PR #16. The
+`tests/portable_scalar_intersection.rs` runner verifies each pinned blob
+before compiling and executing the source through the Cranelift CLI.
+Neither these test bodies nor the pinned manifest alone establish
+five-backend execution parity.
+
+The removed `%` operator is rejected by the Cranelift lexer, including in
+unused immutable initializers. The shared JSON negative contract likewise
+rejects `%`, `^`, `^^`, unsupported integer division and out-of-range
+literals before native publication. Do not reintroduce the legacy remainder
+branch to make a test green.
+
+**Evidence required:** an exact-head Actions job with nonzero executed steps,
+`cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D
+warnings`, `cargo test --locked --all-targets`, Git blob/commit read-back,
+native outputs/negative diagnostics, and independent review. Java, LLVM,
+Wasm and .NET must each execute their own compiler/guest lane against the
+same source semantics; a Cranelift pass is not a substitute. A zero-step
+failure remains runner admission, not a compiler failure.
