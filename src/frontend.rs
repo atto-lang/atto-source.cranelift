@@ -341,7 +341,23 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn has_actor_pubsub_surface(text: &str) -> bool {
+    // Stage-0 stays scalar-only. Detect the pub/sub surface before ordinary
+    // parsing so it cannot accidentally reach CLIF emission as the frontend
+    // grows. Line comments are ignored to preserve comment transparency.
+    text.lines().any(|line| {
+        let code = line.split_once("//").map_or(line, |(before, _)| before);
+        code.contains("actor.group(")
+            || code.contains("Topic<")
+            || code.contains("Subscription<")
+            || code.contains(".topic<")
+    })
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
+    if has_actor_pubsub_surface(text) {
+        return Err("native ActorGroup/Topic source lowering unsupported".into());
+    }
     Parser::new(text)?.program()
 }
 
