@@ -303,6 +303,9 @@ impl<'a> Parser<'a> {
                 | Token::Word("websocket")
                 | Token::Word("unary")
                 | Token::Word("stream")
+                | Token::Word("abstract")
+                | Token::Word("transform")
+                | Token::Word("pipe")
         ) {
             return Err("Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into());
         }
