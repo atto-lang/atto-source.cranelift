@@ -457,6 +457,58 @@ fn actor_mutable_state_container_must_not_lower_as_an_unsafe_scalar() {
     );
 }
 
+#[test]
+fn isolated_actor_heap_admission_fails_closed_in_run_and_ir() {
+    // This scalar JIT has no per-actor native heap, ownership lowering,
+    // actor scheduler, or compiled .ores state. Refuse canonical forms before
+    // emitting IR or running code; a generic parse error is not sufficient.
+    let sources = [
+        "define isolated actor Worker as state { value: int = 0; } end\n",
+        "define pub isolated actor Worker as state { value: int = 0; } end\n",
+        "pub define isolated actor Worker as state { value: int = 0; } end\n",
+        "define actor Worker as state { value: int = 0; } end\n",
+        "pub define actor Worker as state { value: int = 0; } end\n",
+        "isoactor Worker { pub fnc get(): int { return 1; } }\n",
+        "// a comment preceding an actor is not a scalar escape\ndefine isolated actor Worker as state { x: int = 0; } end\n",
+    ];
+    for (index, source) in sources.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-heap-admission-{}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} accepted actor heap source index {index}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest output or IR for actor source index {index}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("actor runtime is unsupported by the Cranelift scalar profile"),
+                "{mode} produced wrong semantic diagnostic for index {index}: {stderr}"
+            );
+            assert!(!stderr.contains("panic"), "{mode} crashed: {stderr}");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    fixture(
+        "fnc main():int{return 7;} // define isolated actor not live source\n",
+        &[],
+        true,
+        "7\n",
+    );
+}
+
 fn fixture_requires_diagnostic(source: &str, diagnostic: &str) {
     let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
