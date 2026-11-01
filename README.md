@@ -115,3 +115,19 @@ native outputs/negative diagnostics, and independent review. Java, LLVM,
 Wasm and .NET must each execute their own compiler/guest lane against the
 same source semantics; a Cranelift pass is not a substitute. A zero-step
 failure remains runner admission, not a compiler failure.
+
+## Checked identity casts on the bounded i64 profile
+
+Within the stage-0 scalar-only compiler, `e as int` and chained `as int as int`
+are **statically checked identity casts**, never numeric conversion or raw
+pointer reinterpretation. The parser admits them only for its already-typed
+signed-i64 values and preserves evaluation order and checked overflow;
+unsupported `as bool`, `as string`, `as?`, nominal, actor, dynamic, and
+ownership casts fail before CLIF creation. Chained casts consume AST budget.
+The actual native-JIT positive, compiler-negative (`run` and `ir`), and
+runtime-overflow (`run` only) candidates are in
+`tests/checked_i64_cast_parity.rs`. Runtime overflow sources may legitimately
+produce CLIF in `ir` mode and must fail only when the native function runs.
+This does **not** establish full Java/LLVM/.NET/Wasm scalar inference or
+checked-cast parity; their independent compiler and guest tests are required.
+

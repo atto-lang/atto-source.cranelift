@@ -226,6 +226,21 @@ impl<'a> Parser<'a> {
         }
         let mut lhs = self.atom(depth + 1)?;
         loop {
+            // Checked type identity: the only representable type in this
+            // frontend is signed i64. No conversion, tag erasure, or FFI.
+            // A cast binds more tightly than multiplication and must consume
+            // an AST-budget slot even though it lowers to the same SSA value.
+            if self.current == Token::Word("as") && min_bp <= 5 {
+                self.next()?;
+                if !self.take(Token::Word("int"))? {
+                    return Err("unsupported checked cast target (only int is supported)".into());
+                }
+                self.nodes += 1;
+                if self.nodes > MAX_NODES {
+                    return Err("AST node budget exceeded".into());
+                }
+                continue;
+            }
             let (l_bp, r_bp, op) = match self.current {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
@@ -282,6 +297,10 @@ impl<'a> Parser<'a> {
                         | "async"
                         | "await"
                         | "actor"
+                        | "as"
+                        | "rt"
+                        | "mut"
+                        | "const"
                 ) || self.parameters.contains(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
@@ -320,7 +339,7 @@ impl<'a> Parser<'a> {
                 name.as_str(),
                 "Integer" | "int" | "return" | "pub" | "define" |
                 "fnc" | "const" | "let" | "val" | "mut" | "async" |
-                "await" | "actor"
+                "await" | "actor" | "as" | "rt"
             ) || self.parameters.contains(&name)
                 || self.local_names.contains(&name)
             {
@@ -449,6 +468,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(eval(&edge.result, &[]), Ok(-1));
+    }
+    #[test]
+    fn checked_identity_casts_preserve_i64_and_precedence() {
+        for (source, expected) in [
+            ("fnc main():int{return (7 as int)+35;}", 42),
+            ("fnc main():int{return (7 as int as int)+35;}", 42),
+            ("fnc main():int{return 7 as int + 35;}", 42),
+            ("fnc main():int{return (2+5) as int * 6;}", 42),
+            ("fnc main():int{return 7 * (6 as int);}", 42),
+            ("fnc main():int{return (7*6) as int;}", 42),
+            ("fnc main():int{return (-(-42)) as int;}", 42),
+        ] {
+            let program = parse(source).unwrap();
+            assert_eq!(eval(&program.result, &[]), Ok(expected), "{source}");
+        }
+    }
+    #[test]
+    fn unsafe_or_unrepresentable_casts_fail_closed() {
+        for source in [
+            "fnc main():int{return 7 as bool;}",
+            "fnc main():int{return 7 as string;}",
+            "fnc main():int{return 7 as Object;}",
+            "fnc main():int{return 7 as int as bool;}",
+            "fnc main():int{return 7 as? int;}",
+            "fnc main():int{return true as int;}",
+            "fnc main():int{return 9223372036854775808 as int;}",
+            "fnc main():int{return 7 as int + 9223372036854775808;}",
+            "fnc main():int{int as=7;return as;}",
+            "fnc main(as:int):int{return as;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+        assert!(parse("fnc main():int{return 42;} // as bool").is_ok());
+    }
+    #[test]
+    fn repeated_checked_casts_exhaust_ast_budget() {
+        let source = format!("fnc main():int{{return 7 {};}}", " as int".repeat(MAX_NODES + 1));
+        assert!(parse(&source).unwrap_err().contains("AST node budget exceeded"));
     }
     #[test]
     fn removed_percent_operator_is_rejected() {
