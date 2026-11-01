@@ -19,7 +19,17 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    // Reject a final-component symlink before opening. On Unix O_NOFOLLOW
+    // closes the check/open race, including a symlink swapped in afterward.
+    // Intermediate path-component symlinks remain outside this boundary.
+    if std::fs::symlink_metadata(&path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("source must be a regular file (symlinks forbidden)".into());
     }
     let file = options.open(&path).map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
