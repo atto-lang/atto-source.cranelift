@@ -371,6 +371,13 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
     }
 }
 
+
+#[test]
+fn ownership_rt_keyword_cannot_be_redeclared_as_scalar_parameter() {
+    fixture("fnc main(rt:int):int{return rt;}", &["42"], false, "");
+    fixture("fnc main(rt:int):int{return rt mut share 1;}", &["42"], false, "");
+}
+
 #[test]
 fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
     fixture(
