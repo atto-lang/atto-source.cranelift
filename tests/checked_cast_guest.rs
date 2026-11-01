@@ -81,3 +81,30 @@ fn unsupported_checked_casts_emit_no_guest_or_clif() {
         }
     }
 }
+
+#[test]
+fn exact_byte_five_backend_source_guests() {
+    // These strings are compiled directly from the identical .ores files in
+    // Java, LLVM, Wasm, .NET and Cranelift. No backend-specific source rewrite.
+    const POSITIVE: &str =
+        include_str!("../contracts/v1/portable-checked-cast-positive-v2.ores");
+    const NEGATIVE: &str =
+        include_str!("../contracts/v1/portable-checked-cast-negative-v2.ores");
+    let output = guest(POSITIVE, "run");
+    assert!(
+        output.status.success(),
+        "source-identical positive guest failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout.as_slice(), b"42\n");
+    for mode in ["run", "ir"] {
+        let rejected = guest(NEGATIVE, mode);
+        assert_eq!(rejected.status.code(), Some(1), "invalid cast admitted");
+        assert!(rejected.stdout.is_empty(), "invalid cast emitted CLIF/guest value");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .contains("unsupported checked cast target"),
+            "negative source was not rejected by checked-cast admission"
+        );
+    }
+}
