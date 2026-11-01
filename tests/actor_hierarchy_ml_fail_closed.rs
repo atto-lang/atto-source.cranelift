@@ -128,6 +128,8 @@ fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
 #[test]
 fn identical_portable_scalar_step_executes_as_native_cranelift_guest() {
     const SOURCE: &str = include_str!("fixtures/actor-ml-scalar-step.ores");
+    assert_eq!(SOURCE, "pub fnc main(): int { return 2 - 1 * (2 * 1 - 42) * 1; }\n",
+        "exact shared source fixture bytes must not drift between toolchains");
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "orescranelift-shared-step-{}-{nonce}.ores", std::process::id()
