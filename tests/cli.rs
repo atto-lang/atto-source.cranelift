@@ -417,6 +417,6 @@ fn readonly_shared_slab_lease_and_pin_fail_closed_in_run_and_ir() {
     }
     fixture(
         "fnc main():int{return 17;} // shared readonly tcp slab pin",
-        &[], true, "17\\n"
+        &[], true, "17\n"
     );
 }
