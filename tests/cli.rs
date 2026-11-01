@@ -44,10 +44,20 @@ fn actor_supervisor_authority_fails_before_ir_or_execution() {
     for source in [
         "define actor Worker as end",
         "define supervisor actor Manager as end",
+        "define supervisor S1 as on_panic(f: Failure): void { return; } end",
+        "pub define supervisor S1 as end",
+        "define supervisor S1 extends Actor as end",
+        "define supervisor S1 extends Supervisor as end",
+        "define supervisor S1 implements Observer as end",
+        "define supervisor S1 with RestartPolicy as end",
         "define proxy actor Remote as end",
         "fnc main():int{return spawn Worker();}",
         "fnc main():int{return stop;}",
         "fnc main(ActorRef:int):int{return 42;}",
+        "fnc main(ActorId:int):int{return 42;}",
+        "fnc main(Supervisor:int):int{return 42;}",
+        "fnc main(SupervisorId:int):int{return 42;}",
+        "fnc main(SupervisorRef:int):int{return 42;}",
         "fnc main():int{return 42;} actor",
     ] {
         let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
@@ -74,6 +84,14 @@ fn actor_supervisor_authority_fails_before_ir_or_execution() {
         }
         std::fs::remove_file(path).unwrap();
     }
+    // Reserved capability words are whole tokens: ordinary prefixed names
+    // remain scalar values and do not create supervisor authority.
+    fixture(
+        "fnc main(supervisor_count:int):int{return supervisor_count;}",
+        &["42"],
+        true,
+        "42\\n",
+    );
     // Authority words in comments are not executable syntax.
     fixture(
         "fnc main():int{return 42;} // actor supervisor spawn stop ActorRef",
