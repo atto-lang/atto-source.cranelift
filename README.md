@@ -94,8 +94,8 @@ native JIT for positive cases. Negative cases must fail without stdout and
 have a compiler-owned diagnostic. No independent Rust arithmetic is used
 to credit guest execution.
 
-Eleven additional `tests/parity/34-*.ores` through `44-*.ores` guest files are
-byte-identical (same Git blob SHA per file) to programs 34–44 in
+Sixteen additional `tests/parity/34-*.ores` through `49-*.ores` guest files are
+byte-identical (same Git blob SHA per file) to programs 34–49 in
 `oreslang-compilers-parity-testing` draft PR #16. The
 `tests/portable_scalar_intersection.rs` runner verifies each pinned blob
 before compiling and executing the source through the Cranelift CLI.

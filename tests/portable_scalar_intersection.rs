@@ -5,7 +5,7 @@ use std::process::Command;
 
 #[test]
 fn identical_scalar_guest_bytes_execute_to_42() {
-    // Git blob SHA-1 IDs of programs 34..44 from the reviewed parity corpus
+    // Git blob SHA-1 IDs of programs 34..49 from the reviewed parity corpus
     // at oreslang-compilers-parity-testing PR #16. Do not rewrite the sources
     // per backend: the hash is an exact-byte drift gate.
     let fixtures = [
@@ -20,6 +20,11 @@ fn identical_scalar_guest_bytes_execute_to_42() {
         ("42-immutable-default-local.ores", "bef40c26e62968279635ca4f0b3422aa0b500beb"),
         ("43-const-typed-local.ores", "328ab99f1ad6051090c09f302e38a5389c7362ae"),
         ("44-annotated-const-int.ores", "616abb5c2bf0109af91377d0e6da76f41bf9c1eb"),
+        ("45-cast-int-literal.ores", "69cecd231d32bf70ea36424e59c932861d01fe44"),
+        ("46-chained-cast-int.ores", "b088dd3f5e3114be4affbb4935582b58f010d75f"),
+        ("47-grouped-cast-multiply.ores", "9ebc3f7bc230557fe2f2639172883bb2f4589464"),
+        ("48-readonly-local-cast.ores", "87d0773504e0d22fc3cf1ee76755b36a2fc415c6"),
+        ("49-const-typed-identity.ores", "bff7c6070008c5c6a8b3316e8a289f93d3f8c5b3"),
     ];
     for (name, expected_git_blob) in fixtures {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
