@@ -90,7 +90,7 @@ fn actor_supervisor_authority_fails_before_ir_or_execution() {
         "fnc main(supervisor_count:int):int{return supervisor_count;}",
         &["42"],
         true,
-        "42\\n",
+        "42\n",
     );
     // Authority words in comments are not executable syntax.
     fixture(
