@@ -87,6 +87,24 @@ fn stategraph_common_checked_scalar_native_jit() {
 fn stategraph_unimplemented_features_are_explicitly_rejected() {
     // This is negative evidence, NOT support for the full StateGraph library.
     // Each rejection identifies native grammar/lowering work before parity.
+    // The exact canonical GraphState<T> userland source is a required
+    // compatibility blocker until generic class lowering actually exists.
+    let generic = include_str!("../contracts/stategraph-portability/shared-generic-state.ores");
+    assert_eq!(generic, concat!(
+        "// Nominal generic graph state, owned immutable value.\n",
+        "define pub class GraphState<T> as\n",
+        "  pub val T value;\n",
+        "  pub constructor(T value) {\n",
+        "    self.value = value;\n",
+        "  }\n",
+        "end\n\n",
+        "pub fnc main(): int {\n",
+        "  val GraphState<int> initial = new GraphState<int>(42);\n",
+        "  return initial.value;\n",
+        "}\n"
+    ));
+    unsupported(generic);
+
     let blockers = [
         "define module sg as pub fnc increment(int x):int{return x+1;} end",
         "define pub class State as pub val int steps; end",
