@@ -24,6 +24,10 @@ fn rejects_every_unsupported_nominal_declaration_without_output() {
     let declarations = [
         "define actor Worker as\nend\n",
         "define supervisor Guardian as\nend\n",
+        "define singleton Counter as\nstate {}\nend\n",
+        "define pub singleton Counter as\nend\n",
+        "pub define singleton Counter as\nend\n",
+        "define singleton Counter implements Stateful<CounterState> as\nend\n",
         "define grain User as\nend\n",
         "define state container Inventory as\nend\n",
         "define model Network as\nend\n",
