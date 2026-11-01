@@ -336,3 +336,32 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
+
+
+#[test]
+fn tcp_connection_pool_and_actor_ownership_fail_closed_before_native_jit() {
+    // Stage-0 Cranelift compiles scalar expressions only. These are not
+    // silently desugared into a blocking socket, raw pointer or shared heap.
+    // A rejected CLI must not write successful guest output to stdout.
+    for source in [
+        "define actor TcpPool as end fnc main():int{return 0;}",
+        "fnc main():int{return TcpConnection.open();}",
+        "fnc main():int{return TcpPool.acquire();}",
+        "fnc main():int{return rt share socket;}",
+        "fnc main():int{return rt mut share socket;}",
+        "fnc main():int{return rt borrow connection;}",
+        "fnc main():int{return rt ref socket;}",
+        "fnc main():int{return rt deref socket;}",
+        "fnc main():int{return Pointer<int>.from_raw(42);}",
+        "fnc main():int{return await pool.acquire();}",
+        "fnc main():int{return spawn TcpOwner();}",
+        "fnc main():int{return socket.send(42);}",
+        "fnc main():int{return unsafe;}",
+        "fnc main():int{return 42;} pool",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // Only lexical comments mention the future TCP capability: the
+    // actual compiled guest remains a source-only scalar expression.
+    fixture("fnc main():int{return 42;} // tcp pool rt share", &[], true, "42\n");
+}
