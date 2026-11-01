@@ -111,11 +111,8 @@ impl<'a> Parser<'a> {
                 Token::Word("async") => {
                     return Err("'async' modifier removed: use suspends".into());
                 }
-                Token::Word("suspends") | Token::Word("suspend") => {
+                Token::Word("suspends") => {
                     return Err("suspends requires continuation lowering".into());
-                }
-                Token::Word("critical") => {
-                    return Err("critical requires scheduler-owned guard lowering".into());
                 }
                 _ => {}
             }
@@ -301,6 +298,13 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Contextual modifiers may also be valid ordinary scalar names.
+        if self.current == Token::Word("critical") {
+            return Err("critical requires scheduler-owned guard lowering".into());
+        }
+        if self.current == Token::Word("suspend") {
+            return Err("suspends requires continuation lowering".into());
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
@@ -344,6 +348,9 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("int"))?;
         self.expect(Token::Punct(b'{'))?;
+        if self.current == Token::Word("critical") || self.current == Token::Word("try") {
+            return Err("critical requires scheduler-owned guard lowering".into());
+        }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
@@ -473,6 +480,10 @@ mod tests {
             assert!(error.contains(expected), "{source}: {error}");
         }
         assert!(parse("// critical suspends async\nfnc main():int{return 7;}").is_ok());
+        let scalar = parse("fnc main(critical:int):int{return critical+1;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[41]), Ok(42));
+        let scalar = parse("fnc main(suspend:int):int{return suspend+1;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[41]), Ok(42));
     }
 
 }
