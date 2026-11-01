@@ -55,6 +55,50 @@ fn native_actor_tenant_ownership_and_scheduler_lowering_fail_closed() {
 }
 
 #[test]
+fn actor_private_heap_and_loan_syntax_never_lowers_as_scalar_jit() {
+    // Acceptance remains explicitly UNSUPPORTED on this stage-0 Cranelift
+    // compiler. Do not mistake rejection for successful actor parity.
+    // Each program is exercised through the native run and IR CLI paths.
+    let programs = [
+        r#"define isolated actor Counter as
+             state { count: int = 0; }
+             pub on_message(int delta): int using state.write {
+                 return self.handle_state(critical-write |s| -> {
+                     s.count = s.count + delta;
+                     return s.count;
+                 });
+             }
+           end
+           pub fnc main(): int { return 0; }"#,
+        r#"define actor Worker as
+             state { total: int = 0; }
+             pub on_message(int n): int using state.write {
+                 return self.handle_state(critical-write |s| -> {
+                     s.total = s.total + n;
+                     return s.total;
+                 });
+             }
+           end
+           pub fnc main(): int { return 0; }"#,
+        "fnc main():int{return rt take 7;}",
+        "fnc main():int{return rt copy 7;}",
+        "fnc main():int{return rt borrow 7;}",
+        "fnc main():int{return rt share 7;}",
+        "fnc main():int{return rt mut borrow 7;}",
+        "fnc main():int{return rt mut share 7;}",
+        "fnc main():int{return spawn Worker();}",
+        "fnc main():int{return await readch ch;}",
+        "fnc main():int{return self.handle_state(critical-read |s| -> {return s.count;});}",
+        "fnc main():int{return self.handle_state(critical-write |s| -> {s.count = 7;});}",
+    ];
+    for program in programs {
+        for mode in ["run", "ir"] {
+            reject_cli(mode, program);
+        }
+    }
+}
+
+#[test]
 fn bounded_arguments_rejected_before_source_open_and_jit() {
     // This nonexistent file distinguishes the early argv gate from an
     // eventual source-load/JIT failure. Earlier code parsed source before
