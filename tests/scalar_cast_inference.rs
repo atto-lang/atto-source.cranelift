@@ -63,6 +63,19 @@ fn runtime_const_val_and_inferred_int_bindings_execute_in_real_jit() {
         ("fnc main():int{const x=9223372036854775807 as int;return x;}", &[][..], "9223372036854775807\n"),
         ("fnc main():int{const x=Integer.bitXor(5,3) as int;return x+36;}", &[][..], "42\n"),
         ("fnc main(a:int):int{int x=a;const y=x;val z=y as int;return z+1;}", &["41"][..], "42\n"),
+        ("fnc main():int{let x=7;x=42;return x;}", &[][..], "42\n"),
+        ("fnc main():int{let int x=41;x=x+1;return x;}", &[][..], "42\n"),
+        ("fnc main():int{let x:int=41;x=x+1;return x;}", &[][..], "42\n"),
+        ("fnc main():int{let x=7 as int;x=42 as int;return x;}", &[][..], "42\n"),
+        ("fnc main():int{let x=7;val snap=x;x=42;return snap+35;}", &[][..], "42\n"),
+        ("fnc main():int{let x=7;const snap=x;x=42;return snap+35;}", &[][..], "42\n"),
+        ("fnc main():int{const base=7;let x=base;x=x+35;return x;}", &[][..], "42\n"),
+        ("fnc main(a:int):int{let x=a;x=x+1;return x;}", &["41"][..], "42\n"),
+        ("fnc main(a:int):int{let x=a;const snap=x;x=x+1;return snap;}", &["42"][..], "42\n"),
+        ("fnc main():int{let x=7;x=8;x=42;return x;}", &[][..], "42\n"),
+        ("fnc main():int{let x=7;x=x+1;x=x+34;return x;}", &[][..], "42\n"),
+        ("fnc main():int{let x=7;const y=x as int;x=42;return y+35;}", &[][..], "42\n"),
+        ("fnc main():int{let x=7;val y=x;x=42;return x;}", &[][..], "42\n"),
         ("fnc main(a:int):int{const unused=a+1;return 7;}", &["1"][..], "7\n"),
     ] {
         succeeds(source, args, expected);
@@ -78,13 +91,34 @@ fn checked_cast_and_mutability_gaps_fail_closed_before_native_result() {
         ("fnc main():int{return 7 as? int;}", Some("Cranelift as? requires Option<T> checked-cast lowering")),
         ("fnc main():int{return 7 as Phantom;}", Some("nominal/dynamic casts unsupported")),
         ("fnc main():int{return 7 as int * 6;}", Some("arithmetic after checked cast requires parentheses")),
-        ("fnc main():int{let int x=7;return x;}", Some("Cranelift mutable let lowering is not implemented")),
-        ("fnc main():int{let x=7;return x;}", Some("Cranelift mutable let lowering is not implemented")),
+        ("fnc main():int{const x=7;x=8;return x;}", Some("cannot reassign immutable scalar local")),
+        ("fnc main():int{val x=7;x=8;return x;}", Some("cannot reassign immutable scalar local")),
+        ("fnc main():int{int x=7;x=8;return x;}", Some("cannot reassign immutable scalar local")),
+        ("fnc main():int{let x=7;let x=8;return x;}", Some("invalid or duplicate immutable local")),
+        ("fnc main():int{let x=x+1;return x;}", Some("unbound or unsupported identifier")),
+        ("fnc main():int{let x=7;x=missing;return x;}", Some("unbound or unsupported identifier")),
+        ("fnc main():int{let x=7;x=true;return x;}", Some("unbound or unsupported identifier")),
+        ("fnc main():int{let x=7;x=7 as bool;return x;}", Some("impossible Cranelift cast: int as bool")),
+        ("fnc main():int{let x=7;x=7 as? int;return x;}", Some("Cranelift as? requires Option<T> checked-cast lowering")),
+        ("fnc main():int{let x=7;x=7 as Phantom;return x;}", Some("nominal/dynamic casts unsupported")),
         ("fnc main():int{const x=7 as int;x=8;return x;}", None),
         ("fnc main():int{val x=7;x=8;return x;}", None),
     ] {
         rejects(source, &[], diagnostic);
     }
+
+    // Reassignments are eager even when their resulting SSA value is unused.
+    rejects(
+        "fnc main(a:int):int{let x=7;x=a+1;return 42;}",
+        &["9223372036854775807"],
+        Some("i64 arithmetic overflow"),
+    );
+    // Immutable snapshots must not retroactively observe a later let write.
+    succeeds(
+        "fnc main():int{let x=7;const old=x;x=42;return old+35;}",
+        &[],
+        "42\n",
+    );
 
     // Runtime-dependent const remains eager and checked: accepting the binding
     // must not turn overflow into dead-code elimination.
