@@ -286,6 +286,19 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Real ADT source lowering requires nominal owner/case identity,
+        // payload layout, exhaustive matching and ownership-aware drop glue.
+        // Reject declarations with a specific capability diagnostic before
+        // the scalar main parser or native Cranelift JIT is entered.
+        match self.current {
+            Token::Word("enum") => {
+                return Err("native nominal ADT source lowering unsupported: enum tag/payload and match proof required".into());
+            }
+            Token::Word("pattern") | Token::Word("match") => {
+                return Err("native type-only ADT pattern lowering unsupported".into());
+            }
+            _ => {}
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
