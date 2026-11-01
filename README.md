@@ -36,6 +36,16 @@ Rejected: **everything else**, including imports, helper functions, user-defined
 classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
 structural types, UTF-8 identifiers, and any trailing code.
 
+WebSocket, HTTP, TCP and LiveView actor declarations are an explicit
+**unsupported** capability and emit a fail-closed diagnostic before Cranelift
+IR or JIT execution. The CLI test matrix exercises eight declaration shapes
+in both `run` and `ir`, plus unsupported `websocket.listen` calls and
+comment-only positive controls. These tests are *authored only* until a real
+Rust/Cargo exact-head run executes them. This negative admission behavior is
+not RFC6455 protocol support, actor ownership, WebSocket guest compilation,
+or parity with Java, LLVM, WASM, Forge or .NET.
+
+
 Signed remainder follows Java truncation-toward-zero semantics, including
 `i64::MIN % -1 == 0`. This intentionally matches the restricted LLVM
 literal-divisor parity slice, not general Java runtime expression coverage.
