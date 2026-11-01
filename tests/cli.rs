@@ -450,3 +450,58 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
+
+
+#[test]
+fn heap_container_source_refuses_scalar_only_jit_fallback() {
+    // Execute the actual scalar CLI, rather than matching text in a contract.
+    // No Box, Arc, Weak, Vector, Array, borrowed heap or guarded mutation
+    // lowering exists in this stage-0 Cranelift frontend. Fail closed.
+    for (name, source) in [
+        (
+            "unique heap Box",
+            "pub fnc main(): int { val Box<int> owner = Box<int>(42); return 42; }",
+        ),
+        (
+            "atomic Arc",
+            "pub fnc main(): int { val Arc<int> owner = Arc<int>(42); return 42; }",
+        ),
+        (
+            "weak shared owner",
+            "pub fnc main(): int { val Weak<int> weak = null; return 42; }",
+        ),
+        (
+            "resizable Vector",
+            "pub fnc main(): int { val Vector[int] values = [42]; return 42; }",
+        ),
+        (
+            "resizable Array",
+            "pub fnc main(): int { val Array<int> a = new Array<int>(); a.add(42); return a.get(0); }",
+        ),
+        (
+            "unique move after take",
+            "pub fnc main(): int { let int value = 42; let moved = rt take value; return value; }",
+        ),
+        (
+            "borrow heap value",
+            "pub fnc main(): int { let int value = 42; let loan = rt borrow value; return loan; }",
+        ),
+        (
+            "exclusive heap borrow",
+            "pub fnc main(): int { let int value = 42; let loan = rt mut borrow value; return loan; }",
+        ),
+        (
+            "mut share without synchronized proof",
+            "pub fnc main(): int { let int value = 42; rt mut share value; return value; }",
+        ),
+        (
+            "shared guard state",
+            "pub fnc main(): int { val Mutex<int> cell = Mutex<int>(42); return 42; }",
+        ),
+    ] {
+        assert!(!source.is_empty(), "{name} fixture must be nonempty");
+        fixture(source, &[], false, "");
+    }
+    // Keep the already supported common scalar intersection executable.
+    fixture("pub fnc main(): int { return 21 + 21; }", &[], true, "42\n");
+}
