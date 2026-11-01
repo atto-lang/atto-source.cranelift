@@ -103,10 +103,10 @@ fn integer_training_primitives_compile_to_ir_and_execute() {
     // Portable integer-only subset of the OresLLM scalar fixture; these are
     // source-to-real-JIT assertions, NOT FP64 or autograd evidence.
     let cases = [
-        ("gradient", "fnc main():int{return 2*((5*3+1)-9)*3;}", b"42\n".as_slice()),
-        ("associativity", "fnc main():int{return (7*8)-14;}", b"42\n".as_slice()),
-        ("signed_subtraction", "fnc main():int{return 13-(-29);}", b"42\n".as_slice()),
-        ("zero_cancellation", "fnc main():int{return (3*14)+(0*7);}", b"42\n".as_slice()),
+        ("gradient", "fnc main():int{return 2*((5*3+1)-9)*3;}", "42\n"),
+        ("associativity", "fnc main():int{return (7*8)-14;}", "42\n"),
+        ("signed_subtraction", "fnc main():int{return 13-(-29);}", "42\n"),
+        ("zero_cancellation", "fnc main():int{return (3*14)+(0*7);}", "42\n"),
     ];
     for (name, source, expected) in cases {
         let ir = execute(source, "ir");
@@ -115,7 +115,7 @@ fn integer_training_primitives_compile_to_ir_and_execute() {
         assert!(ir.stderr.is_empty(), "{name}: unexpected compiler IR diagnostics");
         let run = execute(source, "run");
         assert_eq!(run.status.code(), Some(0), "{name}: native JIT failed");
-        assert_eq!(run.stdout, expected, "{name}: wrong real native value");
+        assert_eq!(run.stdout, expected.as_bytes(), "{name}: wrong real native value");
         assert!(run.stderr.is_empty(), "{name}: unexpected native diagnostics");
     }
 }
