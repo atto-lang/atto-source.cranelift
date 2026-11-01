@@ -118,7 +118,7 @@ impl<'a> Parser<'a> {
             self.current = Token::Number(&self.input[start..self.pos]);
         } else if first == b'%' {
             return Err("operator '%' is removed from Oreslang".into());
-        } else if b"()+-*{};:,>.=".contains(&first) {
+        } else if b"()+-*{};:,>.=?".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -225,13 +225,52 @@ impl<'a> Parser<'a> {
             return Err("expression depth budget exceeded".into());
         }
         let mut lhs = self.atom(depth + 1)?;
+        let mut saw_cast = false;
         loop {
+            // Java/LLVM define checked 'as' below arithmetic precedence.
+            // This stage-0 backend has only signed i64, so 'as int' is a
+            // checked identity proof and deliberately emits no conversion.
+            if self.current == Token::Word("as") {
+                if min_bp > 0 {
+                    break;
+                }
+                self.next()?;
+                if self.take(Token::Punct(b'?'))? {
+                    return Err("Cranelift as? requires Option<T> checked-cast lowering".into());
+                }
+                match self.current {
+                    Token::Word("int") => {
+                        self.next()?;
+                        saw_cast = true;
+                        continue;
+                    }
+                    Token::Word("bool") => {
+                        return Err("impossible Cranelift cast: int as bool".into());
+                    }
+                    Token::Word("string") | Token::Word("String") => {
+                        return Err("impossible Cranelift cast: int as string".into());
+                    }
+                    Token::Word(_) => {
+                        return Err(
+                            "Cranelift checked cast requires int; nominal/dynamic casts unsupported"
+                                .into(),
+                        );
+                    }
+                    _ => return Err("expected checked cast target type".into()),
+                }
+            }
             let (l_bp, r_bp, op) = match self.current {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
                 _ => break,
             };
+            // A same-level arithmetic operator after 'as' would give this
+            // stage-0 parser a different precedence from Java/LLVM. Require
+            // explicit parentheses instead of silently changing meaning.
+            if saw_cast {
+                return Err("arithmetic after checked cast requires parentheses".into());
+            }
             if l_bp < min_bp {
                 break;
             }
@@ -308,11 +347,20 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b'{'))?;
         // This bounded scalar-only profile admits immutable locals, but no
         // assignments, mutable-referent capabilities, blocks or actor state.
-        // Every initializer executes once, in lexical source order.
+        // Every initializer executes once, in lexical source order. 'const',
+        // 'val', and type-first 'int x = ...' are all fixed bindings here.
         loop {
+            if self.current == Token::Word("let") {
+                return Err("Cranelift mutable let lowering is not implemented".into());
+            }
             let explicit_const = self.take(Token::Word("const"))?;
+            let explicit_val = if explicit_const {
+                false
+            } else {
+                self.take(Token::Word("val"))?
+            };
             let type_first = self.take(Token::Word("int"))?;
-            if !explicit_const && !type_first {
+            if !explicit_const && !explicit_val && !type_first {
                 break;
             }
             let name = self.name()?;
@@ -337,17 +385,11 @@ impl<'a> Parser<'a> {
             if self.local_names.len() == 64 {
                 return Err("immutable local count exceeds 64".into());
             }
-            // Standalone 'const' is a compile-time scalar constant in the
-            // Java reference language. The new type-first default instead
-            // models readonly runtime single-assignment (like 'val').
-            let const_value = if explicit_const {
-                Some(
-                    constant_expr_value(&initializer, &self.const_values)?
-                        .ok_or("standalone const requires compile-time expression")?,
-                )
-            } else {
-                None
-            };
+            // Binding immutability is independent of evaluation time.
+            // Preserve a compile-time value only when one is provable; a const
+            // or val initialized from a parameter/local remains a fixed runtime
+            // SSA binding and is still valid Oreslang.
+            let const_value = constant_expr_value(&initializer, &self.const_values)?;
             // Publish only after the initializer is fully checked: the RHS
             // cannot refer to the local currently being declared.
             self.local_names.push(name);
@@ -368,9 +410,9 @@ impl<'a> Parser<'a> {
 }
 
 // The scalar-only frontend has no guest effects or FFI in expressions.
-// Distinguish true constant propagation from a runtime immutable binding:
-// even an inlinable 'int x = 7' remains runtime-binding-kind metadata and
-// may not be referenced as a standalone 'const' initializer.
+// Constant propagation is an optimization fact, never a binding-kind rule.
+// Any immutable local may have a runtime initializer; only expressions whose
+// value is provably compile-time are recorded here for later folding.
 fn constant_expr_value(expr: &Expr, constants: &[Option<i64>]) -> Result<Option<i64>, String> {
     use Expr::*;
     match expr {

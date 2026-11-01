@@ -22,7 +22,8 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - *, immutable scalar locals, and line comments.
+grouping, unary +/-, binary + - *, immutable scalar locals, checked identity `as int`,
+`val` fixed bindings, and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
 native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
@@ -32,7 +33,8 @@ arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
+classes, actors, heaps, ownership, recursion, async, control flow, mutable `let`,
+division, dynamic/zero-divisor remainder, `as?`, bool/string/nominal casts,
 structural types, UTF-8 identifiers, and any trailing code.
 
 The Oreslang language contract removes the `%`, `^`, and `^^` operators. The
@@ -115,3 +117,22 @@ native outputs/negative diagnostics, and independent review. Java, LLVM,
 Wasm and .NET must each execute their own compiler/guest lane against the
 same source semantics; a Cranelift pass is not a substitute. A zero-step
 failure remains runner admission, not a compiler failure.
+
+
+## Scalar inference / checked-cast parity slice
+
+The stage-0 Cranelift frontend now follows the common binding rule for its
+implemented signed-i64 subset:
+
+- `const int x = e`, `const x: int = e`, `const x = e`, `val x = e`,
+  and type-first `int x = e` all produce fixed bindings; runtime-dependent
+  initializers are valid and execute once in source order.
+- `e as int` is a checked identity proof and emits no conversion instruction.
+- `as?`, bool/string casts, nominal/dynamic casts, and mutable `let` fail
+  closed before JIT code publication because their type/runtime representation
+  is not implemented in this stage-0 backend.
+- Parentheses are required when arithmetic follows a checked cast, matching
+  the Java/LLVM cast-vs-arithmetic precedence instead of inventing a
+  Cranelift-specific interpretation.
+
+This is bounded scalar parity, not full Java/LLVM type-system parity.
