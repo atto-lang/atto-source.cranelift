@@ -18,9 +18,14 @@ fn execute(source: &str, mode: &str) -> Output {
     ));
     // Never overwrite a file or symlink pre-existing at the chosen name.
     // An unexpected collision is a test failure, not a reason to truncate.
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(&path)
         .expect("exclusive temp fixture creation");
     file.write_all(source.as_bytes()).expect("write fixture");
