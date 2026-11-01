@@ -1,5 +1,7 @@
 mod backend;
 mod frontend;
+#[cfg(test)]
+mod frozen_tcp_slab; // host-only conformance; no guest TCP lowering
 use std::io::Read;
 
 fn run() -> Result<(), String> {
