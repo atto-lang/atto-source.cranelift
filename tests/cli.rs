@@ -35,6 +35,15 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
             "rejected compilation printed stdout"
         );
         assert!(!output.stderr.is_empty(), "rejection requires a diagnostic");
+        assert!(
+            output.status.code().is_some(),
+            "rejected source must not terminate by signal"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("panicked at") && !stderr.contains("thread 'main' panicked"),
+            "rejected source caused a Rust panic: {stderr}"
+        );
     }
 }
 #[test]
