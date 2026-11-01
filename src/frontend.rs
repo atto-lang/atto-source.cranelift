@@ -315,6 +315,7 @@ impl<'a> Parser<'a> {
                         | "define"
                         | "fnc"
                         | "rt"
+                        | "as"
                         | "async"
                         | "await"
                         | "actor"
@@ -465,6 +466,7 @@ mod tests {
             "fnc main():int{return 7 as int + 9223372036854775808;}",
             "fnc main():int{return 7 as int;}\0",
             "fnc main():int{return 7 as int; unsafe}",
+            "fnc main(as:int):int{return as;}",
             "fnc main():int{return 7 as int",
         ] {
             assert!(parse(source).is_err(), "{source:?}");
