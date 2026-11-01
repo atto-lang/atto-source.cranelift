@@ -23,6 +23,8 @@ fn integer_digits(token: &str) -> Result<String, String> {
 pub enum Expr {
     Literal(i64),
     Param(usize),
+    // References only an earlier, immutable, eagerly evaluated scalar local.
+    Local(usize),
     Neg(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
@@ -35,6 +37,7 @@ pub enum Expr {
 #[derive(Debug)]
 pub struct Program {
     pub parameters: Vec<String>,
+    pub locals: Vec<Expr>,
     pub result: Expr,
 }
 
@@ -52,6 +55,8 @@ struct Parser<'a> {
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
+    local_names: Vec<String>,
+    local_initializers: Vec<Expr>,
 }
 
 impl<'a> Parser<'a> {
@@ -68,6 +73,8 @@ impl<'a> Parser<'a> {
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
+            local_names: Vec::new(),
+            local_initializers: Vec::new(),
         };
         p.next()?;
         Ok(p)
@@ -109,7 +116,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
-        } else if b"()+-*%{};:,>.".contains(&first) {
+        } else if b"()+-*%{};:,>.=".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -194,13 +201,19 @@ impl<'a> Parser<'a> {
                 self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
             }
             Token::Word(s) => {
-                let index = self
-                    .parameters
-                    .iter()
-                    .position(|p| p == s)
-                    .ok_or_else(|| format!("unbound or unsupported identifier: {s}"))?;
+                let resolved = if let Some(index) =
+                    self.parameters.iter().position(|p| p == s)
+                {
+                    Expr::Param(index)
+                } else if let Some(index) =
+                    self.local_names.iter().position(|name| name == s)
+                {
+                    Expr::Local(index)
+                } else {
+                    return Err(format!("unbound or unsupported identifier: {s}"));
+                };
                 self.next()?;
-                self.node(Expr::Param(index))
+                self.node(resolved)
             }
             _ => Err(format!("expected scalar expression at byte {}", self.pos)),
         }
@@ -318,6 +331,42 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("int"))?;
         self.expect(Token::Punct(b'{'))?;
+        // This bounded scalar-only profile admits immutable locals, but no
+        // assignments, mutable-referent capabilities, blocks or actor state.
+        // Every initializer executes once, in lexical source order.
+        loop {
+            let explicit_const = self.take(Token::Word("const"))?;
+            let type_first = self.take(Token::Word("int"))?;
+            if !explicit_const && !type_first {
+                break;
+            }
+            let name = self.name()?;
+            if matches!(
+                name.as_str(),
+                "Integer" | "int" | "return" | "pub" | "define" |
+                "fnc" | "const" | "let" | "val" | "mut" | "async" |
+                "await" | "actor"
+            ) || self.parameters.contains(&name)
+                || self.local_names.contains(&name)
+            {
+                return Err("invalid or duplicate immutable local".into());
+            }
+            // 'const x: int = value' is also supported. 'const x = value'
+            // infers the only admitted expression type: checked signed i64.
+            if !type_first && self.take(Token::Punct(b':'))? {
+                self.expect(Token::Word("int"))?;
+            }
+            self.expect(Token::Punct(b'='))?;
+            let initializer = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            if self.local_names.len() == 64 {
+                return Err("immutable local count exceeds 64".into());
+            }
+            // Publish only after the initializer is fully checked: the RHS
+            // cannot refer to the local currently being declared.
+            self.local_names.push(name);
+            self.local_initializers.push(initializer);
+        }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
@@ -325,6 +374,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::End)?;
         Ok(Program {
             parameters: self.parameters,
+            locals: self.local_initializers,
             result,
         })
     }
@@ -341,6 +391,7 @@ mod tests {
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
+            Expr::Local(_) => Err("local evaluation requires program bindings"),
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
