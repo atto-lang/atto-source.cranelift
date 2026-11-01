@@ -72,8 +72,14 @@ fn actor_supervisor_authority_fails_before_ir_or_execution() {
                 .arg(&path)
                 .output()
                 .unwrap();
-            assert!(!output.status.success(), "{mode} unexpectedly admitted {source}");
-            assert!(output.stdout.is_empty(), "{mode} emitted native output or CLIF");
+            assert!(
+                !output.status.success(),
+                "{mode} unexpectedly admitted {source}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted native output or CLIF"
+            );
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains(
                     "actor and supervisor capabilities are unsupported in Cranelift stage-0"
