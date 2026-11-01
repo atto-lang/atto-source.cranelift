@@ -389,3 +389,66 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         &[], true, "42\n"
     );
 }
+
+#[test]
+fn native_scalar_and_unsupported_actor_guest_parity() {
+    // Each fixture is actual native Oreslang source, compiled and executed by
+    // the Cranelift JIT through its real CLI. Rust is only the test launcher.
+    for (source, expected) in [
+        (include_str!("parity/checked_precedence.ores"), "28\n"),
+        (include_str!("parity/checked_i64_min.ores"), "-9223372036854775808\n"),
+        (include_str!("parity/checked_i64_max_minus_one.ores"), "9223372036854775806\n"),
+        (include_str!("parity/bitxor_named_intrinsic.ores"), "-9223372036854775808\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+
+    // The scalar JIT is NOT allowed to silently accept or reinterpret actor,
+    // isolated-actor, async, critical, channel or removed XOR operator syntax.
+    for source in [
+        include_str!("parity/reject_critical.ores"),
+        include_str!("parity/reject_channel_select.ores"),
+        include_str!("parity/reject_xor_operator.ores"),
+    ] {
+        fixture(source, &[], false, "");
+    }
+    fixture_requires_diagnostic(
+        include_str!("parity/checked_overflow.ores"),
+        "i64 arithmetic overflow",
+    );
+    fixture_requires_diagnostic(
+        include_str!("parity/reject_actor.ores"),
+        "actor runtime is unsupported by the Cranelift scalar profile",
+    );
+    fixture_requires_diagnostic(
+        include_str!("parity/reject_isoactor.ores"),
+        "actor runtime is unsupported by the Cranelift scalar profile",
+    );
+    fixture_requires_diagnostic(
+        include_str!("parity/reject_async.ores"),
+        "async runtime is unsupported by the Cranelift scalar profile",
+    );
+}
+
+fn fixture_requires_diagnostic(source: &str, diagnostic: &str) {
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-parity-{}-{sequence}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(output.status.code(), Some(1), "negative fixture must fail");
+    assert!(output.stdout.is_empty(), "negative fixture cannot emit success stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(diagnostic),
+        "wrong negative diagnostic: expected {diagnostic:?}, got {stderr:?}"
+    );
+    assert!(!stderr.contains("panic"), "compiler crashed instead of rejecting source");
+}
