@@ -424,6 +424,7 @@ fn scalar_cast_and_ownership_features_fail_closed_before_jit_lowering() {
     for source in [
         "pub fnc main(): int { return 42 as bool; }",
         "pub fnc main(): int { return 42 as Object; }",
+        "pub fnc main(as:int):int{return as;}",
         "pub fnc main(): int { return 42 as? int; }",
         "pub fnc main(): int { const x = true; return 42; }",
         "pub fnc main(): int { const x = 42 as bool; return 42; }",
