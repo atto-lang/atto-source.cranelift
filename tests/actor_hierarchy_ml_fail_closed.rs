@@ -139,7 +139,7 @@ fn identical_portable_scalar_step_executes_as_native_cranelift_guest() {
         assert!(result.status.success(), "{mode}: {}",
             String::from_utf8_lossy(&result.stderr));
         if mode == "run" {
-            assert_eq!(String::from_utf8_lossy(&result.stdout), "42\\n");
+            assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
         } else {
             assert!(!result.stdout.is_empty(), "real CLIF IR required");
         }
