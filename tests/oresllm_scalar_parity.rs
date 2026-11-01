@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,11 +13,15 @@ fn run_case(expression: &str, expected: Option<&str>) {
         "oresllm-cranelift-parity-{}-{sequence}.ores",
         std::process::id()
     ));
-    std::fs::write(
-        &path,
-        format!("pub fnc main(): int {{ return {expression}; }}\n"),
-    )
-    .unwrap();
+    // Exclusive file creation prevents symlink-clobbering or fixture collisions.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(format!("pub fnc main(): int {{ return {expression}; }}\n").as_bytes())
+        .unwrap();
+    drop(file);
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
         .arg(&path)
