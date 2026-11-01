@@ -389,3 +389,24 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         &[], true, "42\n"
     );
 }
+
+#[test]
+fn native_java_v1_reserved_parameter_gate_and_scalar_controls() {
+    // These are actual CLI compile/JIT boundaries, not a synthetic lexer dump.
+    // The scalar backend deliberately rejects language forms it cannot lower.
+    for word in ["eq", "neq", "is", "isoactor", "null", "panic", "cpu", "gpu",
+                 "recover", "throw", "raise", "defer", "nb", "select"] {
+        fixture(&format!("fnc main({word}:int):int{{return {word};}}"),
+                &["42"], false, "");
+    }
+    for name in ["owned", "eqx", "xneq", "island", "nullish", "panic_mode"] {
+        fixture(&format!("fnc main({name}:int):int{{return {name};}}"),
+                &["42"], true, "42\n");
+    }
+    for expression in ["#ready", "nb-select", "critical-read", "transform-pipe",
+                       "gpu", "cpu", "panic", "1 ^ 2"] {
+        fixture(&format!("fnc main():int{{return {expression};}}"),
+                &[], false, "");
+    }
+    fixture("fnc main():int{return 7%3;}", &[], true, "1\n");
+}
