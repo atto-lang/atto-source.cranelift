@@ -26,8 +26,14 @@ grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
 literal divisor (`%`), and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
-named functions (including `rem`, `mod`, and `pow`) remain unsupported.
+native `bxor` instruction; caret operators remain rejected. The narrow
+Java-defined `Integer.rem(a, literal)` and `Integer.mod(a, literal)` signed64
+operations are now admitted for compiler-proven nonzero literal divisors,
+including negative divisors and `i64::MIN`. `rem` truncates toward zero and
+`mod` is always nonnegative; overflow in `a` must still reject before
+handling the `-1` divisor. Runtime-variable and zero divisors remain rejected,
+as does `Integer.pow`. This is a small verified-source candidate, not full
+named-arithmetic parity or dynamic typed calls.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
