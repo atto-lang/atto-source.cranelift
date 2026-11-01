@@ -1,0 +1,7 @@
+// 43: const int must preserve exact i64 local resolution and checked multiply.
+// Candidate shared-byte five-backend fixture, not verified guest evidence.
+pub fnc main(): int {
+  const int x = 14;
+  const y = x * 3;
+  return y;
+}
