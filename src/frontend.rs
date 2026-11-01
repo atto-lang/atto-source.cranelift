@@ -388,7 +388,7 @@ mod tests {
             "fnc main():int{return 1;} % ignored",
         ] {
             let error = parse(source).expect_err("legacy percent must be rejected");
-            assert!(error.contains("invalid character"), "{source}: {error}");
+            assert!(error.contains("noncanonical '%' source operator"), "{source}: {error}");
         }
         // Preserve signed-i64 multiplication and subtraction as real source.
         let valid = parse("fnc main():int{return (7*6)-0;}").unwrap();
