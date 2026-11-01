@@ -446,11 +446,59 @@ mod tests {
         }
     }
     #[test]
+    fn java_named_remainder_and_modulus_reference_vectors() {
+        // Oracle values from Java's strict-named-integer-arithmetic/v1
+        // contract. This unit oracle is not native guest JIT proof.
+        for (expression, expected) in [
+            ("Integer.rem(9,4)", 1),
+            ("Integer.rem(-9,4)", -1),
+            ("Integer.rem(9,-4)", 1),
+            ("Integer.rem(-9,-4)", -1),
+            ("Integer.rem(-9223372036854775808,-1)", 0),
+            ("Integer.rem(-9223372036854775808,9223372036854775807)", -1),
+            ("Integer.mod(9,4)", 1),
+            ("Integer.mod(-9,4)", 3),
+            ("Integer.mod(9,-4)", 1),
+            ("Integer.mod(-9,-4)", 3),
+            ("Integer.mod(-9223372036854775808,-1)", 0),
+            ("Integer.mod(-1,-9223372036854775808)", i64::MAX),
+            ("Integer.mod(-9223372036854775808,9223372036854775807)", i64::MAX - 1),
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let program = parse(&source).unwrap();
+            assert_eq!(eval(&program.result, &[]), Ok(expected), "{expression}");
+        }
+        for (expression, error) in [
+            ("Integer.rem(9,0)", "remainder divisor cannot be zero"),
+            ("Integer.mod(9,0)", "remainder divisor cannot be zero"),
+            ("Integer.rem(9,1+1)", "remainder requires a signed integer literal divisor"),
+            ("Integer.mod(9,-(1+1))", "remainder requires a signed integer literal divisor"),
+            ("Integer.mod(9,9223372036854775808)", "i64 literal out of range"),
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            assert!(
+                parse(&source).unwrap_err().contains(error),
+                "expected {error} from {expression}"
+            );
+        }
+        // No optimization may erase checked overflow of the numerator,
+        // including when the fixed denominator is -1.
+        for expression in [
+            "Integer.rem(9223372036854775807+1,-1)",
+            "Integer.mod(9223372036854775807+1,-1)",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let program = parse(&source).unwrap();
+            assert_eq!(eval(&program.result, &[]), Err("overflow"), "{expression}");
+        }
+    }
+
+    #[test]
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
             "fnc main():int{return 5 ^ 3;}",
-            "fnc main():int{return Integer.rem(5,3);}",
+            "fnc main():int{return Integer.pow(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",
             "fnc main():int{return Integer.bitXor(5,3,1);}",
             "fnc main(Integer:int):int{return Integer;}",
