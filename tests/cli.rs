@@ -60,6 +60,8 @@ fn actor_declarations_fail_closed_before_cranelift_ir_or_native_jit() {
         "define actor A1 extends Base as end",
         "define actor A1 implements Traced as end",
         "define actor A1 impl Traced as end",
+        // Exactly the portable lifecycle v1 source, pinned in conformance.
+        include_str!("fixtures/actor-execution-v1.ores"),
     ] {
         let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
