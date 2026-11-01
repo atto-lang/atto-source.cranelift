@@ -383,8 +383,6 @@ fn immutable_default_bindings_fail_closed_on_mutation_aliases_and_inference() {
         "fnc main():int{int x; return 7;}",
         "fnc main():int{string x=7; return x;}",
         "fnc main():int{const x: bool=7; return x;}",
-        "fnc main():int{const x=7; let int y=8; return x;}",
-        "fnc main():int{val int x=7; return x;}",
         "fnc main():int{int x=7; int x=8; return x;}",
         "fnc main():int{const const x=7; return x;}",
         "fnc main():int{const x=7; return x=8;}",
@@ -394,15 +392,32 @@ fn immutable_default_bindings_fail_closed_on_mutation_aliases_and_inference() {
     ] {
         fixture(source, &[], false, "");
     }
-    // Standalone const must never accept runtime-dependent expressions, even
-    // when the expression is otherwise readonly and inferable as signed64.
-    for source in [
+    // A const freezes the binding, not the evaluation phase: runtime inputs
+    // and previously evaluated locals remain valid, checked initializer sources.
+    fixture(
         "fnc main(int a):int{const x=a+1; return x;}",
-        "fnc main():int{int x=7; const y=x+1; return y;}",
-        "fnc main():int{const x=9223372036854775807+1; return x;}",
-    ] {
-        fixture(source, &["1"][..0], false, "");
-    }
+        &["41"], true, "42\n",
+    );
+    fixture("fnc main():int{int x=7; const y=x+1; return y;}",
+        &[], true, "8\n");
+    fixture("fnc main():int{val int x=7;return x+35;}",
+        &[], true, "42\n");
+    fixture("fnc main():int{const x=7;let int y=8;return x+y+27;}",
+        &[], true, "42\n");
+    fixture("fnc main():int{const x=9223372036854775807+1;return x;}",
+        &[], false, "");
+    // Explicit mutable let is rebindable, but earlier immutable snapshots
+    // retain their old SSA value after a subsequent write.
+    fixture("fnc main():int{let x=7;x=42;return x;}",
+        &[], true, "42\n");
+    fixture("fnc main():int{let int x=7;x=x+35;return x;}",
+        &[], true, "42\n");
+    fixture("fnc main():int{let x=7;const old=x;x=42;return old+35;}",
+        &[], true, "42\n");
+    fixture("fnc main(a:int):int{let x=a;x=x+1;return x;}",
+        &["41"], true, "42\n");
+    fixture("fnc main():int{let x=7;x=8;x=42;return x;}",
+        &[], true, "42\n");
     // A never-read initializer must still run its checked computation.
     fixture(
         "fnc main(x:int):int{int unused=x+1; return 7;}",
