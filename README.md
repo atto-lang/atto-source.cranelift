@@ -22,8 +22,7 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
-literal divisor (`%`), and line comments.
+grouping, unary +/-, binary + - *, and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
 native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
@@ -33,13 +32,12 @@ arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
+classes, actors, heaps, ownership, recursion, async, control flow, division, all `%` remainder,
 structural types, UTF-8 identifiers, and any trailing code.
 
-Signed remainder follows Java truncation-toward-zero semantics, including
-`i64::MIN % -1 == 0`. This intentionally matches the restricted LLVM
-literal-divisor parity slice, not general Java runtime expression coverage.
-The numerator still executes checked arithmetic before computing remainder.
+The earlier stage-0 `%` remainder extension is now rejected to align with
+the portable scalar/v1 language contract. No alternate named remainder
+function is introduced by this test-alignment change.
 
 ## Explicit security boundary
 
