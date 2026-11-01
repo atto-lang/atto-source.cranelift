@@ -1,5 +1,6 @@
 mod backend;
 mod frontend;
+mod critical_gate;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
