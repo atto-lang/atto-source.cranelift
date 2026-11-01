@@ -55,6 +55,7 @@ struct Parser<'a> {
     parameters: Vec<String>,
     local_names: Vec<String>,
     local_initializers: Vec<Expr>,
+    const_values: Vec<Option<i64>>,
 }
 
 impl<'a> Parser<'a> {
@@ -73,6 +74,7 @@ impl<'a> Parser<'a> {
             parameters: Vec::new(),
             local_names: Vec::new(),
             local_initializers: Vec::new(),
+            const_values: Vec::new(),
         };
         p.next()?;
         Ok(p)
@@ -335,10 +337,22 @@ impl<'a> Parser<'a> {
             if self.local_names.len() == 64 {
                 return Err("immutable local count exceeds 64".into());
             }
+            // Standalone 'const' is a compile-time scalar constant in the
+            // Java reference language. The new type-first default instead
+            // models readonly runtime single-assignment (like 'val').
+            let const_value = if explicit_const {
+                Some(
+                    constant_expr_value(&initializer, &self.const_values)?
+                        .ok_or("standalone const requires compile-time expression")?,
+                )
+            } else {
+                None
+            };
             // Publish only after the initializer is fully checked: the RHS
             // cannot refer to the local currently being declared.
             self.local_names.push(name);
             self.local_initializers.push(initializer);
+            self.const_values.push(const_value);
         }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
@@ -350,6 +364,47 @@ impl<'a> Parser<'a> {
             locals: self.local_initializers,
             result,
         })
+    }
+}
+
+// The scalar-only frontend has no guest effects or FFI in expressions.
+// Distinguish true constant propagation from a runtime immutable binding:
+// even an inlinable 'int x = 7' remains runtime-binding-kind metadata and
+// may not be referenced as a standalone 'const' initializer.
+fn constant_expr_value(expr: &Expr, constants: &[Option<i64>]) -> Result<Option<i64>, String> {
+    use Expr::*;
+    match expr {
+        Literal(v) => Ok(Some(*v)),
+        Param(_) => Ok(None),
+        Local(i) => Ok(constants.get(*i).copied().flatten()),
+        Neg(x) => match constant_expr_value(x, constants)? {
+            Some(v) => Ok(Some(v.checked_neg().ok_or("compile-time i64 overflow")?)),
+            None => Ok(None),
+        },
+        Add(a,b) | Sub(a,b) | Mul(a,b) | BitXor(a,b) => {
+            let x = constant_expr_value(a, constants)?;
+            let y = constant_expr_value(b, constants)?;
+            match (x,y) {
+                (Some(x),Some(y)) => {
+                    let value = match expr {
+                        Add(_,_) => x.checked_add(y),
+                        Sub(_,_) => x.checked_sub(y),
+                        Mul(_,_) => x.checked_mul(y),
+                        BitXor(_,_) => Some(x ^ y),
+                        _ => unreachable!(),
+                    }.ok_or("compile-time i64 overflow")?;
+                    Ok(Some(value))
+                }
+                _ => Ok(None),
+            }
+        }
+        Rem(x,divisor) => match constant_expr_value(x, constants)? {
+            Some(v) => Ok(Some(
+                if *divisor == -1 { 0 }
+                else { v.checked_rem(*divisor).ok_or("invalid constant remainder")? }
+            )),
+            None => Ok(None),
+        }
     }
 }
 
