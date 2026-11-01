@@ -41,8 +41,7 @@ fn emit(
                 let denominator = b.ins().iconst(types::I64, *divisor);
                 let remainder = b.ins().srem(numerator, denominator);
                 if matches!(e, Mod(..)) {
-                    let negative =
-                        b.ins().icmp_imm_s(IntCC::SignedLessThan, remainder, 0);
+                    let negative = b.ins().icmp_imm_s(IntCC::SignedLessThan, remainder, 0);
                     // The candidate is only observed when remainder < 0.
                     // In that branch it lies in [0, |divisor|), including when
                     // divisor == i64::MIN. Cranelift integer arithmetic has
