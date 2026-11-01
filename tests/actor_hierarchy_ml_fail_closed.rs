@@ -5,6 +5,22 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+// A predictable /tmp name must never overwrite an unrelated file or follow
+// an attacker-planted symlink. Fixture content belongs to the private source
+// checkout, so create each temporary file with restrictive permissions.
+fn write_new_source(path: &std::path::Path, source: &str) {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).expect("create exclusive source fixture");
+    file.write_all(source.as_bytes()).expect("write exact source fixture");
+}
+
 fn reject_both_modes(label: &str, source: &str) {
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
@@ -12,7 +28,7 @@ fn reject_both_modes(label: &str, source: &str) {
         std::process::id(),
         label
     ));
-    std::fs::write(&path, source).expect("write test fixture");
+    write_new_source(&path, source);
     for mode in ["run", "ir"] {
         let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
             .arg(mode)
@@ -73,10 +89,9 @@ fn words_inside_comments_do_not_disable_scalar_jit() {
         "orescranelift-actor-comment-{}-{nonce}.ores",
         std::process::id()
     ));
-    std::fs::write(
-        &path,
-        "fnc main():int{return 6*7;} // define actor, trait, Tensor, autograd, pipe\n",
-    ).unwrap();
+    write_new_source(&path,
+        "fnc main():int{return 6*7;} // define actor, trait, Tensor, autograd, pipe\n"
+    );
     for mode in ["run", "ir"] {
         let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
             .arg(mode).arg(&path).output().unwrap();
@@ -101,7 +116,7 @@ fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
     let path = std::env::temp_dir().join(format!(
         "orescranelift-scalar-gradient-{}-{nonce}.ores", std::process::id()
     ));
-    std::fs::write(&path, source).unwrap();
+    write_new_source(&path, source);
     for (args,expected) in [
         (["5","2","6","1"], "-3\n"),
         (["3","1","5","1"], "5\n"),
@@ -134,7 +149,7 @@ fn identical_portable_scalar_step_executes_as_native_cranelift_guest() {
     let path = std::env::temp_dir().join(format!(
         "orescranelift-shared-step-{}-{nonce}.ores", std::process::id()
     ));
-    std::fs::write(&path, SOURCE).expect("materialize exact canonical fixture bytes");
+    write_new_source(&path, SOURCE);
     for mode in ["run", "ir"] {
         let result=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
             .arg(mode).arg(&path).output().expect("execute real compiler");
