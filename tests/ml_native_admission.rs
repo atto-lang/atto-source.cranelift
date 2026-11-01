@@ -1,14 +1,39 @@
 //! Compiler CLI acceptance for the *current* stage-0 ML arithmetic slice.
 //! This tests the real Oreslang -> Cranelift JIT only when Cargo runs.
 //! It does not claim FP64, tensor, autograd, actor, or other backend parity.
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+// Keep file-backed child output outside OS pipes: try_wait() does not drain
+// pipes and verbose IR/stderr could otherwise fill a pipe and deadlock.
+// Files are created exclusively, mode 0600 on Unix, and removed on panics.
+struct ScratchFiles(Vec<PathBuf>);
+impl Drop for ScratchFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn exclusive_file(path: &Path, guard: &mut ScratchFiles) -> File {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path).expect("exclusive temporary fixture/output creation");
+    guard.0.push(path.to_path_buf());
+    file
+}
 
 fn execute(source: &str, mode: &str) -> Output {
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -16,45 +41,45 @@ fn execute(source: &str, mode: &str) -> Output {
         "orescranelift-ml-admission-{}-{nonce}.ores",
         std::process::id()
     ));
-    // Never overwrite a file or symlink pre-existing at the chosen name.
-    // An unexpected collision is a test failure, not a reason to truncate.
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&path)
-        .expect("exclusive temp fixture creation");
+    // The unique source/output filenames must not overwrite existing files
+    // or symlinks, including during simultaneous Cargo test invocations.
+    let mut cleanup = ScratchFiles(Vec::new());
+    let mut file = exclusive_file(&path, &mut cleanup);
     file.write_all(source.as_bytes()).expect("write fixture");
     file.sync_all().expect("sync fixture");
     drop(file);
+
+    let stdout_path = path.with_extension("stdout");
+    let stderr_path = path.with_extension("stderr");
+    let stdout = exclusive_file(&stdout_path, &mut cleanup);
+    let stderr = exclusive_file(&stderr_path, &mut cleanup);
     let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode)
         .arg(&path)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()
         .expect("invoke actual Cranelift compiler CLI");
     let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if child.try_wait().expect("poll compiler subprocess").is_some() {
-            break;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll compiler subprocess") {
+            break status;
         }
         if Instant::now() >= deadline {
-            child.kill().expect("kill hung compiler subprocess");
+            let _ = child.kill();
             let _ = child.wait();
-            std::fs::remove_file(&path).expect("delete timed-out fixture");
             panic!("Cranelift {mode} exceeded five-second native admission guard");
         }
         std::thread::sleep(Duration::from_millis(10));
+    };
+    // No pipe read deadlock: the child wrote to bounded-lifetime regular files.
+    // Drop cleans up even if a read/assertion panics.
+    Output {
+        status,
+        stdout: std::fs::read(&stdout_path).expect("read native stdout"),
+        stderr: std::fs::read(&stderr_path).expect("read native stderr"),
     }
-    let result = child.wait_with_output().expect("collect compiler output");
-    std::fs::remove_file(&path).expect("delete temp fixture");
-    result
 }
 
 #[test]
@@ -71,6 +96,28 @@ fn scalar_gradient_reference_runs_through_native_jit() {
     );
     assert_eq!(result.stdout, b"42\n");
     assert!(result.stderr.is_empty());
+}
+
+#[test]
+fn integer_training_primitives_compile_to_ir_and_execute() {
+    // Portable integer-only subset of the OresLLM scalar fixture; these are
+    // source-to-real-JIT assertions, NOT FP64 or autograd evidence.
+    let cases = [
+        ("gradient", "fnc main():int{return 2*((5*3+1)-9)*3;}", b"42\n".as_slice()),
+        ("associativity", "fnc main():int{return (7*8)-14;}", b"42\n".as_slice()),
+        ("signed_subtraction", "fnc main():int{return 13-(-29);}", b"42\n".as_slice()),
+        ("zero_cancellation", "fnc main():int{return (3*14)+(0*7);}", b"42\n".as_slice()),
+    ];
+    for (name, source, expected) in cases {
+        let ir = execute(source, "ir");
+        assert_eq!(ir.status.code(), Some(0), "{name}: compiler IR phase rejected source");
+        assert!(!ir.stdout.is_empty(), "{name}: empty compiler/JIT IR");
+        assert!(ir.stderr.is_empty(), "{name}: unexpected compiler IR diagnostics");
+        let run = execute(source, "run");
+        assert_eq!(run.status.code(), Some(0), "{name}: native JIT failed");
+        assert_eq!(run.stdout, expected, "{name}: wrong real native value");
+        assert!(run.stderr.is_empty(), "{name}: unexpected native diagnostics");
+    }
 }
 
 #[test]
