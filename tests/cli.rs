@@ -669,13 +669,13 @@ fn orestra_scalar_capacity_and_execution_canaries_native_jit() {
         ("73", "73\n"),
     ] {
         fixture(
-            &format!("pub fnc main(): int {{ return {expression}; }}\\n"),
+            &format!("pub fnc main(): int {{ return {expression}; }}\n"),
             &[], true, expected,
         );
     }
     // An intermediate signed64 overflow must never wrap into a result.
     fixture(
-        "pub fnc main(): int { return (9223372036854775807 + 1) - 1; }\\n",
+        "pub fnc main(): int { return (9223372036854775807 + 1) - 1; }\n",
         &[], false, "",
     );
 }
