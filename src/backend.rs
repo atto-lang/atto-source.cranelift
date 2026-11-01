@@ -15,22 +15,24 @@ fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
     params: &[cranelift_codegen::ir::Value],
+    locals: &[cranelift_codegen::ir::Value],
     error: cranelift_codegen::ir::Block,
 ) -> cranelift_codegen::ir::Value {
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        Local(i) => locals[*i],
         BitXor(x, y) => {
             // Both operands are emitted in lexical order. bxor is an actual
             // native Cranelift instruction, not a host-side reference oracle.
-            let lhs = emit(x, b, params, error);
-            let rhs = emit(y, b, params, error);
+            let lhs = emit(x, b, params, locals, error);
+            let rhs = emit(y, b, params, locals, error);
             b.ins().bxor(lhs, rhs)
         }
         Rem(lhs, divisor) => {
             // Evaluation of lhs (including checked overflow) is mandatory.
-            let numerator = emit(lhs, b, params, error);
+            let numerator = emit(lhs, b, params, locals, error);
             // Signed remainder by -1 is always zero under Java semantics,
             // but native srem(i64::MIN, -1) can trap/produce poison.
             if *divisor == -1 {
@@ -46,23 +48,23 @@ fn emit(
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
-                    let rhs = emit(x, b, params, error);
+                    let rhs = emit(x, b, params, locals, error);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
                 Add(x, y) => {
-                    let lhs = emit(x, b, params, error);
-                    let rhs = emit(y, b, params, error);
+                    let lhs = emit(x, b, params, locals, error);
+                    let rhs = emit(y, b, params, locals, error);
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
-                    let lhs = emit(x, b, params, error);
-                    let rhs = emit(y, b, params, error);
+                    let lhs = emit(x, b, params, locals, error);
+                    let rhs = emit(y, b, params, locals, error);
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
-                    let lhs = emit(x, b, params, error);
-                    let rhs = emit(y, b, params, error);
+                    let lhs = emit(x, b, params, locals, error);
+                    let rhs = emit(y, b, params, locals, error);
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -101,7 +103,14 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     b.switch_to_block(entry);
     b.seal_block(entry);
     let p = b.block_params(entry).to_vec();
-    let value = emit(&source.result, &mut b, &p[..4], failure);
+    let mut local_values = Vec::with_capacity(source.locals.len());
+    for initializer in &source.locals {
+        // Eager evaluation and checked failure happen once, in source order.
+        // Values remain SSA (immutable); there are no mutable local slots.
+        let value = emit(initializer, &mut b, &p[..4], &local_values, failure);
+        local_values.push(value);
+    }
+    let value = emit(&source.result, &mut b, &p[..4], &local_values, failure);
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     let ok = b.ins().iconst(types::I32, 0);
     b.ins().return_(&[ok]);
