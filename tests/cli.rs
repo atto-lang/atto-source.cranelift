@@ -29,6 +29,11 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     );
     if ok {
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+        assert!(
+            output.stderr.is_empty(),
+            "successful native JIT execution emitted stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     } else {
         assert!(
             output.stdout.is_empty(),
