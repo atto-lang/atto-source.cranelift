@@ -344,14 +344,109 @@ impl<'a> Parser<'a> {
 fn has_actor_pubsub_surface(text: &str) -> bool {
     // Stage-0 stays scalar-only. Detect the pub/sub surface before ordinary
     // parsing so it cannot accidentally reach CLIF emission as the frontend
-    // grows. Line comments are ignored to preserve comment transparency.
-    text.lines().any(|line| {
-        let code = line.split_once("//").map_or(line, |(before, _)| before);
-        code.contains("actor.group(")
-            || code.contains("Topic<")
-            || code.contains("Subscription<")
-            || code.contains(".topic<")
-    })
+    // grows. Comments and quoted literals are inert.
+    #[derive(Clone, Copy)]
+    enum Tok<'a> {
+        Id(&'a str),
+        Sym(u8),
+    }
+
+    fn is_ident_start(byte: u8) -> bool {
+        byte.is_ascii_alphabetic() || byte == b'_'
+    }
+    fn is_ident_continue(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut previous: Option<Tok<'_>> = None;
+    let mut before_previous: Option<Tok<'_>> = None;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+
+        if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+
+        if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'*' {
+            index += 2;
+            let mut depth = 1usize;
+            while index < bytes.len() && depth != 0 {
+                if index + 1 < bytes.len()
+                    && bytes[index] == b'/'
+                    && bytes[index + 1] == b'*'
+                {
+                    depth += 1;
+                    index += 2;
+                } else if index + 1 < bytes.len()
+                    && bytes[index] == b'*'
+                    && bytes[index + 1] == b'/'
+                {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+
+        if matches!(byte, b'"' | b'\'' | b'`') {
+            let quote = byte;
+            index += 1;
+            let mut escaped = false;
+            while index < bytes.len() {
+                let current = bytes[index];
+                index += 1;
+                if escaped {
+                    escaped = false;
+                } else if current == b'\\' {
+                    escaped = true;
+                } else if current == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        let current = if is_ident_start(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_ident_continue(bytes[index]) {
+                index += 1;
+            }
+            Tok::Id(&text[start..index])
+        } else {
+            index += 1;
+            Tok::Sym(byte)
+        };
+
+        let found = match (before_previous, previous, current) {
+            (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
+            (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
+            (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+
+        before_previous = previous;
+        previous = Some(current);
+    }
+
+    false
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {
