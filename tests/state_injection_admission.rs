@@ -91,8 +91,8 @@ fn failed_state_injection_does_not_report_ir_as_guest_stdout() {
     // Test both entry-mode paths with token-local positions, including leading
     // comments and UTF-8 source. A rejection must never be a generic parse
     // failure or an IR-emitting fallback.
-    for prefix in ["", "// header annotation @Inject is not active\\n", "// é safe comment\\n"] {
-        let source = format!("{prefix}@StateBacked(MutableStateContainer(scope = #instance))\\ndefine class Inventory as\\nlet int count = 0;\\nend\\n");
+    for prefix in ["", "// header annotation @Inject is not active\n", "// é safe comment\n"] {
+        let source = format!("{prefix}@StateBacked(MutableStateContainer(scope = #instance))\ndefine class Inventory as\nlet int count = 0;\nend\n");
         for mode in ["run", "ir"] {
             let result = run_source(&source, mode);
             assert!(!result.status.success(), "{mode} accepted state backing");
