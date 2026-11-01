@@ -25,6 +25,44 @@ fn reject_cli(mode: &str, source: &str) {
         !out.stderr.is_empty(),
         "{mode} failed without an explicit diagnostic: {source}"
     );
+    let diagnostic = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        diagnostic.starts_with("orescranelift: "),
+        "{mode} did not return a compiler-owned error: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("panicked at") && !diagnostic.contains("No such file"),
+        "{mode} failed before source admission or panicked: {diagnostic}"
+    );
+}
+
+
+#[test]
+fn scalar_positive_controls_prove_native_run_and_ir_still_work() {
+    // Negatives alone are not semantic evidence: a compiler that rejects
+    // everything would appear safe. Exercise one real native guest and IR.
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-scalar-positive-{}-{}.ores",
+        std::process::id(), id
+    ));
+    std::fs::write(&path, "fnc main():int{return (6*7);}\n")
+        .expect("write positive fixture");
+    for mode in ["run", "ir"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&path)
+            .output()
+            .expect("execute native compiler positive control");
+        assert!(out.status.success(), "{mode}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.stderr.is_empty(), "{mode}: unexpected diagnostic");
+        if mode == "run" {
+            assert_eq!(out.stdout, b"42\n", "native guest scalar result");
+        } else {
+            assert!(!out.stdout.is_empty(), "successful native IR must not be empty");
+        }
+    }
+    std::fs::remove_file(&path).expect("remove positive fixture");
 }
 
 #[test]
