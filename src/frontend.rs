@@ -193,7 +193,7 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Punct(b')'))?;
                 self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
             }
-            Token::Word("rt") if !self.parameters.iter().any(|p| p == "rt") => {
+            Token::Word("rt") => {
                 // Stage-0 has no SharedMutex<T>, shared allocation domain, or
                 // synchronized guard lowering. Never reinterpret this as a
                 // scalar alias (or claim LLVM/Java guarded-mutation parity).
@@ -301,6 +301,7 @@ impl<'a> Parser<'a> {
                         | "pub"
                         | "define"
                         | "fnc"
+                        | "rt"
                         | "async"
                         | "await"
                         | "actor"
