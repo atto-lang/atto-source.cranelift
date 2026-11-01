@@ -45,6 +45,9 @@ fn unsupported(source: &str) {
 
 #[test]
 fn stategraph_common_checked_scalar_native_jit() {
+    let shared = include_str!("../contracts/stategraph-portability/shared-scalar.ores");
+    assert_eq!(shared, "fnc main():int{return 6*7;}\n");
+    accepted(shared, &[], "42\n");
     accepted(
         "fnc main(steps:int,delta:int):int{return steps+delta*2;}",
         &["6", "18"],
