@@ -9,7 +9,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 fn cli(source: &str, mode: &str) -> std::process::Output {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "oresllm-jit-adversarial-{}-{id}.ores", std::process::id()
+        "oresllm-jit-adversarial-{}-{id}.ores",
+        std::process::id()
     ));
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
@@ -38,7 +39,10 @@ fn accept(expression: &str, expected: i64) {
         format!("{expected}\n"),
         "different native result for {expression}"
     );
-    assert!(output.stderr.is_empty(), "unexpected native diagnostic for {expression}");
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected native diagnostic for {expression}"
+    );
 }
 fn refuse(expression: &str) {
     for mode in ["run", "ir"] {
