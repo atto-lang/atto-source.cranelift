@@ -202,7 +202,18 @@ mod native_rem_mod_differential_tests {
                 );
                 let parsed = parse(&source).expect("literal denominator is supported");
                 let native = compile(&parsed).expect("Cranelift JIT must lower subset");
-                for numerator in numerators {
+                // Deterministic xorshift stream extends the handpicked
+                // boundary vectors without nondeterministic CI seeds.
+                // All generated values are tested against an independent
+                // wider signed-i128 oracle, never the frontend evaluator.
+                let mut seed = 0x9e37_79b9_7f4a_7c15_u64 ^ (divisor as u64);
+                let random = (0..128).map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as i64
+                });
+                for numerator in numerators.into_iter().chain(random) {
                     let exact_remainder = (numerator as i128) % (divisor as i128);
                     let exact = if op == "mod" && exact_remainder < 0 {
                         exact_remainder + (divisor as i128).abs()
