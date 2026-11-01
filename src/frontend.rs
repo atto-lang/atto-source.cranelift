@@ -81,7 +81,9 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' {
+                // CR is a source line terminator too. Consuming through
+                // a CR could hide executable effect keywords after a comment.
+                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
                     self.pos += 1;
                 }
                 continue;
@@ -489,5 +491,7 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
+        assert!(parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}").is_err());
+        assert!(parse("fnc main():int{return 42;} // comment\r").is_ok());
     }
 }
