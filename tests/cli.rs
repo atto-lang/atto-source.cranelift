@@ -365,3 +365,58 @@ fn tcp_connection_pool_and_actor_ownership_fail_closed_before_native_jit() {
     // actual compiled guest remains a source-only scalar expression.
     fixture("fnc main():int{return 42;} // tcp pool rt share", &[], true, "42\n");
 }
+
+#[test]
+fn readonly_shared_slab_lease_and_pin_fail_closed_in_run_and_ir() {
+    // This backend has no trusted shared slab region, reactor, actor identity
+    // authority, physical close attestation, or capability lease lowering.
+    // Reject both execution AND emitted native IR to prevent false parity.
+    let cases = [
+        "fnc main():int{return tcp.pool(3);}",
+        "fnc main():int{return pool.acquire_async();}",
+        "fnc main():int{return lease.exchange_async(3);}",
+        "fnc main():int{return lease.release_async();}",
+        "fnc main():int{return FrozenBytes.from([1,2,3]);}",
+        "fnc main():int{return FrozenBytes.pin();}",
+        "fnc main():int{return FrozenBytes.read_at(0);}",
+        "fnc main():int{return SharedBuffer.pin();}",
+        "fnc main():int{return shared_buffer.read_at(0);}",
+        "fnc main():int{return rt share frozen_request;}",
+        "fnc main():int{return rt mut share frozen_request;}",
+        "fnc main():int{return await pool.open_stream_async();}",
+        "define actor PoolOwner as end fnc main():int{return 1;}",
+        "fnc main():int{return Pointer<int>.from_raw(1);}",
+    ];
+    for (index, source) in cases.iter().enumerate() {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-slab-{}-{}-{}.ores",
+            std::process::id(), sequence, index
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{mode} unexpectedly admitted unsupported source case {index}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest output/IR for unsupported source case {index}"
+            );
+            assert!(
+                !output.stderr.is_empty(),
+                "{mode} did not explain unsupported source case {index}"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+    fixture(
+        "fnc main():int{return 17;} // shared readonly tcp slab pin",
+        &[], true, "17\\n"
+    );
+}
