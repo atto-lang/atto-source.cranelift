@@ -83,3 +83,19 @@ symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
+
+## ODB1 scalar floor — native signed shift by eight (draft)
+
+For native Oreslang DB code, the canonical ODB1 encoder replaces
+`int / 256` (a float-valued operation in Java/GraalVM Oreslang) with
+a signed integer `>> 8`. Cranelift stage-0 now accepts **only**
+`x >> 8`, with the literal shift count 8 and lower precedence than
+checked addition/multiplication; all other shift counts, dynamic shift
+expressions, and unsigned shifts fail closed before JIT lowering.
+
+The actual Cranelift IR uses `sshr`, and the integration test runs
+positive, negative and overflow vectors through the real native JIT
+when cargo/runners are available. Stage-0 **still cannot** import the
+DB's `wal_frame` module, allocate `List<int>`, construct `Frame`,
+implement `Result<T,E>`, or offer actor-owned async WAL.
+This is a *scalar prerequisite*, NOT five-backend ODB1 parity.

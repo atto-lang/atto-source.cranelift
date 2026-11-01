@@ -21,6 +21,14 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        ShiftRight8(x) => {
+            // Signed Cranelift arithmetic shift of i64, preserving sign.
+            // The parser admits only the constant 8, matching ODB1 byte
+            // extraction for 0..i31::MAX without float narrowing.
+            let input = emit(x, b, params, error);
+            let eight = b.ins().iconst(types::I64, 8);
+            b.ins().sshr(input, eight)
+        }
         BitXor(x, y) => {
             // Both operands are emitted in lexical order. bxor is an actual
             // native Cranelift instruction, not a host-side reference oracle.

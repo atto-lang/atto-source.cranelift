@@ -76,6 +76,45 @@ fn native_execution_and_negative_controls() {
 }
 
 #[test]
+fn odb1_native_signed_shift8_scalar_gate() {
+    // Real native JIT guest checks of the ODB1 scalar byte extraction floor.
+    // DOES NOT establish WAL List/Result/actor/module support.
+    let source = "fnc main(x:int):int{return x>>8;}";
+    for (operand, expected) in [
+        ("0", "0\n"),
+        ("255", "0\n"),
+        ("256", "1\n"),
+        ("65535", "255\n"),
+        ("2147483647", "8388607\n"),
+        ("-1", "-1\n"),
+        ("-256", "-1\n"),
+        ("-9223372036854775808", "-36028797018963968\n"),
+    ] {
+        fixture(source, &[operand], true, expected);
+    }
+    fixture("fnc main(x:int):int{return x+1>>8;}", &["255"], true, "1\n");
+    fixture(
+        "fnc main(x:int):int{return x+1>>8;}",
+        &["9223372036854775807"], false, ""
+    );
+    fixture("fnc main(x:int):int{return x>>8>>8;}", &["65536"], true, "1\n");
+    // No silent lowering of any other shift, dynamic count, float division,
+    // unsigned shift or module/ADT heap features.
+    for invalid in [
+        "fnc main(x:int):int{return x>>7;}",
+        "fnc main(x:int,y:int):int{return x>>y;}",
+        "fnc main(x:int):int{return x>>8+1;}",
+        "fnc main(x:int):int{return x>>>8;}",
+        "fnc main(x:int):int{return x>8;}",
+        "fnc main(x:int):int{return x<<8;}",
+        "fnc main(x:int):int{return x/256;}",
+        "define module wal_frame as pub fnc main():int{return 256>>8;} end",
+    ] {
+        fixture(invalid, &["256"], false, "");
+    }
+}
+
+#[test]
 fn rate_limit_weighted_counter_scalar_native_execution() {
     // Genuine CLIF-JIT guest computations for the shared *scalar*
     // rate-limit arithmetic intersection. No quota authority is implemented.
