@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,7 +13,13 @@ fn execute(source: &str, arguments: &[&str]) -> Output {
         std::process::id(),
         serial
     ));
-    std::fs::write(&file, source).expect("write Oreslang fixture");
+    let mut source_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+        .expect("create fresh Oreslang fixture without following a symlink");
+    source_file.write_all(source.as_bytes()).expect("write Oreslang fixture");
+    drop(source_file);
     let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
         .arg(&file)
@@ -35,12 +42,16 @@ fn accepted(source: &str, arguments: &[&str], expected: &str) {
 
 fn unsupported(source: &str) {
     let out = execute(source, &[]);
-    assert!(
-        !out.status.success(),
-        "unimplemented StateGraph construct silently accepted"
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "unsupported source must be rejected by the compiler with exit code 1"
     );
-    assert!(out.stdout.is_empty(), "failed source emitted guest output");
-    assert!(!out.stderr.is_empty(), "rejection must have a diagnostic");
+    assert!(out.stdout.is_empty(), "rejected source emitted guest output");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("orescranelift: "),
+        "rejection must originate from the Oreslang compiler"
+    );
 }
 
 #[test]
