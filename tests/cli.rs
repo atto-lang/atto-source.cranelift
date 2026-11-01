@@ -450,3 +450,25 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
+
+
+#[test]
+fn unsupported_suspension_and_critical_syntax_fail_closed_before_jit() {
+    // The Cranelift frontend currently supports the scalar subset only.
+    // These negative native guest tests must not be mistaken for actual
+    // suspending continuation or critical-section runtime support.
+    for source in [
+        "suspends fnc main():int{return 1;}",
+        "async fnc main():int{return 1;}",
+        "critical fnc main():int{return 1;}",
+        "critical suspends fnc main():int{return 1;}",
+        "suspends critical fnc main():int{return 1;}",
+        "fnc main():int{return await 1;}",
+        "fnc main():int{critical {return 1;}}",
+        "fnc main():int{try critical {return 1;} else {return 0;}}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // Reject keywords as syntax, not as a textual substring in comments.
+    fixture("fnc main():int{return 7;} // suspends critical await", &[], true, "7\n");
+}
