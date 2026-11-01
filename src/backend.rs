@@ -159,3 +159,64 @@ impl Compiled {
         }
     }
 }
+
+#[cfg(test)]
+mod native_rem_mod_differential_tests {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn signed64_native_jit_matches_independent_i128_oracle() {
+        // Compile one real executable per intrinsic and literal divisor,
+        // then invoke it repeatedly with signed64 runtime arguments.
+        // This is NOT merely a frontend/evaluator unit test.
+        let divisors = [
+            i64::MIN,
+            -9223372036854775807,
+            -17,
+            -4,
+            -1,
+            1,
+            3,
+            17,
+            i64::MAX,
+        ];
+        let numerators = [
+            i64::MIN,
+            i64::MIN + 1,
+            -9223372036854775807,
+            -99,
+            -9,
+            -1,
+            0,
+            1,
+            9,
+            99,
+            i64::MAX - 1,
+            i64::MAX,
+        ];
+        for op in ["rem", "mod"] {
+            for divisor in divisors {
+                let source = format!(
+                    "fnc main(x:int):int{{return Integer.{op}(x,{divisor});}}"
+                );
+                let parsed = parse(&source).expect("literal denominator is supported");
+                let native = compile(&parsed).expect("Cranelift JIT must lower subset");
+                for numerator in numerators {
+                    let exact_remainder = (numerator as i128) % (divisor as i128);
+                    let exact = if op == "mod" && exact_remainder < 0 {
+                        exact_remainder + (divisor as i128).abs()
+                    } else {
+                        exact_remainder
+                    };
+                    let expected = i64::try_from(exact).expect("result is signed64");
+                    assert_eq!(
+                        native.run(&[numerator]).expect("guest must run"),
+                        expected,
+                        "native {op}({numerator}, {divisor})"
+                    );
+                }
+            }
+        }
+    }
+}
