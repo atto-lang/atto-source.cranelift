@@ -457,20 +457,23 @@ fn readonly_shared_slab_lease_and_pin_fail_closed_in_run_and_ir() {
                 .arg(&path)
                 .output()
                 .unwrap();
-            assert!(
-                !output.status.success(),
-                "{mode} unexpectedly admitted unsupported source case {index}"
+            // A signal, missing launcher, or infrastructure exit code is not
+            // evidence that the native frontend rejected the feature.
+            assert_eq!(
+                output.status.code(), Some(1),
+                "{mode} must return the compiler's explicit rejection status for case {index}"
             );
             assert!(
                 output.stdout.is_empty(),
                 "{mode} emitted guest output/IR for unsupported source case {index}"
             );
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
             assert!(
-                !output.stderr.is_empty(),
-                "{mode} did not explain unsupported source case {index}"
+                diagnostic.starts_with("orescranelift: "),
+                "{mode} must emit the native compiler's owned diagnostic for case {index}: {diagnostic}"
             );
             assert!(
-                !String::from_utf8_lossy(&output.stderr).contains("panicked at"),
+                !diagnostic.contains("panicked at") && !diagnostic.contains("thread 'main' panicked"),
                 "{mode} crashed instead of rejecting unsupported source case {index}"
             );
         }
