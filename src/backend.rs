@@ -366,7 +366,7 @@ mod native_named_signed64_differential {
                     let actual = compiled.run(&[numerator, divisor]);
                     if divisor == 0 {
                         assert_eq!(
-                            actual.as_deref(),
+                            actual.as_ref().map(|_| ()).map_err(String::as_str),
                             Err("integer divisor zero"),
                             "{op}({numerator},{divisor})"
                         );
@@ -403,7 +403,7 @@ mod native_named_signed64_differential {
                 let actual = compiled.run(&[base, exponent]);
                 if exponent < 0 {
                     assert_eq!(
-                        actual.as_deref(),
+                        actual.as_ref().map(|_| ()).map_err(String::as_str),
                         Err("negative integer exponent"),
                         "native pow({base},{exponent})"
                     );
@@ -427,7 +427,7 @@ mod native_named_signed64_differential {
                 }
                 if failure {
                     assert_eq!(
-                        actual.as_deref(),
+                        actual.as_ref().map(|_| ()).map_err(String::as_str),
                         Err("i64 arithmetic overflow"),
                         "native pow({base},{exponent})"
                     );
