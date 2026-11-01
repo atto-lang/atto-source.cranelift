@@ -32,7 +32,7 @@ point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including removed arithmetic operators (`%`, `^`, `^^`),
 imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
+classes, actors, heaps, ownership, recursion, async, control flow, division, remainder syntax,
 structural types, UTF-8 identifiers, and any trailing code.
 
 The source operators `%`, `^` and `^^` are all rejected, in line with
