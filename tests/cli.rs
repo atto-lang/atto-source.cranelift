@@ -336,3 +336,21 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
+
+// Wave 2026-11-01: all eight share the parity corpus' signed-i64 source expressions.
+// This is actual Cranelift JIT execution, never a host-only arithmetic oracle.
+#[test]
+fn shared_five_backend_scalar_wave_native_jit() {
+    fixture("pub fnc main(): int { return (2 + 3) * 8 + 2; }", &[], true, "42\n"); // grouped precedence
+    fixture("pub fnc main(): int { return -(-42); }", &[], true, "42\n"); // double negation
+    fixture("pub fnc main(): int { return (100 - 16) - 42; }", &[], true, "42\n"); // left associative subtraction
+    fixture("pub fnc main(): int { return -7 * -6; }", &[], true, "42\n"); // signed multiplication
+    fixture("pub fnc main(): int { return (7 - 14) * -6; }", &[], true, "42\n"); // negative multiplication chain
+    fixture("pub fnc main(): int { return 9223372036854775807 - 9223372036854775765; }", &[], true, "42\n"); // i64 max minus large
+    fixture("pub fnc main(): int { return -9223372036854775808 + 9223372036854775807 + 43; }", &[], true, "42\n"); // i64 min plus max
+    fixture("pub fnc main(): int { return 2 * (3 + 4) * 3; }", &[], true, "42\n"); // nested grouping
+    fixture("pub fnc main(): int { return 9223372036854775808; }", &[], false, ""); // literal overflow
+    fixture("pub fnc main(): int { return 7 / 2; }", &[], false, ""); // int division rejection
+    fixture("pub fnc main(): int { return -(-9223372036854775808); }", &[], false, ""); // overflow at runtime
+    fixture("pub fnc main(): int { return 5 ^ 3; }", &[], false, ""); // removed operator
+}
