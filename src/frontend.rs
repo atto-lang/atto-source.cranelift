@@ -30,6 +30,9 @@ pub enum Expr {
     BitXor(Box<Expr>, Box<Expr>),
     // The divisor is compiler-proven to be a nonzero signed i64 literal.
     Rem(Box<Expr>, i64),
+    // Java-aligned Euclidean modulus, with a statically proven nonzero
+    // signed64 literal divisor. It never invokes host-language % semantics.
+    Mod(Box<Expr>, i64),
 }
 
 #[derive(Debug)]
@@ -44,6 +47,26 @@ enum Token<'a> {
     Number(&'a str),
     Punct(u8),
     End,
+}
+
+// Share the same narrow literal-divisor rule between legacy '%' and the
+// canonical Integer.rem/mod spellings. General dynamic divisors remain
+// fail-closed until fully verified typed lowering exists.
+fn literal_divisor(rhs: Expr) -> Result<i64, String> {
+    let divisor = match rhs {
+        Expr::Literal(value) => value,
+        Expr::Neg(inner) => match *inner {
+            Expr::Literal(value) => value
+                .checked_neg()
+                .ok_or("remainder divisor out of range")?,
+            _ => return Err("remainder requires a signed integer literal divisor".into()),
+        },
+        _ => return Err("remainder requires a signed integer literal divisor".into()),
+    };
+    if divisor == 0 {
+        return Err("remainder divisor cannot be zero".into());
+    }
+    Ok(divisor)
 }
 
 struct Parser<'a> {
@@ -185,13 +208,24 @@ impl<'a> Parser<'a> {
                 // must reject before emitting native code.
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
-                self.expect(Token::Word("bitXor"))?;
+                let operation = match self.current {
+                    Token::Word("bitXor") => 0,
+                    Token::Word("rem") => 1,
+                    Token::Word("mod") => 2,
+                    _ => return Err("unsupported Integer operation".into()),
+                };
+                self.next()?;
                 self.expect(Token::Punct(b'('))?;
                 let lhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b','))?;
                 let rhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b')'))?;
-                self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
+                self.node(match operation {
+                    0 => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
+                    1 => Expr::Rem(Box::new(lhs), literal_divisor(rhs)?),
+                    2 => Expr::Mod(Box::new(lhs), literal_divisor(rhs)?),
+                    _ => unreachable!(),
+                })
             }
             Token::Word("rt") if !self.parameters.iter().any(|p| p == "rt") => {
                 // Stage-0 has no SharedMutex<T>, shared allocation domain, or
@@ -240,28 +274,7 @@ impl<'a> Parser<'a> {
                 b'%' => {
                     // Stage-0 parity with LLVM's literal-divisor remainder:
                     // never lower dynamic or zero divisors into native JIT code.
-                    let divisor = match rhs {
-                        Expr::Literal(value) => value,
-                        Expr::Neg(inner) => match *inner {
-                            Expr::Literal(value) => value
-                                .checked_neg()
-                                .ok_or("remainder divisor out of range")?,
-                            _ => {
-                                return Err(
-                                    "remainder requires a signed integer literal divisor".into()
-                                );
-                            }
-                        },
-                        _ => {
-                            return Err(
-                                "remainder requires a signed integer literal divisor".into()
-                            );
-                        }
-                    };
-                    if divisor == 0 {
-                        return Err("remainder divisor cannot be zero".into());
-                    }
-                    Expr::Rem(Box::new(lhs), divisor)
+                    Expr::Rem(Box::new(lhs), literal_divisor(rhs)?)
                 }
                 _ => unreachable!(),
             })?;
@@ -362,6 +375,21 @@ mod tests {
                     Ok(0) // Java signed remainder: even i64::MIN % -1 is zero.
                 } else {
                     numerator.checked_rem(*divisor).ok_or("overflow")
+                }
+            }
+            Expr::Mod(lhs, divisor) => {
+                let numerator = eval(lhs, args)?;
+                let rem = if *divisor == -1 {
+                    0
+                } else {
+                    numerator.checked_rem(*divisor).ok_or("overflow")?
+                };
+                if rem >= 0 {
+                    Ok(rem)
+                } else if *divisor > 0 {
+                    rem.checked_add(*divisor).ok_or("overflow")
+                } else {
+                    rem.checked_sub(*divisor).ok_or("overflow")
                 }
             }
         }
