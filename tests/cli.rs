@@ -336,3 +336,126 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
+
+
+#[test]
+fn immutable_default_scalar_jit_parity_spellings() {
+    // All forms execute real compiled Cranelift native code, never an
+    // independent Rust expression evaluator.
+    for declaration in [
+        "int x = 7;",
+        "const x = 7;",
+        "const int x = 7;",
+        "const x: int = 7;",
+    ] {
+        fixture(
+            &format!("fnc main():int{{{declaration} return x;}}"),
+            &[],
+            true,
+            "7\n",
+        );
+    }
+    for (source, args, result) in [
+        (
+            "fnc main(int a):int{int x=a+2; const y=x*3; return y;}",
+            &["5"][..],
+            "21\n",
+        ),
+        (
+            "fnc main(x:int):int{const x2: int = x*2; int y=x2+1; return y;}",
+            &["20"][..],
+            "41\n",
+        ),
+        (
+            "fnc main():int{const x=1+2*3; const y=x+4; return x+y;}",
+            &[][..],
+            "18\n",
+        ),
+        (
+            "fnc main():int{const value = -9223372036854775808; return value;}",
+            &[][..],
+            "-9223372036854775808\n",
+        ),
+        (
+            "fnc main():int{const x=7; return Integer.bitXor(x,3);}",
+            &[][..],
+            "4\n",
+        ),
+    ] {
+        fixture(source, args, true, result);
+    }
+}
+
+#[test]
+fn immutable_default_bindings_fail_closed_on_mutation_aliases_and_inference() {
+    for source in [
+        "fnc main():int{int x=7; x=8; return x;}",
+        "fnc main():int{const x=7; x=8; return x;}",
+        "fnc main():int{const int x=7; x+=1; return x;}",
+        "fnc main():int{const x: int=7; x=x+1; return x;}",
+        "fnc main():int{int x=7; rt mut borrow x; return x;}",
+        "fnc main():int{int x=7; const x=8; return x;}",
+        "fnc main(int x):int{const x=8; return x;}",
+        "fnc main():int{int x=x+1; return x;}",
+        "fnc main():int{int x=y; int y=7; return x;}",
+        "fnc main():int{const x=missing; return x;}",
+        "fnc main():int{const x; return 7;}",
+        "fnc main():int{int x; return 7;}",
+        "fnc main():int{string x=7; return x;}",
+        "fnc main():int{const x: bool=7; return x;}",
+        "fnc main():int{const x=7; let int y=8; return x;}",
+        "fnc main():int{val int x=7; return x;}",
+        "fnc main():int{int x=7; int x=8; return x;}",
+        "fnc main():int{const const x=7; return x;}",
+        "fnc main():int{const x=7; return x=8;}",
+        "fnc main():int{int x=7; return x+unknown;}",
+        "fnc main():int{const x=7; return x();}",
+        "fnc main():int{int x=7; return x as float;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // A never-read initializer must still run its checked computation.
+    fixture(
+        "fnc main(x:int):int{const unused=x+1; return 7;}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main():int{const unused=9223372036854775807+1; return 7;}",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn immutable_default_local_budget_and_name_resolution() {
+    let mut within_limit = String::from("fnc main():int{");
+    for i in 0..64 {
+        within_limit.push_str(&format!("int v{i}={i};"));
+    }
+    within_limit.push_str("return v63;}");
+    fixture(&within_limit, &[], true, "63\n");
+
+    let mut over_limit = String::from("fnc main():int{");
+    for i in 0..65 {
+        over_limit.push_str(&format!("int v{i}={i};"));
+    }
+    over_limit.push_str("return v64;}");
+    fixture(&over_limit, &[], false, "");
+
+    // Confirm commented-out declarations do not become live bindings.
+    fixture(
+        "fnc main():int{// const x=9;\n int x=7; return x;}",
+        &[],
+        true,
+        "7\n",
+    );
+    fixture(
+        "fnc main():int{// const x=9;\n return x;}",
+        &[],
+        false,
+        "",
+    );
+}
