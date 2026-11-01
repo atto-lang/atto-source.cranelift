@@ -389,3 +389,61 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         &[], true, "42\n"
     );
 }
+
+
+#[test]
+fn unsupported_websocket_and_transport_actor_source_fails_before_native_jit() {
+    // This is an intentional negative parity contract: the independent
+    // stage-0 Cranelift backend has no actor isolation or network imports.
+    // Do not report a successful scalar JIT as a working WebSocket guest.
+    const DIAGNOSTIC: &str = "does not support network actor execution";
+    for (index, source) in [
+        "define actor Server as end",
+        "define pub actor Server as end",
+        "pub define actor Server as end",
+        "define http actor Server as end",
+        "define websocket actor Server as end",
+        "define liveview actor Server as end",
+        "define tcp actor Server as end",
+        "define ws actor Server as end",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let file = std::env::temp_dir().join(format!(
+            "orescranelift-transport-deny-{}-{nonce}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&file, source).unwrap();
+        for mode in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1),
+                "{mode}: unsupported transport must fail before JIT");
+            assert!(result.stdout.is_empty(),
+                "{mode}: rejected transport produced stdout");
+            assert!(String::from_utf8_lossy(&result.stderr).contains(DIAGNOSTIC),
+                "{mode}: wrong diagnostic: {}",
+                String::from_utf8_lossy(&result.stderr));
+        }
+        std::fs::remove_file(file).unwrap();
+    }
+    // The same words in ordinary comments must not change scalar parsing.
+    fixture(
+        "fnc main():int{return 42;} // define websocket actor",
+        &[],
+        true,
+        "42\n",
+    );
+    // A call-shaped guest API is unsupported as well, not lowered to native.
+    fixture(
+        "fnc main():int{return websocket.listen(1234);}",
+        &[],
+        false,
+        "",
+    );
+}
