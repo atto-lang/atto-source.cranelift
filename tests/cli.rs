@@ -336,3 +336,118 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
+
+
+// Additional compiler-to-native-JIT tests: these check actual Oreslang guest
+// execution and fail-closed negative behavior, not just parser acceptance.
+#[test]
+fn native_integer_precision_matrix_without_f64_conversion() {
+    for (source, expected) in [
+        (
+            "fnc main():int{return 9007199254740993-9007199254740992;}",
+            "1\n",
+        ),
+        (
+            "fnc main():int{return -9007199254740993-(-9007199254740992);}",
+            "-1\n",
+        ),
+        (
+            "fnc main():int{return 9223372036854775807-9223372036854775806;}",
+            "1\n",
+        ),
+        (
+            "fnc main():int{return -9223372036854775808+1;}",
+            "-9223372036854775807\n",
+        ),
+        (
+            "fnc main():int{return 1_000_000_000_000_001-1_000_000_000_000_000;}",
+            "1\n",
+        ),
+        ("fnc main():int{return -(-42);}", "42\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+}
+
+#[test]
+fn native_integer_operator_precedence_matrix() {
+    for (source, expected) in [
+        ("fnc main():int{return 20-5-3;}", "12\n"),
+        ("fnc main():int{return 2+3*4;}", "14\n"),
+        ("fnc main():int{return (2+3)*4;}", "20\n"),
+        ("fnc main():int{return -7*6;}", "-42\n"),
+        ("fnc main():int{return 4*3-2*5;}", "2\n"),
+        ("fnc main():int{return (6-2)*(-7);}", "-28\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+}
+
+#[test]
+fn native_i64_checked_runtime_overflow_matrix() {
+    for (source, args) in [
+        ("fnc main(x:int):int{return x+1;}", &["9223372036854775807"][..]),
+        ("fnc main(x:int):int{return x-1;}", &["-9223372036854775808"][..]),
+        ("fnc main(x:int):int{return -x;}", &["-9223372036854775808"][..]),
+        ("fnc main(x:int):int{return x*2;}", &["4611686018427387904"][..]),
+        ("fnc main(x:int):int{return x*x;}", &["3037000500"][..]),
+        (
+            "fnc main(x:int):int{return Integer.bitXor(x+1,0);}",
+            &["9223372036854775807"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn syntax_rejections_produce_no_guest_stdout() {
+    for source in [
+        "fnc main():int{return 4^1;}",
+        "fnc main():int{return 4^^1;}",
+        "fnc main():int{return 4/2;}",
+        "fnc main():int{return 4.0;}",
+        "fnc main():float{return 4;}",
+        "fnc main():int{return Integer.pow(3,4);}",
+        "fnc main():int{return Integer.bitXor(3);}",
+        "fnc main():int{return 4;} fnc another():int{return 6;}",
+        "fnc main():int{return 4;} // comment\nunsafe",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn native_entry_parameter_count_and_i64_arguments_fail_closed() {
+    fixture("fnc main(x:int):int{return x;}", &[], false, "");
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["9223372036854775808"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["-9223372036854775809"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["not-an-int"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["42", "43"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["42"],
+        true,
+        "42\n",
+    );
+}
