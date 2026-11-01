@@ -45,4 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked --bin orescranelift
+          export CRANELIFT_COMPILER_SHA256="$(sha256sum target/debug/orescranelift | cut -d ' ' -f 1)"
+          test "${#CRANELIFT_COMPILER_SHA256}" -eq 64
+          sh -n scripts/verify-portable-scalar.sh
           sh scripts/verify-portable-scalar.sh target/debug/orescranelift
