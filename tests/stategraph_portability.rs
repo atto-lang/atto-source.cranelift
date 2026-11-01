@@ -83,19 +83,7 @@ fn stategraph_unimplemented_features_are_explicitly_rejected() {
         "define isolated actor Coordinator as state { steps:int=0; } end",
         "fnc increment(int x):int{return x+1;} fnc main():int{return increment(41);}",
     ];
-    for (index, source) in blockers.iter().enumerate() {
-        let out = execute(source, &[]);
-        assert!(
-            !out.status.success(),
-            "unexpected support for StateGraph feature blocker {index}"
-        );
-        assert!(
-            out.stdout.is_empty(),
-            "unsupported StateGraph feature {index} returned guest output"
-        );
-        assert!(
-            !out.stderr.is_empty(),
-            "unsupported StateGraph feature {index} lacked diagnostic"
-        );
+    for source in blockers {
+        unsupported(source);
     }
 }
