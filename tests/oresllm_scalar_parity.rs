@@ -42,9 +42,13 @@ fn run_case(expression: &str, expected: Option<&str>) {
             );
         }
         None => {
-            assert!(!output.status.success(), "{expression}: rejected guest succeeded");
+            assert_eq!(output.status.code(), Some(1),
+                "{expression}: expected controlled CLI rejection (exit 1), got {:?}",
+                output.status);
             assert!(output.stdout.is_empty(), "{expression}: rejection leaked stdout");
-            assert!(!output.stderr.is_empty(), "{expression}: missing diagnostic");
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(diagnostic.starts_with("orescranelift: "),
+                "{expression}: non-compiler failure or crash was miscounted: {diagnostic}");
         }
     }
 }
@@ -98,5 +102,17 @@ fn oresllm_invalid_scalar_source_must_not_execute() {
         "1__0",
     ] {
         run_case(expression, None);
+    }
+}
+
+#[test]
+fn supplemental_scalar_arithmetic_executes_through_real_jit() {
+    // Extra native execution checks; intentionally not counted as shared-manifest vectors.
+    for (expression, expected) in [
+        ("-7 * 0", "0"),
+        ("(2 + 3) * (10 - 2)", "40"),
+        ("9223372036854775807 - 9223372036854775807", "0"),
+    ] {
+        run_case(expression, Some(expected));
     }
 }
