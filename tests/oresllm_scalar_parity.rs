@@ -42,13 +42,21 @@ fn run_case(expression: &str, expected: Option<&str>) {
             );
         }
         None => {
-            assert_eq!(output.status.code(), Some(1),
+            assert_eq!(
+                output.status.code(),
+                Some(1),
                 "{expression}: expected controlled CLI rejection (exit 1), got {:?}",
-                output.status);
-            assert!(output.stdout.is_empty(), "{expression}: rejection leaked stdout");
+                output.status
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{expression}: rejection leaked stdout"
+            );
             let diagnostic = String::from_utf8_lossy(&output.stderr);
-            assert!(diagnostic.starts_with("orescranelift: "),
-                "{expression}: non-compiler failure or crash was miscounted: {diagnostic}");
+            assert!(
+                diagnostic.starts_with("orescranelift: "),
+                "{expression}: non-compiler failure or crash was miscounted: {diagnostic}"
+            );
         }
     }
 }
@@ -94,13 +102,7 @@ fn oresllm_checked_overflow_must_fail_without_stdout() {
 
 #[test]
 fn oresllm_invalid_scalar_source_must_not_execute() {
-    for expression in [
-        "unknown_value",
-        "7 / 2",
-        "5 ^ 3",
-        "5 ^^ 3",
-        "1__0",
-    ] {
+    for expression in ["unknown_value", "7 / 2", "5 ^ 3", "5 ^^ 3", "1__0"] {
         run_case(expression, None);
     }
 }
