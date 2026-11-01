@@ -1,6 +1,6 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
 use crate::frontend::{Expr, Program};
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, types};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
@@ -28,19 +28,34 @@ fn emit(
             let rhs = emit(y, b, params, error);
             b.ins().bxor(lhs, rhs)
         }
-        Rem(lhs, divisor) => {
-            // Evaluation of lhs (including checked overflow) is mandatory.
+        Rem(lhs, divisor) | Mod(lhs, divisor) => {
+            // Evaluate the numerator first: a checked overflow is observable
+            // even when rem/mod by -1 would otherwise yield the constant 0.
             let numerator = emit(lhs, b, params, error);
-            // Signed remainder by -1 is always zero under Java semantics,
-            // but native srem(i64::MIN, -1) can trap/produce poison.
+            assert_ne!(*divisor, 0, "internal invalid remainder divisor");
+            // Native signed i64 MIN % -1 traps. Java's strict contract defines
+            // that remainder to be zero, which is also Euclidean modulus zero.
             if *divisor == -1 {
                 b.ins().iconst(types::I64, 0)
             } else {
-                // The parser proved this is a nonzero literal. Reject any
-                // untrusted AST that would introduce a zero divisor.
-                assert_ne!(*divisor, 0, "internal invalid remainder divisor");
                 let denominator = b.ins().iconst(types::I64, *divisor);
-                b.ins().srem(numerator, denominator)
+                let remainder = b.ins().srem(numerator, denominator);
+                if matches!(e, Mod(..)) {
+                    let negative =
+                        b.ins().icmp_imm(IntCC::SignedLessThan, remainder, 0);
+                    // The candidate is only observed when remainder < 0.
+                    // In that branch it lies in [0, |divisor|), including when
+                    // divisor == i64::MIN. Cranelift integer arithmetic has
+                    // defined modulo-2^64 intermediate semantics.
+                    let adjusted = if *divisor > 0 {
+                        b.ins().iadd(remainder, denominator)
+                    } else {
+                        b.ins().isub(remainder, denominator)
+                    };
+                    b.ins().select(negative, adjusted, remainder)
+                } else {
+                    remainder
+                }
             }
         }
         _ => {
