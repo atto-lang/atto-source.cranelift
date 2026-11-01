@@ -76,6 +76,52 @@ fn native_execution_and_negative_controls() {
 }
 
 #[test]
+fn rate_limit_weighted_counter_scalar_native_execution() {
+    // Genuine CLIF-JIT guest computations for the shared *scalar*
+    // rate-limit arithmetic intersection. No quota authority is implemented.
+    const SOURCE: &str =
+        "fnc main(limit:int,used:int,units:int):int{return limit-used-units;}";
+    for (args, expected) in [
+        (["100", "60", "15"], "25\n"),
+        (["100", "99", "1"], "0\n"),
+        (["100", "99", "2"], "-1\n"),
+        (["9007199254740991", "9007199254740990", "1"], "0\n"),
+    ] {
+        fixture(SOURCE, &args, true, expected);
+    }
+    fixture("fnc main():int{return 100-60-15;}", &[], true, "25\n");
+    fixture(
+        "fnc main():int{return 9007199254740991-9007199254740990;}",
+        &[],
+        true,
+        "1\n",
+    );
+    // Signed64 overflow and unsupported features MUST reject before emitting
+    // a value. This does not confer uint64 wire admission.
+    fixture(
+        SOURCE,
+        &["9223372036854775807", "-1", "0"],
+        false,
+        "",
+    );
+    fixture(
+        SOURCE,
+        &["-9223372036854775808", "1", "0"],
+        false,
+        "",
+    );
+    fixture("fnc main():int{return 9223372036854775807+1;}", &[], false, "");
+    fixture("fnc main():int{return 100/60;}", &[], false, "");
+    fixture("fnc main():int{return 100>60;}", &[], false, "");
+    fixture(
+        "define module backpressure as pub fnc limit():int{return 42;} end",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
 fn native_integer_bitxor_source_execution() {
     // Real Oreslang-shaped source -> frontend -> CLIF native JIT -> result.
     // Signed64 edge vectors correspond to Java strict named arithmetic v1.
