@@ -104,6 +104,21 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Stage-0 Cranelift has no continuations or scheduler-owned
+            // critical tickets. Reject reserved effects rather than emitting
+            // unguarded scalar code for source that requires suspension.
+            match self.current {
+                Token::Word("async") => {
+                    return Err("'async' modifier removed: use suspends".into());
+                }
+                Token::Word("suspends") | Token::Word("suspend") => {
+                    return Err("suspends requires continuation lowering".into());
+                }
+                Token::Word("critical") => {
+                    return Err("critical requires scheduler-owned guard lowering".into());
+                }
+                _ => {}
+            }
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
@@ -443,4 +458,21 @@ mod tests {
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
     }
+    #[test]
+    fn critical_suspends_v1_fails_closed_without_runtime_lowering() {
+        for (source, expected) in [
+            ("async fnc main():int{return 1;}", "'async' modifier removed"),
+            ("suspends fnc main():int{return 1;}", "suspends requires continuation lowering"),
+            ("suspend fnc main():int{return 1;}", "suspends requires continuation lowering"),
+            ("critical fnc main():int{return 1;}", "critical requires scheduler-owned guard lowering"),
+            ("suspends critical fnc main():int{return 1;}", "suspends requires continuation lowering"),
+            ("fnc main():int{critical{return 1;}}", "critical requires scheduler-owned guard lowering"),
+            ("fnc main():int{try critical{return 1;}}", "critical requires scheduler-owned guard lowering"),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert!(parse("// critical suspends async\nfnc main():int{return 7;}").is_ok());
+    }
+
 }
