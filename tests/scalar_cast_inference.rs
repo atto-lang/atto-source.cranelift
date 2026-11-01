@@ -149,3 +149,10 @@ fn identity_cast_does_not_add_a_cranelift_conversion() {
         "identity checked cast must not emit a conversion or bitcast"
     );
 }
+
+
+#[test]
+fn byte_identical_five_backend_fixture_executes() {
+    let source = include_str!("scalar-cast-inference-five-backend.ores");
+    succeeds(source, &[], "42\n");
+}
