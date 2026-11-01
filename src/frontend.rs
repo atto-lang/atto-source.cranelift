@@ -435,10 +435,10 @@ fn has_actor_pubsub_surface(text: &str) -> bool {
         let found = match (before_previous, previous, current) {
             // Fail closed on planned runtime-wide, capability and group syntax,
             // including forms not covered by the original ActorGroup fixtures.
-            (_, _, Tok::Id(
-                "runtime_pubsub" | "ActorGroup" | "TopicPublisher" |
-                "TopicSubscriber" | "PubSub"
-            )) => true,
+            (_, Some(Tok::Id("runtime_pubsub")), Tok::Sym(b'.')) => true,
+            (_, Some(Tok::Id(
+                "ActorGroup" | "TopicPublisher" | "TopicSubscriber" | "PubSub"
+            )), Tok::Sym(b'<')) => true,
             (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
             (_, Some(Tok::Sym(b'.')), Tok::Id("pubsub")) => true,
             (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
@@ -506,6 +506,11 @@ mod tests {
             "fnc main():int{return 42;} /* TopicPublisher runtime_pubsub */"));
         assert!(!has_actor_pubsub_surface(
             "fnc main():int{return 42;} // TopicSubscriber\\n"));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main(TopicPublisher:int):int{return TopicPublisher;}"));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main(runtime_pubsub:int):int{return runtime_pubsub;}"));
+
 
     }
 
