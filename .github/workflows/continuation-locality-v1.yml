@@ -35,5 +35,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact PR head for backend probe
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
       - name: Run actual scalar JIT guest rejection suite
         run: cargo test --locked --test cli unsupported_suspension_and_critical_syntax_fail_closed_before_jit -- --exact
