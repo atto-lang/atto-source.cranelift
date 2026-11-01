@@ -1,0 +1,3 @@
+// 39: candidate source-identical checked-i64 scalar program.
+// Expected integer result 42; guest execution on each backend is unverified.
+pub fnc main(): int { return 9223372036854775807 - 9223372036854775765; }
