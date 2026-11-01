@@ -1,0 +1,6 @@
+tests/portable-scalar/32-grouping-multiplication.ores|42
+tests/portable-scalar/33-subtraction-precedence.ores|42
+tests/portable-scalar/34-unary-plus-digit-separator.ores|42
+tests/portable-scalar/35-upper-bound-difference.ores|42
+tests/portable-scalar/36-lower-bound-cancellation.ores|42
+tests/portable-scalar/37-named-bitxor.ores|42
