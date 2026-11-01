@@ -286,6 +286,14 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Stage-0 is a scalar JIT, not a WebSocket/LiveView runtime.
+        // Never silently reinterpret a typed transport actor declaration
+        // as a scalar entrypoint or claim machine-code networking parity.
+        if matches!(self.current,
+            Token::Word("actor" | "http" | "websocket" | "liveview" | "tcp" | "ws"))
+        {
+            return Err("WebSocket/HTTP/LiveView actors require verified transport,                 capability, ownership and async lowering; scalar Cranelift backend                 does not support network actor execution".into());
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
