@@ -390,6 +390,10 @@ mod tests {
         // Preserve signed-i64 multiplication and subtraction as real source.
         let valid = parse("fnc main():int{return (7*6)-0;}").unwrap();
         assert_eq!(eval(&valid.result, &[]), Ok(42));
+        // Rejecting an operator must not reject the same byte in an ordinary
+        // source comment, and must not erase the preceding valid function.
+        let commented = parse("fnc main():int{return 42;} // removed % operator").unwrap();
+        assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
     #[test]
     fn fail_closed() {
