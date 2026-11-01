@@ -286,6 +286,18 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        match self.current {
+            Token::Word("actor") | Token::Word("isoactor") => {
+                return Err("actor runtime is unsupported by the Cranelift scalar profile".into());
+            }
+            Token::Word("async") | Token::Word("await") | Token::Word("suspend") | Token::Word("suspends") => {
+                return Err("async runtime is unsupported by the Cranelift scalar profile".into());
+            }
+            Token::Word("critical") => {
+                return Err("critical-section runtime is unsupported by the Cranelift scalar profile".into());
+            }
+            _ => {}
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
