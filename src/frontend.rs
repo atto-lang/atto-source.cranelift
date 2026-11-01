@@ -381,29 +381,23 @@ fn constant_expr_value(expr: &Expr, constants: &[Option<i64>]) -> Result<Option<
             Some(v) => Ok(Some(v.checked_neg().ok_or("compile-time i64 overflow")?)),
             None => Ok(None),
         },
-        Add(a,b) | Sub(a,b) | Mul(a,b) | BitXor(a,b) => {
+        Add(a, b) | Sub(a, b) | Mul(a, b) | BitXor(a, b) => {
             let x = constant_expr_value(a, constants)?;
             let y = constant_expr_value(b, constants)?;
-            match (x,y) {
-                (Some(x),Some(y)) => {
+            match (x, y) {
+                (Some(x), Some(y)) => {
                     let value = match expr {
-                        Add(_,_) => x.checked_add(y),
-                        Sub(_,_) => x.checked_sub(y),
-                        Mul(_,_) => x.checked_mul(y),
-                        BitXor(_,_) => Some(x ^ y),
+                        Add(_, _) => x.checked_add(y),
+                        Sub(_, _) => x.checked_sub(y),
+                        Mul(_, _) => x.checked_mul(y),
+                        BitXor(_, _) => Some(x ^ y),
                         _ => unreachable!(),
-                    }.ok_or("compile-time i64 overflow")?;
+                    }
+                    .ok_or("compile-time i64 overflow")?;
                     Ok(Some(value))
                 }
                 _ => Ok(None),
             }
-        }
-        Rem(x,divisor) => match constant_expr_value(x, constants)? {
-            Some(v) => Ok(Some(
-                if *divisor == -1 { 0 }
-                else { v.checked_rem(*divisor).ok_or("invalid constant remainder")? }
-            )),
-            None => Ok(None),
         }
     }
 }
