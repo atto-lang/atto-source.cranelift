@@ -659,6 +659,28 @@ fn checked_i64_parity_overflow_never_uses_wrapped_intermediates() {
 
 
 #[test]
+fn orestra_scalar_capacity_and_execution_canaries_native_jit() {
+    // Real Cranelift JIT source-to-machine-code tests, *not* orchestration.
+    // Actors, scheduler reservations, imports and resource fencing remain
+    // unavailable in this stage-0 scalar frontend.
+    for (expression, expected) in [
+        ("(1000 - 600) - 400", "0\n"),
+        ("(9223372036854775807 - 9223372036854775700) - 65", "42\n"),
+        ("73", "73\n"),
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}\\n"),
+            &[], true, expected,
+        );
+    }
+    // An intermediate signed64 overflow must never wrap into a result.
+    fixture(
+        "pub fnc main(): int { return (9223372036854775807 + 1) - 1; }\\n",
+        &[], false, "",
+    );
+}
+
+#[test]
 fn oreslana_portable_scalar_capacity_and_nonzero_guest_execution() {
     // Every call compiles actual Oreslang source to native Cranelift JIT
     // machine code. These do NOT test classes, Array<int>, actors or WAL.
