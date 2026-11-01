@@ -72,7 +72,11 @@ fn scalar_v3_real_jit_positive_values() {
         ("wide-positive-product", "2147483647 * 2147483647", "4611686014132420609"),
         ("wide-negative-product", "(-2147483647) * 2147483647", "-4611686014132420609"),
         ("quadruple-negation", "-(-(-(-33)))", "33"),
-        ("max-range-roundtrip", "(9223372036854775800 - 9007199254740993) + 9007199254740993", "9223372036854775800"),
+        (
+            "max-range-roundtrip",
+            "(9223372036854775800 - 9007199254740993) + 9007199254740993",
+            "9223372036854775800",
+        ),
     ] {
         let expected_binding = format!(
             "\"expression\": \"{expression}\",\n      \"expected\": \"{expected}\""
