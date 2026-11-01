@@ -458,31 +458,31 @@ fn native_four_parameter_order_is_stable() {
         "fnc main(a:int,b:int,c:int,d:int):int{return a*1000+b*100+c*10+d;}",
         &["1", "2", "3", "4"],
         true,
-        "1234\\n",
+        "1234\n",
     );
     fixture(
         "fnc main(a:int,b:int,c:int,d:int):int{return a-b-c-d;}",
         &["100", "20", "10", "5"],
         true,
-        "65\\n",
+        "65\n",
     );
     fixture(
         "fnc main(a:int,b:int,c:int,d:int):int{return a+b+c+d;}",
         &["1", "2", "3", "4"],
         true,
-        "10\\n",
+        "10\n",
     );
 }
 
 #[test]
 fn native_signed_parameter_extremes_preserve_full_i64() {
     for (arg, expected) in [
-        ("-9223372036854775808", "-9223372036854775808\\n"),
-        ("9223372036854775807", "9223372036854775807\\n"),
-        ("-9007199254740993", "-9007199254740993\\n"),
-        ("9007199254740993", "9007199254740993\\n"),
-        ("0", "0\\n"),
-        ("-1", "-1\\n"),
+        ("-9223372036854775808", "-9223372036854775808\n"),
+        ("9223372036854775807", "9223372036854775807\n"),
+        ("-9007199254740993", "-9007199254740993\n"),
+        ("9007199254740993", "9007199254740993\n"),
+        ("0", "0\n"),
+        ("-1", "-1\n"),
     ] {
         fixture("fnc main(x:int):int{return x;}", &[arg], true, expected);
     }
@@ -539,16 +539,16 @@ fn checked_scalar_arithmetic_rejects_all_overflow_signs() {
 #[test]
 fn native_xor_intrinsic_handles_repeated_and_extreme_values() {
     for (expression, expected) in [
-        ("Integer.bitXor(0,0)", "0\\n"),
-        ("Integer.bitXor(-1,-1)", "0\\n"),
-        ("Integer.bitXor(7,7)", "0\\n"),
-        ("Integer.bitXor(7,0)", "7\\n"),
-        ("Integer.bitXor(0,7)", "7\\n"),
+        ("Integer.bitXor(0,0)", "0\n"),
+        ("Integer.bitXor(-1,-1)", "0\n"),
+        ("Integer.bitXor(7,7)", "0\n"),
+        ("Integer.bitXor(7,0)", "7\n"),
+        ("Integer.bitXor(0,7)", "7\n"),
         (
             "Integer.bitXor(9223372036854775807,-1)",
-            "-9223372036854775808\\n",
+            "-9223372036854775808\n",
         ),
-        ("Integer.bitXor(5,Integer.bitXor(3,6))", "0\\n"),
+        ("Integer.bitXor(5,Integer.bitXor(3,6))", "0\n"),
     ] {
         fixture(
             &format!("fnc main():int{{return {expression};}}"),
@@ -562,19 +562,19 @@ fn native_xor_intrinsic_handles_repeated_and_extreme_values() {
 #[test]
 fn commented_out_unsupported_tokens_are_not_guest_source() {
     fixture(
-        "// unsafe actor invalid % ^ \\nfnc main():int{return 42;}",
+        "// unsafe actor invalid % ^ \nfnc main():int{return 42;}",
         &[],
         true,
-        "42\\n",
+        "42\n",
     );
     fixture(
         "fnc main():int{return 42;} // ^ never parsed",
         &[],
         true,
-        "42\\n",
+        "42\n",
     );
     fixture(
-        "fnc main():int{return 1;} // ignored \\nunsafe",
+        "fnc main():int{return 1;} // ignored \nunsafe",
         &[],
         false,
         "",
