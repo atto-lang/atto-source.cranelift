@@ -419,6 +419,57 @@ fn tcp_connection_pool_and_actor_ownership_fail_closed_before_native_jit() {
 }
 
 #[test]
+fn heap_ownership_requires_real_lowering_in_run_and_ir() {
+    // A scalar-only JIT must not silently produce native machine code for
+    // references into relocatable Array<T> or shared heap handles. A parser
+    // failure is a supported-feature denial, NOT a borrow-safety proof.
+    let unsupported = [
+        "fnc main():int{return Array<int>.new();}",
+        "fnc main():int{return Box<int>.new(42);}",
+        "fnc main():int{return Arc<int>.new(42);}",
+        "fnc main():int{return Rc<int>.new(42);}",
+        "fnc main():int{return SharedMutex.new(42);}",
+        "fnc main():int{return values[0];}",
+        "fnc main():int{return values.add(42);}",
+        "fnc main():int{return rt borrow values[0];}",
+        "fnc main():int{return rt mut borrow values;}",
+        "fnc main():int{return rt take values[0];}",
+        "fnc main():int{return rt share shared_handle;}",
+        "fnc main():int{return rt mut share shared_handle;}",
+        "fnc main():int{return state.handle_state(42);}",
+        "define class HeapBox as pub let int value=42; end fnc main():int{return 42;}",
+    ];
+    for (index, source) in unsupported.iter().enumerate() {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-heap-admission-{}-{}-{}.ores",
+            std::process::id(), sequence, index
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1),
+                "{mode} admitted unsupported heap syntax or crashed in case {index}");
+            assert!(output.stdout.is_empty(),
+                "{mode} emitted guest output/CLIF for unsupported heap case {index}");
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(diagnostic.starts_with("orescranelift: "),
+                "{mode} lacked a frontend diagnostic for case {index}: {diagnostic}");
+            assert!(!diagnostic.contains("panicked at")
+                    && !diagnostic.contains("thread 'main' panicked"),
+                "{mode} crashed instead of rejecting heap case {index}");
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+    fixture("fnc main():int{return 42;} // Arc<int> Array<int> rt borrow", &[],
+        true, "42\\n");
+}
+
+#[test]
 fn readonly_shared_slab_lease_and_pin_fail_closed_in_run_and_ir() {
     // This backend has no trusted shared slab region, reactor, actor identity
     // authority, physical close attestation, or capability lease lowering.
