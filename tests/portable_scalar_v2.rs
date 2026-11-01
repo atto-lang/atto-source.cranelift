@@ -12,7 +12,10 @@ const ORACLE: &str = include_str!("../contracts/parity/portable-scalar-v2-202611
 fn native_case(id: &str, expression: &str, expected: Option<&str>) {
     // Source/expected values are independently pinned in the shared corpus.
     // A substring guard is not a JSON parser and is not execution evidence.
-    assert!(ORACLE.contains(&format!("\"id\": \"{id}\"")), "unknown corpus ID");
+    assert!(
+        ORACLE.contains(&format!("\"id\": \"{id}\"")),
+        "unknown corpus ID"
+    );
     assert!(
         ORACLE.contains(&format!("\"expression\": \"{expression}\"")),
         "expression drift from shared corpus: {id}"
@@ -45,14 +48,34 @@ fn native_case(id: &str, expression: &str, expected: Option<&str>) {
     std::fs::remove_dir_all(dir).unwrap();
     match expected {
         Some(value) => {
-            assert!(output.status.success(), "{id}: {}", String::from_utf8_lossy(&output.stderr));
-            assert_eq!(String::from_utf8_lossy(&output.stdout), format!("{value}\n"), "{id}");
-            assert!(output.stderr.is_empty(), "{id}: unexpected guest diagnostic");
+            assert!(
+                output.status.success(),
+                "{id}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("{value}\n"),
+                "{id}"
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "{id}: unexpected guest diagnostic"
+            );
         }
         None => {
-            assert!(!output.status.success(), "{id}: invalid guest source accepted");
-            assert!(output.stdout.is_empty(), "{id}: rejected source emitted guest stdout");
-            assert!(!output.stderr.is_empty(), "{id}: rejection has no compiler diagnostic");
+            assert!(
+                !output.status.success(),
+                "{id}: invalid guest source accepted"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{id}: rejected source emitted guest stdout"
+            );
+            assert!(
+                !output.stderr.is_empty(),
+                "{id}: rejection has no compiler diagnostic"
+            );
         }
     }
 }
