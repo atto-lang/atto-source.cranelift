@@ -430,6 +430,33 @@ fn native_scalar_and_unsupported_actor_guest_parity() {
     );
 }
 
+#[test]
+fn actor_mutable_state_container_must_not_lower_as_an_unsafe_scalar() {
+    // Cranelift stage-0 has no actor runtime, sealed mutable state, protected
+    // read/write loans or actor scheduler. This is an intentional negative:
+    // never count a scalar JIT result as execution of the shared .ores guest.
+    let source = r#"define actor MutableState as
+      state { revision: int = 0; }
+      receive(ActorMail<int> mail): void {
+        self.handle_state(critical[write] |s| -> {
+          s.revision = s.revision + 1;
+        });
+        self.handle_state(critical[read] |s| -> {
+          stdio.stdout.write(s.revision);
+        });
+      }
+    end
+    pub async routine main(): void {
+      val actor = spawn MutableState();
+      await actor.get_ready();
+    }
+    "#;
+    fixture_requires_diagnostic(
+        source,
+        "actor runtime is unsupported by the Cranelift scalar profile",
+    );
+}
+
 fn fixture_requires_diagnostic(source: &str, diagnostic: &str) {
     let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
