@@ -193,6 +193,16 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Punct(b')'))?;
                 self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
             }
+            Token::Word("rt") => {
+                // Stage-0 has no SharedMutex<T>, shared allocation domain, or
+                // synchronized guard lowering. Never reinterpret this as a
+                // scalar alias (or claim LLVM/Java guarded-mutation parity).
+                self.next()?;
+                if self.take(Token::Word("mut"))? && self.current == Token::Word("share") {
+                    return Err("native rt mut share requires verified SharedMutex<T> capability, guarded lowering and allocation-domain proof; refusing unsynchronized alias".into());
+                }
+                Err("rt ownership operation requires checked ownership lowering".into())
+            }
             Token::Word(s) => {
                 let index = self
                     .parameters
@@ -304,6 +314,7 @@ impl<'a> Parser<'a> {
                         | "pub"
                         | "define"
                         | "fnc"
+                        | "rt"
                         | "async"
                         | "await"
                         | "actor"

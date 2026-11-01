@@ -412,13 +412,13 @@ fn signed_i64_boundary_identities_execute_in_native_cranelift_jit() {
 #[test]
 fn scalar_cast_and_ownership_features_fail_closed_before_jit_lowering() {
     // Java #2405, LLVM #1256, .NET #282 and Wasm #219 have staged
-    // scalar-cast contracts; Cranelift currently has no checked cast,
-    // Option representation, dynamic tag, or actor ownership lowering.
+    // scalar-cast contracts; Cranelift now supports only *identity i64*
+    // casts, not bool, Option, dynamic tags or actor ownership lowering.
     // These MUST be reclassified with native-positive receipts before
     // granting capability parity. A generic parser error is not parity.
     for source in [
         "pub fnc main(): int { return 42 as bool; }",
-        "pub fnc main(): int { return 42 as int; }",
+        "pub fnc main(): int { return 42 as Object; }",
         "pub fnc main(): int { return 42 as? int; }",
         "pub fnc main(): int { const x = true; return 42; }",
         "pub fnc main(): int { const x = 42 as bool; return 42; }",
@@ -488,4 +488,79 @@ fn orestra_capacity_arithmetic_is_checked_in_native_jit() {
         false,
         "",
     );
+}
+
+#[test]
+fn rt_mut_share_is_never_lowered_to_scalar_clif() {
+    // Every context must reject before machine-code emission. No ordinary
+    // parser error or stderr-free JIT failure counts as a capability gate.
+    const GATE: &str = "native rt mut share requires verified SharedMutex<T> capability";
+    for (index, expression) in [
+        "rt mut share 42",
+        "(rt mut share 42)",
+        "1 + (rt mut share 42)",
+        "Integer.bitXor(rt mut share 1, 2)",
+        "rt mut share (rt mut share 1)",
+        "rt mut share (1 + 2)",
+    ].iter().enumerate() {
+        let file = std::env::temp_dir().join(format!(
+            "orescranelift-mutshare-{}-{index}.ores", std::process::id()
+        ));
+        std::fs::write(&file, format!("fnc main():int{{return {expression};}}\n")).unwrap();
+        for command in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(command)
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1), "{command}: unexpected compiler exit");
+            assert!(result.stdout.is_empty(), "{command}: emitted executable value or CLIF IR");
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(stderr.contains(GATE), "{command}: missing ownership diagnostic: {stderr}");
+            assert!(!stderr.contains("panic"), "{command}: compiler crashed");
+        }
+        std::fs::remove_file(file).unwrap();
+    }
+}
+
+
+
+#[test]
+fn ownership_rt_keyword_cannot_be_redeclared_as_scalar_parameter() {
+    fixture("fnc main(rt:int):int{return rt;}", &["42"], false, "");
+    fixture("fnc main(rt:int):int{return rt mut share 1;}", &["42"], false, "");
+}
+
+
+#[test]
+fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
+    fixture(
+        "fnc main():int{return 42;} // rt mut share owned\n",
+        &[], true, "42\n"
+    );
+    fixture(
+        "fnc main():int{return 40+2;} // a second rt mut share\n",
+        &[], true, "42\n"
+    );
+}
+
+
+#[test]
+fn five_backend_checked_i64_identity_cast_jit_execution() {
+    // Native JIT guest source, not a Rust arithmetic model.
+    for expression in [
+        "(7 as int)+35",
+        "(7 as int as int)+35",
+        "((2+5) as int)*6",
+    ] {
+        fixture(&format!("pub fnc main():int{{return {expression};}}"), &[], true, "42\n");
+    }
+    for expression in [
+        "7 as bool",
+        "true as int",
+        "9223372036854775808 as int",
+        "7 as? int",
+    ] {
+        fixture(&format!("pub fnc main():int{{return {expression};}}"), &[], false, "");
+    }
 }
