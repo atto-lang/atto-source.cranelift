@@ -38,6 +38,61 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     }
 }
 #[test]
+fn actor_declarations_fail_closed_before_cranelift_ir_or_native_jit() {
+    // These are real CLI tests of the shipping stage-0 frontend in both
+    // execution and IR modes. They do not claim source actor execution.
+    const DIAGNOSTIC: &str =
+        "Cranelift source actor hierarchy, traits and mailbox runtime unsupported";
+    for source in [
+        "define actor A1 as end",
+        "define pub actor A1 as end",
+        "pub define actor A1 as end",
+        "define isoactor A1 as end",
+        "define untrusted actor A1 as end",
+        "define serial http actor A1 as end",
+        "shared actor A1 { }",
+        "untrusted actor A1 { }",
+        "isoactor A1 { }",
+        "actor A1 as end",
+        "actor worker as end",
+        "actor fnc work():int{return 1;}",
+        "fnc actor work():int{return 1;}",
+        "define actor A1 extends Base as end",
+        "define actor A1 implements Traced as end",
+        "define actor A1 impl Traced as end",
+    ] {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-actor-gate-{}-{sequence}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
+            assert!(output.stdout.is_empty(), "{mode} emitted guest value or CLIF IR: {source}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(DIAGNOSTIC),
+                "{mode}: wrong actor failure for {source}: {stderr}"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fixture(
+        "fnc main():int{return 42;} // define actor A1 as end",
+        &[],
+        true,
+        "42\\n",
+    );
+}
+
+#[test]
 fn native_execution_and_negative_controls() {
     fixture("fnc main():int{return 2+3*4;}", &[], true, "14\n");
     fixture(
