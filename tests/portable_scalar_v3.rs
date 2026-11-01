@@ -109,28 +109,28 @@ fn is_compiler_rejection(id: &str, stderr: &[u8]) -> bool {
     if id.starts_with("removed-") {
         let Some(offset) = text
             .strip_prefix("orescranelift: invalid character at byte ")
-            .and_then(|s| s.strip_suffix('\\n'))
+            .and_then(|s| s.strip_suffix('\n'))
         else {
             return false;
         };
         !offset.is_empty() && offset.bytes().all(|c| c.is_ascii_digit())
     } else {
-        text == "orescranelift: i64 literal out of range\\n"
+        text == "orescranelift: i64 literal out of range\n"
     }
 }
 
 fn is_native_checked_overflow(stderr: &[u8]) -> bool {
-    stderr == b"orescranelift: i64 arithmetic overflow\\n"
+    stderr == b"orescranelift: i64 arithmetic overflow\n"
 }
 
 #[test]
 fn scalar_v3_rejection_phase_mutations_fail_closed() {
     for bad in [
         "",
-        "orescranelift: i64 arithmetic overflow\\n",
-        "orescranelift: missing source file\\n",
-        "orescranelift: invalid character at byte nope\\n",
-        "orescranelift: invalid character at byte 2\\nextra",
+        "orescranelift: i64 arithmetic overflow\n",
+        "orescranelift: missing source file\n",
+        "orescranelift: invalid character at byte nope\n",
+        "orescranelift: invalid character at byte 2\nextra",
         "signal: segmentation fault",
     ] {
         assert!(!is_compiler_rejection("removed-percent-new", bad.as_bytes()));
@@ -141,22 +141,22 @@ fn scalar_v3_rejection_phase_mutations_fail_closed() {
     }
     assert!(is_compiler_rejection(
         "removed-caret-new",
-        b"orescranelift: invalid character at byte 27\\n"
+        b"orescranelift: invalid character at byte 27\n"
     ));
     assert!(is_compiler_rejection(
         "negative-outside-signed-range",
-        b"orescranelift: i64 literal out of range\\n"
+        b"orescranelift: i64 literal out of range\n"
     ));
     for bad in [
-        b"orescranelift: i64 literal out of range\\n".as_slice(),
-        b"orescranelift: missing source file\\n",
-        b"orescranelift: i64 arithmetic overflow\\nextra",
+        b"orescranelift: i64 literal out of range\n".as_slice(),
+        b"orescranelift: missing source file\n",
+        b"orescranelift: i64 arithmetic overflow\nextra",
         b"orescranelift: i64 arithmetic overflow",
     ] {
         assert!(!is_native_checked_overflow(bad));
     }
     assert!(is_native_checked_overflow(
-        b"orescranelift: i64 arithmetic overflow\\n"
+        b"orescranelift: i64 arithmetic overflow\n"
     ));
 }
 
