@@ -354,3 +354,34 @@ fn shared_five_backend_scalar_wave_native_jit() {
     fixture("pub fnc main(): int { return -(-9223372036854775808); }", &[], false, ""); // overflow at runtime
     fixture("pub fnc main(): int { return 5 ^ 3; }", &[], false, ""); // removed operator
 }
+
+
+#[test]
+fn five_backend_checked_i64_identity_cast_jit_execution() {
+    // Native guest execution cases. Cargo must actually run on an exact-head
+    // runner before any cross-backend conformance claim is justified.
+    for (source, expected) in [
+        ("pub fnc main():int{return 7 as int + 35;}", "42\n"),
+        ("pub fnc main():int{return (7 as int) + 35;}", "42\n"),
+        ("pub fnc main():int{return 7 as int as int + 35;}", "42\n"),
+        ("pub fnc main():int{return (2+5) as int * 6;}", "42\n"),
+        ("pub fnc main(x:int):int{return x as int + 35;}", "42\n"),
+        ("pub fnc main():int{return (9223372036854775807 as int)-9223372036854775765;}", "42\n"),
+    ] {
+        let args = if source.contains("main(x:int)") { &["7"][..] } else { &[][..] };
+        fixture(source, args, true, expected);
+    }
+    for source in [
+        "pub fnc main():int{return 7 as bool;}",
+        "pub fnc main():int{return 7 as string;}",
+        "pub fnc main():int{return 7 as Object;}",
+        "pub fnc main():int{return 7 as int as bool;}",
+        "pub fnc main():int{return true as int;}",
+        "pub fnc main():int{return 7 as? int;}",
+        "pub fnc main():int{return 7 as int as? int;}",
+        "pub fnc main():int{return 9223372036854775808 as int;}",
+        "pub fnc main():int{return 7 as int + 9223372036854775808;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
