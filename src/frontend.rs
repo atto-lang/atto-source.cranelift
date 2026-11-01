@@ -292,7 +292,11 @@ impl<'a> Parser<'a> {
         if matches!(self.current,
             Token::Word("actor" | "http" | "websocket" | "liveview" | "tcp" | "ws"))
         {
-            return Err("WebSocket/HTTP/LiveView actors require verified transport,                 capability, ownership and async lowering; scalar Cranelift backend                 does not support network actor execution".into());
+            return Err(concat!(
+                "WebSocket/HTTP/LiveView actors require verified transport, ",
+                "capability, ownership and async lowering; scalar Cranelift ",
+                "backend does not support network actor execution"
+            ).into());
         }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
