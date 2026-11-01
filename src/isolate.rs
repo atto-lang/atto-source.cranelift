@@ -116,7 +116,12 @@ impl OresVM {
         max_actors: usize,
         max_pins: usize,
     ) -> Result<IsolateHandle, &'static str> {
+        // Match the shared tenant ID grammar. A dot-only ID is not a
+        // namespace or filesystem component authority, even for this trusted
+        // in-process scalar-JIT host.
         if tenant.is_empty()
+            || tenant == "."
+            || tenant == ".."
             || tenant.len() > 128
             || !tenant
                 .bytes()
@@ -406,6 +411,63 @@ impl OresVM {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_id_admission_matches_other_vm_isolate_backends() {
+        let vm = OresVM::new(2).unwrap();
+        // An invalid ID must not consume a generation or tenant capacity.
+        for id in [
+            "", ".", "..", "../escape", "tenant/other", "tenant\\other",
+            "tenant:other", "tenant other", "bad\\0name", "ténant",
+        ] {
+            assert!(vm.create_isolate(id, 1, 1).is_err(), "accepted {id:?}");
+        }
+        assert!(vm.create_isolate(&"x".repeat(129), 1, 1).is_err());
+        let max_id = "x".repeat(128);
+        let boundary = vm.create_isolate(&max_id, 1, 1).unwrap();
+        assert_eq!(boundary.generation, 1);
+        vm.start(&boundary).unwrap();
+        assert!(vm.create_isolate(&max_id, 1, 1).is_err());
+        vm.begin_shutdown(&boundary).unwrap();
+        vm.complete_shutdown(&boundary).unwrap();
+        vm.destroy(&boundary).unwrap();
+        assert!(vm.snapshot(&boundary).is_err());
+        let fresh = vm.create_isolate(&max_id, 1, 1).unwrap();
+        assert_ne!(fresh.generation, boundary.generation);
+        vm.start(&fresh).unwrap();
+        assert!(vm.snapshot(&boundary).is_err());
+        vm.begin_shutdown(&fresh).unwrap();
+        vm.complete_shutdown(&fresh).unwrap();
+        vm.destroy(&fresh).unwrap();
+    }
+
+    #[test]
+    fn failed_quota_or_phase_admission_cannot_change_neighbor_isolate() {
+        let vm = OresVM::new(2).unwrap();
+        let first = vm.create_isolate("tenant-1", 1, 1).unwrap();
+        let second = vm.create_isolate("tenant-2", 1, 1).unwrap();
+        assert!(vm.create_isolate("tenant-3", 1, 1).is_err());
+        vm.start(&first).unwrap();
+        vm.start(&second).unwrap();
+        let a = vm.register_actor(&first, 1).unwrap();
+        assert!(vm.register_actor(&first, 2).is_err());
+        assert!(vm.pin_operation(&second, &a).is_err());
+        let b = vm.register_actor(&second, 1).unwrap();
+        let p = vm.pin_operation(&first, &a).unwrap();
+        vm.begin_shutdown(&first).unwrap();
+        assert!(vm.pin_operation(&first, &a).is_err());
+        assert!(vm.complete_shutdown(&first).is_err());
+        vm.retire_operation(&first, &a, &p).unwrap();
+        vm.retire_actor(&first, &a).unwrap();
+        vm.complete_shutdown(&first).unwrap();
+        vm.destroy(&first).unwrap();
+        assert_eq!(vm.snapshot(&second).unwrap().actors, 1);
+        assert_eq!(vm.snapshot(&second).unwrap().phase, Phase::Running);
+        vm.retire_actor(&second, &b).unwrap();
+        vm.begin_shutdown(&second).unwrap();
+        vm.complete_shutdown(&second).unwrap();
+        vm.destroy(&second).unwrap();
+    }
     #[test]
     fn tenant_actor_pins_and_reincarnation() {
         let vm = OresVM::new(2).unwrap();
