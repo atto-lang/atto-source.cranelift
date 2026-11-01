@@ -433,7 +433,14 @@ fn has_actor_pubsub_surface(text: &str) -> bool {
         };
 
         let found = match (before_previous, previous, current) {
+            // Fail closed on planned runtime-wide, capability and group syntax,
+            // including forms not covered by the original ActorGroup fixtures.
+            (_, _, Tok::Id(
+                "runtime_pubsub" | "ActorGroup" | "TopicPublisher" |
+                "TopicSubscriber" | "PubSub"
+            )) => true,
             (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
+            (_, Some(Tok::Sym(b'.')), Tok::Id("pubsub")) => true,
             (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
             (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
             _ => false,
@@ -490,6 +497,16 @@ mod tests {
         assert!(has_actor_pubsub_surface("value . topic < String > (x)"));
         assert!(has_actor_pubsub_surface("Topic < String >"));
         assert!(has_actor_pubsub_surface("Subscription < String >"));
+        assert!(has_actor_pubsub_surface(
+            "runtime_pubsub.define_topic<PriceTick>(#prices)"));
+        assert!(has_actor_pubsub_surface("TopicPublisher < PriceTick >"));
+        assert!(has_actor_pubsub_surface("TopicSubscriber < PriceTick >"));
+        assert!(has_actor_pubsub_surface("my_group . pubsub ( )"));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} /* TopicPublisher runtime_pubsub */"));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} // TopicSubscriber\\n"));
+
     }
 
     #[test]
