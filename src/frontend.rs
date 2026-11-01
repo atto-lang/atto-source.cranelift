@@ -150,6 +150,19 @@ impl<'a> Parser<'a> {
     fn name(&mut self) -> Result<String, String> {
         match self.current {
             Token::Word(s) => {
+                // The stage-0 lexer admits keywords as Word tokens. Binding
+                // identifiers must not reuse a syntactic operator/primitive or
+                // a future boolean literal (even if that feature is gated).
+                if matches!(
+                    s,
+                    "Integer" | "int" | "bool" | "string" | "String"
+                        | "as" | "const" | "val" | "let" | "mut"
+                        | "return" | "pub" | "define" | "fnc"
+                        | "rt" | "async" | "await" | "actor"
+                        | "true" | "false" | "unsafe"
+                ) {
+                    return Err(format!("reserved scalar binding name: {s}"));
+                }
                 let out = s.to_owned();
                 self.next()?;
                 Ok(out)
