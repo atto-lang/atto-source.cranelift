@@ -656,3 +656,31 @@ fn checked_i64_parity_overflow_never_uses_wrapped_intermediates() {
         fixture(source, args, false, "");
     }
 }
+
+
+#[test]
+fn oreslana_portable_scalar_capacity_and_nonzero_guest_execution() {
+    // Every call compiles actual Oreslang source to native Cranelift JIT
+    // machine code. These do NOT test classes, Array<int>, actors or WAL.
+    for (source, expected) in [
+        ("fnc main(): int { return (4096 - 64) + (32 * 2) - 4096; }\n", "0\n"),
+        ("pub fnc main(): int { return 73; }\n", "73\n"),
+        ("pub fnc main(): int { return (9223372036854775807 - 9223372036854775800) * 6; }\n", "42\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+    // A late overflowing intermediate must not be rescued by a later zero.
+    fixture(
+        "pub fnc main(): int { return (9223372036854775807 + 1) * 0; }\n",
+        &[], false, "",
+    );
+    // Fail closed on precisely the Oreslana structures unsupported by the
+    // independent scalar-only Cranelift frontend.
+    for source in [
+        "define pub class OreslanaLedger as end",
+        "pub fnc main():int{ let mut Array<int> accounts = new Array<int>(); return 0; }",
+        "pub fnc main():int{ return Some(42).unwrap(); }",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
