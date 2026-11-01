@@ -74,7 +74,10 @@ fn actor_declarations_fail_closed_before_cranelift_ir_or_native_jit() {
                 .output()
                 .unwrap();
             assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
-            assert!(output.stdout.is_empty(), "{mode} emitted guest value or CLIF IR: {source}");
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest value or CLIF IR: {source}"
+            );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 stderr.contains(DIAGNOSTIC),
