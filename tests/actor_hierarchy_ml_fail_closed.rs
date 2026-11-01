@@ -89,3 +89,38 @@ fn words_inside_comments_do_not_disable_scalar_jit() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
+    // A shared i64 *arithmetic intersection*, not tensor allocation, autograd,
+    // an actor trainer or a float64 ML optimizer. d(0.5*(w*x-t)^2)/dw = (w*x-t)*x
+    // and learning rate is an integer. Other backends can reuse this exact
+    // source with their own actual native compiler/runtime.
+    let source = "fnc main(w:int,x:int,t:int,rate:int):int{return w-rate*(w*x-t)*x;}";
+    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-scalar-gradient-{}-{nonce}.ores", std::process::id()
+    ));
+    std::fs::write(&path, source).unwrap();
+    for (args,expected) in [
+        (["5","2","6","1"], "-3\n"),
+        (["3","1","5","1"], "5\n"),
+        (["0","3","6","1"], "18\n"),
+        (["7","0","6","1"], "7\n"),
+    ] {
+        let result=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("run").arg(&path).args(args).output().unwrap();
+        assert!(result.status.success(), "{}",String::from_utf8_lossy(&result.stderr));
+        assert_eq!(String::from_utf8_lossy(&result.stdout),expected);
+    }
+    let overflow=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run").arg(&path)
+        .args(["9223372036854775807","2","0","1"]).output().unwrap();
+    assert!(!overflow.status.success(),"checked numeric overflow must fail");
+    assert!(overflow.stdout.is_empty(),"overflow emitted a result");
+    let ir=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("ir").arg(&path).output().unwrap();
+    assert!(ir.status.success(), "{}",String::from_utf8_lossy(&ir.stderr));
+    assert!(!ir.stdout.is_empty(),"scalar native IR not emitted");
+    std::fs::remove_file(path).unwrap();
+}
