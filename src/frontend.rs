@@ -479,6 +479,20 @@ mod tests {
         }
     }
     #[test]
+    fn actor_pubsub_preflight_ignores_inert_text_and_accepts_spacing() {
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} // actor.group(x) Topic<String>"));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} /* actor . group (x) .topic<String> */"));
+        assert!(!has_actor_pubsub_surface(
+            r#"fnc main():int{return 42;} "actor.group(x) Topic<String>""#));
+        assert!(has_actor_pubsub_surface("actor . group ( x )"));
+        assert!(has_actor_pubsub_surface("value . topic < String > (x)"));
+        assert!(has_actor_pubsub_surface("Topic < String >"));
+        assert!(has_actor_pubsub_surface("Subscription < String >"));
+    }
+
+    #[test]
     fn precedence_and_arguments() {
         let p = parse("define pub fnc main(x:int,y:int):int{return (x+2)*y-1;}").unwrap();
         assert_eq!(eval(&p.result, &[3, 4]), Ok(19));
