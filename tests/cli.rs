@@ -389,3 +389,28 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         &[], true, "42\n"
     );
 }
+
+
+// Proxy-LB arithmetic intersection from platform-conformance
+// contracts/v1/proxy-lb/fixtures. This executes real Cranelift JIT code,
+// but DOES NOT make the reverse/forward proxy or actor/network APIs run.
+#[test]
+fn proxy_lb_scalar_comparison_guest_execution() {
+    for (source, expected) in [
+        ("fnc main():int{return 9*1-1*3;}\n", "6\n"),
+        ("fnc main():int{return 2*1-1*3;}\n", "-1\n"),
+        ("fnc main():int{return 3*1-1*3;}\n", "0\n"),
+        ("fnc main():int{return 1024*16-1024*16;}\n", "0\n"),
+        ("fnc main():int{return 1024*16-0*16;}\n", "16384\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+    // Fail-closed negative: full actor/proxy source is unsupported today.
+    fixture("define module lb_policy as end\n", &[], false, "");
+    fixture(
+        "fnc main():int{return http.listen(127,8080);}\n",
+        &[],
+        false,
+        "",
+    );
+}
