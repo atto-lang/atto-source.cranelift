@@ -290,11 +290,16 @@ impl<'a> Parser<'a> {
             Token::Word("actor") | Token::Word("isoactor") => {
                 return Err("actor runtime is unsupported by the Cranelift scalar profile".into());
             }
-            Token::Word("async") | Token::Word("await") | Token::Word("suspend") | Token::Word("suspends") => {
+            Token::Word("async")
+            | Token::Word("await")
+            | Token::Word("suspend")
+            | Token::Word("suspends") => {
                 return Err("async runtime is unsupported by the Cranelift scalar profile".into());
             }
             Token::Word("critical") => {
-                return Err("critical-section runtime is unsupported by the Cranelift scalar profile".into());
+                return Err(
+                    "critical-section runtime is unsupported by the Cranelift scalar profile".into(),
+                );
             }
             _ => {}
         }
