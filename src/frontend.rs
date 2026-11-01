@@ -307,11 +307,15 @@ impl<'a> Parser<'a> {
                 | Token::Word("transform")
                 | Token::Word("pipe")
         ) {
-            return Err("Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into());
+            return Err(
+                "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
+            );
         }
         self.expect(Token::Word("fnc"))?;
         if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
-            return Err("Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into());
+            return Err(
+                "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
+            );
         }
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
