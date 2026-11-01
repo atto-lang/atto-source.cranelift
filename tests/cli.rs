@@ -382,3 +382,39 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         &[], true, "42\n"
     );
 }
+
+
+#[test]
+fn tcp_pool_guest_source_must_fail_closed() {
+    // Stage-0 Cranelift has no actor/async/socket ABI. Do not treat a
+    // syntactically accepted source as a runnable guest transport API.
+    // Both execution and IR emission must refuse unsupported effects.
+    let unsupported = [
+        "fnc main():int{return tcp.pool(1);}",
+        "fnc main():int{return pool.acquire_async(1);}",
+        "fnc main():int{return lease.exchange_async(42);}",
+        "fnc main():int{return await pool.acquire_async(1);}",
+        "fnc main():int{return rt share request;}",
+    ];
+    for source in unsupported {
+        fixture(source, &[], false, "");
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-tcp-deny-{}-{}.ores",
+            std::process::id(),
+            sequence
+        ));
+        std::fs::write(&path, source).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("ir")
+            .arg(&path)
+            .output()
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(!result.status.success(), "unsupported transport source emitted IR: {source}");
+        assert!(result.stdout.is_empty(), "unsupported transport source leaked IR: {source}");
+        assert!(!result.stderr.is_empty(), "unsupported transport source has no diagnostic: {source}");
+    }
+    // A harmless comment must not be mistaken for a transport operation.
+    fixture("fnc main():int{return 42;} // tcp.pool await", &[], true, "42\n");
+}
