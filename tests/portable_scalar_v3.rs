@@ -28,7 +28,7 @@ impl Drop for Fixture {
 fn run_one(fixture: &Fixture, id: &str, expression: &str) -> std::process::Output {
     // Bind each expression to its own ID; two independent substring probes
     // cannot detect swapped expressions between names.
-    let binding = format!("\"id\": \"{id}\",\\n      \"expression\": \"{expression}\"");
+    let binding = format!("\"id\": \"{id}\",\n      \"expression\": \"{expression}\"");
     assert!(
         MANIFEST.contains(&binding),
         "manifest ID/expression binding drift for {id}"
@@ -75,7 +75,7 @@ fn scalar_v3_real_jit_positive_values() {
         ("max-range-roundtrip", "(9223372036854775800 - 9007199254740993) + 9007199254740993", "9223372036854775800"),
     ] {
         let expected_binding = format!(
-            "\"expression\": \"{expression}\",\\n      \"expected\": \"{expected}\""
+            "\"expression\": \"{expression}\",\n      \"expected\": \"{expected}\""
         );
         assert!(
             MANIFEST.contains(&expected_binding),
@@ -89,7 +89,7 @@ fn scalar_v3_real_jit_positive_values() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            format!("{expected}\\n"),
+            format!("{expected}\n"),
             "{id} wrong native guest value"
         );
         assert!(output.stderr.is_empty(), "{id} unexpected diagnostic");
