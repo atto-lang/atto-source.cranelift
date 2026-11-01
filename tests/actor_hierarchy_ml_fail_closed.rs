@@ -1,0 +1,91 @@
+//! Actor and differentiable pipeline syntax is outside Cranelift stage-0.
+//! Execute the actual compiler in BOTH modes. A diagnostic-only denial is a
+//! successful safety test, never actor or ML implementation evidence.
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+fn reject_both_modes(label: &str, source: &str) {
+    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-actor-denial-{}-{}-{nonce}.ores",
+        std::process::id(),
+        label
+    ));
+    std::fs::write(&path, source).expect("write test fixture");
+    for mode in ["run", "ir"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&path)
+            .output()
+            .expect("invoke native compiler");
+        assert!(!output.status.success(), "{label}/{mode} was silently admitted");
+        assert!(output.stdout.is_empty(), "{label}/{mode} emitted output or native IR");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.trim().is_empty(), "{label}/{mode} must diagnose rejection");
+        assert!(!stderr.contains("thread 'main' panicked"), "{label}/{mode} crashed: {stderr}");
+    }
+    std::fs::remove_file(path).expect("remove test fixture");
+}
+
+#[test]
+fn actor_class_hierarchy_and_protocol_fail_closed() {
+    for (label, src) in [
+        ("basic", "define actor A1 as end\nfnc main():int{return 42;}"),
+        ("shared", "define shared actor A1 as end\nfnc main():int{return 42;}"),
+        ("inherited", "define actor Parent as end\ndefine actor Child extends Parent as end"),
+        ("class-as-actor", "define class Child extends Actor as end"),
+        ("ordinary-class-parent", "define class Plain as end\ndefine actor Bad extends Plain as end"),
+        ("two-parents", "define actor A as end\ndefine actor B as end\ndefine actor C extends A, B as end"),
+        ("interface", "define interface Reader as read(): int; end\ndefine actor A implements Reader as end"),
+        ("trait", "define trait T as step(): void; end\ndefine actor A implements T as end"),
+        ("supervisor", "define supervisor S1 as end\ndefine actor A1 extends S1 as end"),
+        ("isolated", "define isoactor A1 as end"),
+        ("untrusted", "define untrusted actor A1 as end"),
+        ("runtime-method", "define actor A1 as pub tick(): void { return; } end"),
+        ("on-handler", "define actor A1 as on #tick :: return; end end"),
+        ("sealed-state", "define actor A1 as state { int count = 0; } end"),
+        ("state-loan", "define actor A1 as state { int count = 0; } pub tick():void { handle_state(critical-write |s| -> { s.count += 1; }); } end"),
+    ] {
+        reject_both_modes(label, src);
+    }
+}
+
+#[test]
+fn tensor_autograd_and_actor_pipeline_fail_closed() {
+    for (label, src) in [
+        ("tensor", "define actor TensorStage as state { int version = 0; } end"),
+        ("gradient", "define actor GradientStage as on #backward :: return; end end"),
+        ("actor-pipe", "fnc main():int { spawn A() pipe spawn B(); return 42; }"),
+        ("model", "define model LinearNet as Dense(2, 1) end"),
+        ("await", "fnc main():int { await spawn Worker(); return 42; }"),
+        ("borrow-escape", "define actor Stage as state { int weight = 2; } pub leak():int { return self.weight; } end"),
+        ("actor-ref", "fnc main():int { let a = spawn Worker(); a.send(42); return 42; }"),
+    ] {
+        reject_both_modes(label, src);
+    }
+}
+
+#[test]
+fn words_inside_comments_do_not_disable_scalar_jit() {
+    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-actor-comment-{}-{nonce}.ores",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        "fnc main():int{return 6*7;} // define actor, trait, Tensor, autograd, pipe\n",
+    ).unwrap();
+    for mode in ["run", "ir"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode).arg(&path).output().unwrap();
+        assert!(result.status.success(), "{mode}: {}", String::from_utf8_lossy(&result.stderr));
+        if mode == "run" {
+            assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
+        } else {
+            assert!(!result.stdout.is_empty(), "IR mode must produce output");
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+}
