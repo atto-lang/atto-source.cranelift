@@ -328,3 +328,130 @@ impl Compiled {
         }
     }
 }
+
+
+#[cfg(test)]
+mod native_named_signed64_differential {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn native_dynamic_rem_mod_match_independent_i128_oracle() {
+        // Actual compiled Cranelift entry points, with dynamic signed64
+        // numerator AND denominator. The expected results are calculated
+        // with wider signed i128, not the frontend or a production helper.
+        let divisors = [
+            i64::MIN, i64::MIN + 1, -17, -4, -1, 0, 1, 3, 17,
+            i64::MAX,
+        ];
+        let numerators = [
+            i64::MIN, i64::MIN + 1, -i64::MAX, -99, -9, -1,
+            0, 1, 9, 99, i64::MAX - 1, i64::MAX,
+        ];
+        for op in ["rem", "mod"] {
+            let source = format!(
+                "fnc main(a:int,b:int):int{{return Integer.{op}(a,b);}}"
+            );
+            let program = parse(&source).expect("dynamic named arithmetic parses");
+            let compiled = compile(&program).expect("native named arithmetic compiles");
+            for divisor in divisors {
+                let mut seed = 0x9e37_79b9_7f4a_7c15_u64 ^ (divisor as u64);
+                let random = (0..128).map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as i64
+                });
+                for numerator in numerators.into_iter().chain(random) {
+                    let actual = compiled.run(&[numerator, divisor]);
+                    if divisor == 0 {
+                        assert_eq!(
+                            actual.as_deref(),
+                            Err("integer divisor zero"),
+                            "{op}({numerator},{divisor})"
+                        );
+                        continue;
+                    }
+                    let rem = (numerator as i128) % (divisor as i128);
+                    let expected = if op == "mod" && rem < 0 {
+                        rem + (divisor as i128).abs()
+                    } else {
+                        rem
+                    };
+                    let expected = i64::try_from(expected).expect("signed64 result");
+                    assert_eq!(
+                        actual,
+                        Ok(expected),
+                        "Cranelift native {op}({numerator},{divisor})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_pow_matches_checked_i128_oracle_and_error_precedence() {
+        // A finite bounded matrix includes nonnegative exponents, negative
+        // exponents, exact MIN, and early checked overflow. This executes
+        // generated pow control flow, not the frontend-only evaluator.
+        let program = parse(
+            "fnc main(base:int,exponent:int):int{return Integer.pow(base,exponent);}"
+        ).expect("named pow source");
+        let compiled = compile(&program).expect("native pow JIT");
+        for base in [i64::MIN, -17, -3, -2, -1, 0, 1, 2, 3, 17, i64::MAX] {
+            for exponent in [-3_i64, -1, 0, 1, 2, 3, 5, 16, 31, 63, 64, 127] {
+                let actual = compiled.run(&[base, exponent]);
+                if exponent < 0 {
+                    assert_eq!(
+                        actual.as_deref(),
+                        Err("negative integer exponent"),
+                        "native pow({base},{exponent})"
+                    );
+                    continue;
+                }
+                let mut expected = 1_i128;
+                let mut failure = false;
+                for _ in 0..exponent {
+                    // Stop when the signed64 result is no longer representable:
+                    // continue squaring would not add any relevant evidence.
+                    if let Some(result) = expected.checked_mul(base as i128) {
+                        if result < i64::MIN as i128 || result > i64::MAX as i128 {
+                            failure = true;
+                            break;
+                        }
+                        expected = result;
+                    } else {
+                        failure = true;
+                        break;
+                    }
+                }
+                if failure {
+                    assert_eq!(
+                        actual.as_deref(),
+                        Err("i64 arithmetic overflow"),
+                        "native pow({base},{exponent})"
+                    );
+                } else {
+                    assert_eq!(
+                        actual,
+                        Ok(expected as i64),
+                        "native pow({base},{exponent})"
+                    );
+                }
+            }
+        }
+        for (base, exponent, expected) in [
+            (0, i64::MAX, 0),
+            (1, i64::MAX, 1),
+            (-1, i64::MAX, -1),
+            (-1, i64::MAX - 1, 1),
+            (-2, 63, i64::MIN),
+        ] {
+            assert_eq!(
+                compiled.run(&[base, exponent]),
+                Ok(expected),
+                "native large exponent pow({base},{exponent})"
+            );
+        }
+    }
+}
