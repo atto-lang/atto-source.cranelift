@@ -510,6 +510,8 @@ mod tests {
             "fnc main(TopicPublisher:int):int{return TopicPublisher;}"));
         assert!(!has_actor_pubsub_surface(
             "fnc main(runtime_pubsub:int):int{return runtime_pubsub;}"));
+        assert!(parse("fnc main(TopicPublisher:int):int{return TopicPublisher;}").is_ok());
+        assert!(parse("fnc main(runtime_pubsub:int):int{return runtime_pubsub;}").is_ok());
 
 
     }
