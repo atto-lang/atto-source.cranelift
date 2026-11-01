@@ -346,22 +346,33 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
 // Backend subset deliberately excludes actors, imports, control flow and classes.
 #[test]
 fn shared_five_backend_scalar_wave_native_jit() {
-    for expression in [
-        "(2 + 3) * 8 + 2",
-        "-(-42)",
-        "(100 - 16) - 42",
-        "-7 * -6",
-        "(7 - 14) * -6",
-        "9223372036854775807 - 9223372036854775765",
-        "-9223372036854775808 + 9223372036854775807 + 43",
-        "2 * (3 + 4) * 3",
+    // The bytes supplied to the JIT are those of the shared native .ores
+    // corpus, including its two comment lines and final LF. Do not rewrite
+    // to a host-language arithmetic expression.
+    for (id, expression) in [
+        ("34", "(2 + 3) * 8 + 2"),
+        ("35", "-(-42)"),
+        ("36", "(100 - 16) - 42"),
+        ("37", "-7 * -6"),
+        ("38", "(7 - 14) * -6"),
+        ("39", "9223372036854775807 - 9223372036854775765"),
+        ("40", "-9223372036854775808 + 9223372036854775807 + 43"),
+        ("41", "2 * (3 + 4) * 3"),
+        ("50", "2 * 3 * 7"),
+        ("51", "(0 - 7) * (0 - 6)"),
+        ("52", "(21 + 21) + (0 - 0)"),
+        ("53", "6 * 7"),
+        ("54", "(-7) * (-6)"),
+        ("55", "9223372036854775807 - 9223372036854775807 + 42"),
+        ("56", "-9223372036854775808 - (-9223372036854775808) + 42"),
+        ("57", "(100 - 58) * (0 + 1)"),
     ] {
-        fixture(
-            &format!("pub fnc main(): int {{ return {expression}; }}"),
-            &[],
-            true,
-            "42\n",
+        let source = format!(
+            "// {id}: candidate source-identical checked-i64 scalar program.\n\
+             // Expected integer result 42; guest execution on each backend is unverified.\n\
+             pub fnc main(): int {{ return {expression}; }}\n"
         );
+        fixture(&source, &[], true, "42\n");
     }
     for expression in [
         "9223372036854775808",
