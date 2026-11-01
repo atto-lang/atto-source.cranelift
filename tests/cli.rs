@@ -354,7 +354,7 @@ fn immutable_default_scalar_jit_parity_spellings() {
         (
             "fnc main():int{const x=7; const y=x*3; return y;}",
             &[][..],
-            "21\\n",
+            "21\n",
         ),
         (
             "fnc main():int{const x=7; return Integer.bitXor(x,3);}",
