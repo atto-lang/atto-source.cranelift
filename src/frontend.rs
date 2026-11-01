@@ -81,7 +81,9 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' {
+                // CR-only files are legal source input, so a line comment
+                // must not swallow the following model declaration.
+                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
                     self.pos += 1;
                 }
                 continue;
@@ -385,6 +387,8 @@ mod tests {
             "define pub model x as Identity() end",
             "pub define model x as Identity() end",
             "define // comment\nmodel x as Identity() end",
+            "define // comment\rmodel x as Identity() end",
+            "define // comment\r\nmodel x as Identity() end",
         ] {
             let error = parse(source).unwrap_err();
             assert!(
