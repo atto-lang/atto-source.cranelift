@@ -192,20 +192,34 @@ fn removed_modulo_operator_never_executes_native_code() {
         ("fnc main():int{return 8%3*2;}", &[][..]),
         ("fnc main():int{return 20%6%3;}", &[][..]),
         ("fnc main():int{return -9223372036854775808%-1;}", &[][..]),
-        ("fnc main(x:int):int{return x%-1;}", &["-9223372036854775808"][..]),
-        ("fnc main(x:int):int{return x%-9223372036854775808;}", &["7"][..]),
+        (
+            "fnc main(x:int):int{return x%-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775808;}",
+            &["7"][..],
+        ),
         ("fnc main():int{return 8-7%3*2;}", &[][..]),
         ("fnc main(x:int):int{return (x+1)%-1;}", &["7"][..]),
         ("fnc main(x:int):int{return x%0;}", &["7"][..]),
         ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
         ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
         ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
-        ("fnc main(x:int):int{return x%-9223372036854775809;}", &["7"][..]),
+        (
+            "fnc main(x:int):int{return x%-9223372036854775809;}",
+            &["7"][..],
+        ),
     ] {
         fixture(source, args, false, "");
     }
     // Prove unaffected named bit XOR executes actual Cranelift machine code.
-    fixture("fnc main():int{return Integer.bitXor(40,2);}", &[], true, "42\n");
+    fixture(
+        "fnc main():int{return Integer.bitXor(40,2);}",
+        &[],
+        true,
+        "42\n",
+    );
 }
 
 #[test]
