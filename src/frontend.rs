@@ -211,6 +211,19 @@ impl<'a> Parser<'a> {
         }
         let mut lhs = self.atom(depth + 1)?;
         loop {
+            // Checked identity cast on the *proven i64* scalar subset only.
+            // The stage-0 frontend has no runtime type tags: bool, string,
+            // dynamic, nominal, Option/as? and owner-changing casts must
+            // continue to reject before executable code is generated.
+            // Bind more tightly than multiplication, without changing the
+            // underlying i64 value or using an unchecked reinterpretation.
+            if self.current == Token::Word("as") && min_bp <= 5 {
+                self.next()?;
+                if !self.take(Token::Word("int"))? {
+                    return Err("unsupported checked cast target (only int is supported)".into());
+                }
+                continue;
+            }
             let (l_bp, r_bp, op) = match self.current {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
@@ -407,6 +420,46 @@ mod tests {
             assert!(parse(source).is_err(), "{source}");
         }
     }
+    #[test]
+    fn scalar_i64_identity_cast_is_not_inference_or_conversion() {
+        // Explicit int casts preserve the already checked scalar i64 value.
+        // No untyped local declarations or bool casts are implemented.
+        for (source, expected) in [
+            ("fnc main():int{return 7 as int + 35;}", 42),
+            ("fnc main():int{return (2+5) as int * 6;}", 42),
+            ("fnc main():int{return 7 as int as int + 35;}", 42),
+            ("fnc main():int{return (7 as int)+35;}", 42),
+            ("fnc main(x:int):int{return x as int + 35;}", 42),
+            ("fnc main():int{return -9223372036854775808 as int;}", i64::MIN),
+            ("fnc main():int{return (9223372036854775807 as int) - 9223372036854775765;}", 42),
+        ] {
+            let parsed = parse(source).expect(source);
+            let args = if parsed.parameters.is_empty() { vec![] } else { vec![7] };
+            assert_eq!(eval(&parsed.result, &args), Ok(expected), "{source}");
+        }
+        for (source, expected_error) in [
+            ("fnc main():int{return 7 as bool;}", "unsupported checked cast target"),
+            ("fnc main():int{return 7 as string;}", "unsupported checked cast target"),
+            ("fnc main():int{return 7 as Object;}", "unsupported checked cast target"),
+            ("fnc main():int{return 7 as int as bool;}", "unsupported checked cast target"),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.contains(expected_error), "{source}: {error}");
+        }
+        for source in [
+            "fnc main():int{return 7 as? int;}",
+            "fnc main():int{return true as int;}",
+            "fnc main():int{return 7 as int as? int;}",
+            "fnc main():int{return 9223372036854775808 as int;}",
+            "fnc main():int{return 7 as int + 9223372036854775808;}",
+            "fnc main():int{return 7 as int;} ",
+            "fnc main():int{return 7 as int; unsafe}",
+            "fnc main():int{return 7 as int",
+        ] {
+            assert!(parse(source).is_err(), "{source:?}");
+        }
+    }
+
     #[test]
     fn fail_closed() {
         for source in [
