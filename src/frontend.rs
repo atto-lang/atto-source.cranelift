@@ -59,7 +59,11 @@ fn literal_divisor(rhs: Expr) -> Result<i64, String> {
             Expr::Literal(value) => value
                 .checked_neg()
                 .ok_or("remainder divisor out of range")?,
-            _ => return Err("remainder requires a signed integer literal divisor".into()),
+            _ => {
+                return Err(
+                    "remainder requires a signed integer literal divisor".into()
+                );
+            }
         },
         _ => return Err("remainder requires a signed integer literal divisor".into()),
     };
