@@ -1,5 +1,6 @@
 mod backend;
 mod frontend;
+#[allow(dead_code)] // Host-only substrate until guest critical lowering exists.
 mod critical_gate;
 use std::io::Read;
 
