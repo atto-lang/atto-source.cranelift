@@ -157,7 +157,7 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(gate.release(first).unwrap(), None);
         assert!(gate.holds(second).unwrap());
-        gate.release(second).unwrap();
+        let _ = gate.release(second).unwrap();
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         let handed = std::thread::spawn(move || copy.release(owner.ticket).unwrap()).join().unwrap();
         assert_eq!(handed, Some(successor.ticket));
         assert!(gate.holds(successor.ticket).unwrap());
-        gate.release(successor.ticket).unwrap();
+        let _ = gate.release(successor.ticket).unwrap();
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod tests {
         }
         assert!(gate.request().is_err());
         assert!(gate.holds(first.ticket).unwrap());
-        gate.release(second.ticket).unwrap();
+        let _ = gate.release(second.ticket).unwrap();
         assert_eq!(gate.request().unwrap().admission, Admission::Queued);
         gate.retire().unwrap();
         assert_eq!(gate.waiting().unwrap(), 0);
@@ -236,7 +236,7 @@ mod tests {
             t2.join().unwrap();
             assert!(!gate.holds(cancelled.ticket).unwrap());
             assert!(gate.holds(survivor.ticket).unwrap());
-            gate.release(survivor.ticket).unwrap();
+            let _ = gate.release(survivor.ticket).unwrap();
         }
     }
 }
