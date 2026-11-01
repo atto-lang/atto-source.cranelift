@@ -48,6 +48,7 @@ fn reject_both_modes(label: &str, source: &str) {
 fn actor_class_hierarchy_and_protocol_fail_closed() {
     for (label, src) in [
         ("basic", "define actor A1 as end\nfnc main():int{return 42;}"),
+        ("canonical-counter", include_str!("fixtures/actor-counter-target.ores")),
         ("shared", "define shared actor A1 as end\nfnc main():int{return 42;}"),
         ("inherited", "define actor Parent as end\ndefine actor Child extends Parent as end"),
         ("class-as-actor", "define class Child extends Actor as end"),
