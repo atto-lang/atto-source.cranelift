@@ -28,6 +28,9 @@ fn rejects_every_unsupported_nominal_declaration_without_output() {
         "define pub singleton Counter as\nend\n",
         "pub define singleton Counter as\nend\n",
         "define singleton Counter implements Stateful<CounterState> as\nend\n",
+        // Byte-identical shared state-container source admission candidates.
+        "define singleton StateBank implements Stateful<BankState> as\n    @Inject\n    state: MutableStateContainer<BankState>\nend\n",
+        "define singleton StateBank as\n    state { let count: int = 0 }\nend\n",
         "define grain User as\nend\n",
         "define state container Inventory as\nend\n",
         "define model Network as\nend\n",
