@@ -287,7 +287,7 @@ impl<'a> Parser<'a> {
             }
         }
         match self.current {
-            Token::Word("actor") | Token::Word("isoactor") => {
+            Token::Word("actor") | Token::Word("isoactor") | Token::Word("isolated") => {
                 return Err("actor runtime is unsupported by the Cranelift scalar profile".into());
             }
             Token::Word("async")
