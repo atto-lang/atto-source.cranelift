@@ -336,6 +336,26 @@ mod native_named_signed64_differential {
     use crate::frontend::parse;
 
     #[test]
+    fn native_composed_named_i64_matches_java_net_and_llvm_reference() {
+        // These expressions execute native code generated from guest source.
+        // The same guest compositions are expected by Java and .NET; the
+        // LLVM reference and C-generated WASM ABI tests check equivalent math.
+        for (expr, expected) in [
+            ("Integer.bitXor(Integer.mod(-9,4),Integer.pow(2,3))", 11_i64),
+            ("Integer.rem(Integer.bitXor(5,3),Integer.pow(2,2))", 2),
+            ("Integer.pow(Integer.rem(-9,4)+3,3)", 8),
+            ("Integer.mod(Integer.pow(-2,3),5)", 2),
+            ("Integer.pow(-2,63)", i64::MIN),
+            ("Integer.pow(-1,9223372036854775807)", -1),
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            let parsed = parse(&source).expect("composed typed i64 guest");
+            let compiled = compile(&parsed).expect("native Cranelift machine code");
+            assert_eq!(compiled.run(&[]), Ok(expected), "guest {source}");
+        }
+    }
+
+    #[test]
     fn failed_native_arithmetic_never_publishes_partial_output() {
         // Exercise the real generated entry ABI directly. Rejected guest
         // calls must return an error status and leave the caller's output
