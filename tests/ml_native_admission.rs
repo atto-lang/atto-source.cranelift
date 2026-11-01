@@ -4,7 +4,8 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -25,11 +26,28 @@ fn execute(source: &str, mode: &str) -> Output {
     file.write_all(source.as_bytes()).expect("write fixture");
     file.sync_all().expect("sync fixture");
     drop(file);
-    let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode)
         .arg(&path)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("invoke actual Cranelift compiler CLI");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().expect("poll compiler subprocess").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("kill hung compiler subprocess");
+            let _ = child.wait();
+            std::fs::remove_file(&path).expect("delete timed-out fixture");
+            panic!("Cranelift {mode} exceeded five-second native admission guard");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = child.wait_with_output().expect("collect compiler output");
     std::fs::remove_file(&path).expect("delete temp fixture");
     result
 }
