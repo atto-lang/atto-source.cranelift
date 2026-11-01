@@ -336,6 +336,52 @@ mod native_named_signed64_differential {
     use crate::frontend::parse;
 
     #[test]
+    fn failed_native_arithmetic_never_publishes_partial_output() {
+        // Exercise the real generated entry ABI directly. Rejected guest
+        // calls must return an error status and leave the caller's output
+        // sentinel unchanged; no host-only evaluator can prove this.
+        type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
+        for (source, args, expected_status) in [
+            (
+                "fnc main(a:int,b:int):int{return Integer.rem(a,b);}",
+                [9_i64, 0, 0, 0],
+                2_i32,
+            ),
+            (
+                "fnc main(a:int,b:int):int{return Integer.mod(a+1,b);}",
+                [i64::MAX, 0, 0, 0],
+                1_i32,
+            ),
+            (
+                "fnc main(a:int,b:int):int{return Integer.pow(a,b);}",
+                [2, 63, 0, 0],
+                1_i32,
+            ),
+            (
+                "fnc main(a:int,b:int):int{return Integer.pow(a,b);}",
+                [2, -1, 0, 0],
+                3_i32,
+            ),
+        ] {
+            let parsed = parse(source).expect("typed scalar expression");
+            let native = compile(&parsed).expect("actual native code");
+            let function: Entry = unsafe {
+                std::mem::transmute(native.module.get_finalized_function(native.id))
+            };
+            let mut output = 0x1122_3344_5566_7788_i64;
+            let status = unsafe {
+                function(args[0], args[1], args[2], args[3], &mut output)
+            };
+            assert_eq!(status, expected_status, "error status for {source}");
+            assert_eq!(
+                output,
+                0x1122_3344_5566_7788_i64,
+                "failed native arithmetic published a partial value: {source}"
+            );
+        }
+    }
+
+    #[test]
     fn native_dynamic_rem_mod_match_independent_i128_oracle() {
         // Actual compiled Cranelift entry points, with dynamic signed64
         // numerator AND denominator. The expected results are calculated
