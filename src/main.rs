@@ -1,5 +1,8 @@
 mod backend;
 mod frontend;
+// Host-only STOP ledger; guest supervisor source remains explicitly unsupported.
+#[allow(dead_code)]
+mod supervisor_stop;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
