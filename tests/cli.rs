@@ -443,3 +443,52 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
+
+#[test]
+fn native_platform_portability_v1_checked_i64_source_matrix() {
+    // Exact source text is shared with conformance PR #299, rather than
+    // rewriting the arithmetic in a Rust host oracle. Compilation and the
+    // printed i64 result must come from the actual native Cranelift JIT.
+    // The source hashes and independent CI provenance still need verification
+    // before cross-backend or platform certification.
+    for (source, result) in [
+        ("pub fnc main(): int { return 40 + 2; }\n", "42\n"),
+        ("pub fnc main(): int { return (2 + 3) * 8; }\n", "40\n"),
+        ("pub fnc main(): int { return 0 - 42; }\n", "-42\n"),
+        ("pub fnc main(): int { return (30 - 10) - 10; }\n", "10\n"),
+        ("pub fnc main(): int { return 6 * (10 - 3); }\n", "42\n"),
+        ("pub fnc main(): int { return 7 - 7; }\n", "0\n"),
+        ("pub fnc main(): int { return 21 + 21; }\n", "42\n"),
+        ("pub fnc main(): int { return 7 * 6; }\n", "42\n"),
+    ] {
+        fixture(source, &[], true, result);
+    }
+    // An unsuccessful compiler check must not be mistaken for runtime
+    // overflow or a successful guest execution; no stdout is permitted.
+    fixture(
+        "pub fnc main(): int { return missing_platform_binding; }\n",
+        &[],
+        false,
+        "",
+    );
+    fixture(
+        "pub fnc main(): int { return absent_platform_function; }\n",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn native_platform_portability_v1_rejects_fake_backend_features() {
+    // A scalar-only Cranelift JIT must never silently accept Oreslang actor,
+    // suspension, ownership or unrelated host-language constructs.
+    for source in [
+        "pub async fnc main(): int { return 42; }\n",
+        "pub critical suspends fnc main(): int { return 42; }\n",
+        "pub fnc main(): int { return await 42; }\n",
+        "pub fnc main(): int { return unknown_runtime_platform_helper(42); }\n",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
