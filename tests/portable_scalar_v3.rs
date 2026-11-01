@@ -100,6 +100,66 @@ fn scalar_v3_real_jit_positive_values() {
     }
 }
 
+// Category-specific diagnostics are evidence of the language phase reached.
+// A parser error, CLI usage failure or killed process is not a JIT overflow.
+fn is_compiler_rejection(id: &str, stderr: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(stderr) else {
+        return false;
+    };
+    if id.starts_with("removed-") {
+        let Some(offset) = text
+            .strip_prefix("orescranelift: invalid character at byte ")
+            .and_then(|s| s.strip_suffix('\\n'))
+        else {
+            return false;
+        };
+        !offset.is_empty() && offset.bytes().all(|c| c.is_ascii_digit())
+    } else {
+        text == "orescranelift: i64 literal out of range\\n"
+    }
+}
+
+fn is_native_checked_overflow(stderr: &[u8]) -> bool {
+    stderr == b"orescranelift: i64 arithmetic overflow\\n"
+}
+
+#[test]
+fn scalar_v3_rejection_phase_mutations_fail_closed() {
+    for bad in [
+        "",
+        "orescranelift: i64 arithmetic overflow\\n",
+        "orescranelift: missing source file\\n",
+        "orescranelift: invalid character at byte nope\\n",
+        "orescranelift: invalid character at byte 2\\nextra",
+        "signal: segmentation fault",
+    ] {
+        assert!(!is_compiler_rejection("removed-percent-new", bad.as_bytes()));
+        assert!(!is_compiler_rejection(
+            "positive-outside-signed-range",
+            bad.as_bytes()
+        ));
+    }
+    assert!(is_compiler_rejection(
+        "removed-caret-new",
+        b"orescranelift: invalid character at byte 27\\n"
+    ));
+    assert!(is_compiler_rejection(
+        "negative-outside-signed-range",
+        b"orescranelift: i64 literal out of range\\n"
+    ));
+    for bad in [
+        b"orescranelift: i64 literal out of range\\n".as_slice(),
+        b"orescranelift: missing source file\\n",
+        b"orescranelift: i64 arithmetic overflow\\nextra",
+        b"orescranelift: i64 arithmetic overflow",
+    ] {
+        assert!(!is_native_checked_overflow(bad));
+    }
+    assert!(is_native_checked_overflow(
+        b"orescranelift: i64 arithmetic overflow\\n"
+    ));
+}
+
 #[test]
 fn scalar_v3_compiler_rejects_invalid_sources() {
     let fixture = Fixture::new();
@@ -111,16 +171,20 @@ fn scalar_v3_compiler_rejects_invalid_sources() {
         ("negative-outside-signed-range", "-9223372036854775809"),
     ] {
         let output = run_one(&fixture, id, expression);
-        assert!(!output.status.success(), "{id} invalid source accepted");
+        assert_eq!(output.status.code(), Some(1), "{id} must be compiler rejection exit 1");
         assert!(output.stdout.is_empty(), "{id} emitted guest stdout");
-        assert!(!output.stderr.is_empty(), "{id} lacked a compiler diagnostic");
+        assert!(
+            is_compiler_rejection(id, &output.stderr),
+            "{id} was not a phase-specific compiler rejection: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
 #[test]
 fn scalar_v3_checked_overflow_fails_closed() {
-    // This establishes nonzero/no-stdout rejection only; stage-0 cannot yet
-    // distinguish compile-time refusal from an instrumented runtime trap.
+    // The native backend uses an explicit JIT overflow status and prints the
+    // exact diagnostic. Do not count parser, linker or infrastructure failures.
     let fixture = Fixture::new();
     for (id, expression) in [
         ("max-add-two-overflow", "9223372036854775807 + 2"),
@@ -129,8 +193,12 @@ fn scalar_v3_checked_overflow_fails_closed() {
         ("negative-square-overflow", "(-3037000500) * 3037000500"),
     ] {
         let output = run_one(&fixture, id, expression);
-        assert!(!output.status.success(), "{id} overflow returned success");
+        assert_eq!(output.status.code(), Some(1), "{id} overflow must exit 1");
         assert!(output.stdout.is_empty(), "{id} emitted a wrapped value");
-        assert!(!output.stderr.is_empty(), "{id} lacked a diagnostic");
+        assert!(
+            is_native_checked_overflow(&output.stderr),
+            "{id} was not observed native JIT overflow: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
