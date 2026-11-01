@@ -291,7 +291,7 @@ impl<'a> Parser<'a> {
         // be reinterpreted as a scalar main() function.
         let unsupported_kind = match self.current {
             Token::Word("state") => Some("state container"),
-            Token::Word(kind @ ("actor" | "supervisor" | "grain" | "model"
+            Token::Word(kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model"
                 | "enum" | "class" | "struct" | "record" | "interface"
                 | "trait" | "protocol" | "service")) => Some(kind),
             _ => None,
