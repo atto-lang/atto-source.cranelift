@@ -450,3 +450,9 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
+
+#[test]
+fn flags2env_client_abi_status_scalar_native_execution() {
+    const SOURCE: &str = include_str!("fixtures/flags2env-client-abi-status.ores");
+    fixture(SOURCE, &[], true, "42\n");
+}
