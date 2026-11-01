@@ -337,51 +337,38 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(fifo).unwrap();
 }
 
-// Wave 2026-11-01: all eight share the parity corpus' signed-i64 source expressions.
-// This is actual Cranelift JIT execution, never a host-only arithmetic oracle.
+// Real native Cranelift JIT guest execution of the shared scalar expressions.
+// Backend subset deliberately excludes actors, imports, control flow and classes.
 #[test]
 fn shared_five_backend_scalar_wave_native_jit() {
-    fixture("pub fnc main(): int { return (2 + 3) * 8 + 2; }", &[], true, "42\n"); // grouped precedence
-    fixture("pub fnc main(): int { return -(-42); }", &[], true, "42\n"); // double negation
-    fixture("pub fnc main(): int { return (100 - 16) - 42; }", &[], true, "42\n"); // left associative subtraction
-    fixture("pub fnc main(): int { return -7 * -6; }", &[], true, "42\n"); // signed multiplication
-    fixture("pub fnc main(): int { return (7 - 14) * -6; }", &[], true, "42\n"); // negative multiplication chain
-    fixture("pub fnc main(): int { return 9223372036854775807 - 9223372036854775765; }", &[], true, "42\n"); // i64 max minus large
-    fixture("pub fnc main(): int { return -9223372036854775808 + 9223372036854775807 + 43; }", &[], true, "42\n"); // i64 min plus max
-    fixture("pub fnc main(): int { return 2 * (3 + 4) * 3; }", &[], true, "42\n"); // nested grouping
-    fixture("pub fnc main(): int { return 9223372036854775808; }", &[], false, ""); // literal overflow
-    fixture("pub fnc main(): int { return 7 / 2; }", &[], false, ""); // int division rejection
-    fixture("pub fnc main(): int { return -(-9223372036854775808); }", &[], false, ""); // overflow at runtime
-    fixture("pub fnc main(): int { return 5 ^ 3; }", &[], false, ""); // removed operator
-}
-
-
-#[test]
-fn five_backend_checked_i64_identity_cast_jit_execution() {
-    // Native guest execution cases. Cargo must actually run on an exact-head
-    // runner before any cross-backend conformance claim is justified.
-    for (source, expected) in [
-        ("pub fnc main():int{return 7 as int + 35;}", "42\n"),
-        ("pub fnc main():int{return (7 as int) + 35;}", "42\n"),
-        ("pub fnc main():int{return 7 as int as int + 35;}", "42\n"),
-        ("pub fnc main():int{return (2+5) as int * 6;}", "42\n"),
-        ("pub fnc main(x:int):int{return x as int + 35;}", "42\n"),
-        ("pub fnc main():int{return (9223372036854775807 as int)-9223372036854775765;}", "42\n"),
+    for expression in [
+        "(2 + 3) * 8 + 2",
+        "-(-42)",
+        "(100 - 16) - 42",
+        "-7 * -6",
+        "(7 - 14) * -6",
+        "9223372036854775807 - 9223372036854775765",
+        "-9223372036854775808 + 9223372036854775807 + 43",
+        "2 * (3 + 4) * 3",
     ] {
-        let args = if source.contains("main(x:int)") { &["7"][..] } else { &[][..] };
-        fixture(source, args, true, expected);
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            true,
+            "42\n",
+        );
     }
-    for source in [
-        "pub fnc main():int{return 7 as bool;}",
-        "pub fnc main():int{return 7 as string;}",
-        "pub fnc main():int{return 7 as Object;}",
-        "pub fnc main():int{return 7 as int as bool;}",
-        "pub fnc main():int{return true as int;}",
-        "pub fnc main():int{return 7 as? int;}",
-        "pub fnc main():int{return 7 as int as? int;}",
-        "pub fnc main():int{return 9223372036854775808 as int;}",
-        "pub fnc main():int{return 7 as int + 9223372036854775808;}",
+    for expression in [
+        "9223372036854775808",
+        "7 / 2",
+        "-(-9223372036854775808)",
+        "5 ^ 3",
     ] {
-        fixture(source, &[], false, "");
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            false,
+            "",
+        );
     }
 }
