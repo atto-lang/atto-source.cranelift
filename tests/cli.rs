@@ -570,3 +570,41 @@ fn five_backend_checked_i64_identity_cast_jit_execution() {
         fixture(&format!("pub fnc main():int{{return {expression};}}"), &[], false, "");
     }
 }
+
+
+#[test]
+fn unsupported_checked_cast_emits_no_clif_or_guest_output() {
+    // A failed cast must not become an executable JIT artifact or an IR
+    // disclosure. Test both CLI modes against an actual source file.
+    const ERROR: &str = "unsupported checked cast target";
+    for (index, expression) in [
+        "7 as bool",
+        "7 as string",
+        "7 as Object",
+        "7 as int as bool",
+    ].iter().enumerate() {
+        let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-cast-reject-{}-{nonce}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            format!("pub fnc main():int{{return {expression};}}\n"),
+        )
+        .unwrap();
+        for mode in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1), "{mode}: invalid failure exit");
+            assert!(result.stdout.is_empty(), "{mode}: emitted guest value/CLIF");
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(stderr.contains(ERROR), "{mode}: wrong diagnostic: {stderr}");
+            assert!(!stderr.contains("panicked"), "{mode}: compiler panicked");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
