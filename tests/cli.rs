@@ -454,5 +454,7 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
 #[test]
 fn flags2env_client_abi_status_scalar_native_execution() {
     const SOURCE: &str = include_str!("fixtures/flags2env-client-abi-status.ores");
+    const EXPECTED: &str = "// Shared scalar ABI smoke for every Oreslang backend, including Cranelift.\n// Encodes public host statuses 0..4 without imports, strings or control flow.\npub fnc main(): int {\n  return (0 * 10000) + (1 * 1000) + (2 * 100) + (3 * 10) + 4 - 1192;\n}\n";
+    assert_eq!(SOURCE.as_bytes(), EXPECTED.as_bytes(), "flags2env fixture bytes drifted");
     fixture(SOURCE, &[], true, "42\n");
 }
