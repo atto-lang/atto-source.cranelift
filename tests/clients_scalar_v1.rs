@@ -70,6 +70,25 @@ fn fixture(name: &str, expected: Option<&str>) {
                     !diagnostic.trim().is_empty(),
                     "{phase} denial missing diagnostic: {name}"
                 );
+                assert_eq!(
+                    result.status.code(),
+                    Some(1),
+                    "{phase} compiler exited abnormally instead of rejecting {name}"
+                );
+                assert!(
+                    diagnostic.contains("orescranelift: "),
+                    "{phase} rejected source without compiler-owned diagnostic: {name}"
+                );
+                let required = match name {
+                    "07-unknown-reject.ores" => "unbound or unsupported identifier",
+                    "08-overflow-reject.ores" => "i64 literal out of range",
+                    "09-syntax-reject.ores" => "expected scalar expression",
+                    _ => panic!("unexpected negative fixture: {name}"),
+                };
+                assert!(
+                    diagnostic.contains(required),
+                    "{phase} wrong rejection category for {name}: {diagnostic}"
+                );
                 assert!(
                     !diagnostic.contains("panicked at")
                         && !diagnostic.contains("stack backtrace"),
