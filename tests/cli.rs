@@ -332,12 +332,12 @@ fn immutable_default_scalar_jit_parity_spellings() {
     }
     for (source, args, result) in [
         (
-            "fnc main(int a):int{int x=a+2; const y=x*3; return y;}",
+            "fnc main(int a):int{int x=a+2; int y=x*3; return y;}",
             &["5"][..],
             "21\n",
         ),
         (
-            "fnc main(x:int):int{const x2: int = x*2; int y=x2+1; return y;}",
+            "fnc main(x:int):int{int x2 = x*2; int y=x2+1; return y;}",
             &["20"][..],
             "41\n",
         ),
@@ -350,6 +350,11 @@ fn immutable_default_scalar_jit_parity_spellings() {
             "fnc main():int{const value = -9223372036854775808; return value;}",
             &[][..],
             "-9223372036854775808\n",
+        ),
+        (
+            "fnc main():int{const x=7; const y=x*3; return y;}",
+            &[][..],
+            "21\\n",
         ),
         (
             "fnc main():int{const x=7; return Integer.bitXor(x,3);}",
@@ -389,15 +394,24 @@ fn immutable_default_bindings_fail_closed_on_mutation_aliases_and_inference() {
     ] {
         fixture(source, &[], false, "");
     }
+    // Standalone const must never accept runtime-dependent expressions, even
+    // when the expression is otherwise readonly and inferable as signed64.
+    for source in [
+        "fnc main(int a):int{const x=a+1; return x;}",
+        "fnc main():int{int x=7; const y=x+1; return y;}",
+        "fnc main():int{const x=9223372036854775807+1; return x;}",
+    ] {
+        fixture(source, &["1"][..0], false, "");
+    }
     // A never-read initializer must still run its checked computation.
     fixture(
-        "fnc main(x:int):int{const unused=x+1; return 7;}",
+        "fnc main(x:int):int{int unused=x+1; return 7;}",
         &["9223372036854775807"],
         false,
         "",
     );
     fixture(
-        "fnc main():int{const unused=9223372036854775807+1; return 7;}",
+        "fnc main():int{int unused=9223372036854775807+1; return 7;}",
         &[],
         false,
         "",
