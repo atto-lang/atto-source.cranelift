@@ -684,3 +684,25 @@ fn oreslana_portable_scalar_capacity_and_nonzero_guest_execution() {
         fixture(source, &[], false, "");
     }
 }
+
+#[test]
+fn byte_identical_v2_checked_cast_guests_execute_or_reject() {
+    // These files must remain byte-identical to Java #2405, LLVM #1256,
+    // Wasm #219 and .NET #282, not translated into Cranelift-specific source.
+    // Git blob SHA-1 positive: 1a80e07da1289c87d04454866883f4e06cfc8d77
+    // Git blob SHA-1 negative: ecc4ccea80f016243e38f351df60cfad9eb6e136
+    let positive = include_str!("../contracts/v1/portable-checked-cast-positive-v2.ores");
+    let negative = include_str!("../contracts/v1/portable-checked-cast-negative-v2.ores");
+    assert_eq!(
+        positive.as_bytes(),
+        b"pub fnc main():int{return (7 as int)+(35 as int);}\n"
+    );
+    assert_eq!(
+        negative.as_bytes(),
+        b"pub fnc main():int{return (7 as int) as bool;}\n"
+    );
+    // Actual Oreslang source -> Cranelift JIT -> stdout, not a host oracle.
+    fixture(positive, &[], true, "42\n");
+    // Unsupported int-to-bool cast must not generate a successful guest.
+    fixture(negative, &[], false, "");
+}
