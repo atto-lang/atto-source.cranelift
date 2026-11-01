@@ -372,3 +372,61 @@ fn shared_five_backend_scalar_wave_native_jit() {
         );
     }
 }
+
+#[test]
+fn signed_i64_boundary_identities_execute_in_native_cranelift_jit() {
+    // These are actual Oreslang guest expressions. No Rust arithmetic oracle
+    // or conversion through f64 may be substituted for the native result.
+    for (expression, expected) in [
+        ("0 - 0", "0\n"),
+        ("-9223372036854775808 + 1", "-9223372036854775807\n"),
+        ("9223372036854775807 - 1", "9223372036854775806\n"),
+        ("(-9223372036854775807) - 1", "-9223372036854775808\n"),
+        ("9223372036854775807 + 0", "9223372036854775807\n"),
+        ("(0 - 42) * -1", "42\n"),
+        ("-(-9223372036854775807)", "9223372036854775807\n"),
+        ("(6 * 7) + (2 - 2)", "42\n"),
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+    // Run-time parameters cannot be folded by the host language.
+    fixture(
+        "pub fnc main(x:int):int{return x+1;}",
+        &["41"],
+        true,
+        "42\n",
+    );
+    fixture(
+        "pub fnc main(x:int,y:int):int{return x*y;}",
+        &["6", "7"],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn scalar_cast_and_ownership_features_fail_closed_before_jit_lowering() {
+    // Java #2405, LLVM #1256, .NET #282 and Wasm #219 have staged
+    // scalar-cast contracts; Cranelift currently has no checked cast,
+    // Option representation, dynamic tag, or actor ownership lowering.
+    // These MUST be reclassified with native-positive receipts before
+    // granting capability parity. A generic parser error is not parity.
+    for source in [
+        "pub fnc main(): int { return 42 as bool; }",
+        "pub fnc main(): int { return 42 as int; }",
+        "pub fnc main(): int { return 42 as? int; }",
+        "pub fnc main(): int { const x = true; return 42; }",
+        "pub fnc main(): int { const x = 42 as bool; return 42; }",
+        "pub fnc main(): int { let x = 41; x = 42; return x; }",
+        "pub fnc main(): int { return rt borrow 42; }",
+        "pub fnc main(): int { return match 42 over on 42 { 42; } end; }",
+        "pub async fnc main(): int { return 42; }",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
