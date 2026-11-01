@@ -54,6 +54,10 @@ struct Parser<'a> {
     nodes: usize,
     parameters: Vec<String>,
     local_names: Vec<String>,
+    // Every write owns a fresh SSA slot. Names map to their latest slot;
+    // immutable names never change, mutable let alone permits assignment.
+    local_versions: Vec<usize>,
+    local_mutable: Vec<bool>,
     local_initializers: Vec<Expr>,
     const_values: Vec<Option<i64>>,
 }
@@ -73,6 +77,8 @@ impl<'a> Parser<'a> {
             nodes: 0,
             parameters: Vec::new(),
             local_names: Vec::new(),
+            local_versions: Vec::new(),
+            local_mutable: Vec::new(),
             local_initializers: Vec::new(),
             const_values: Vec::new(),
         };
@@ -210,7 +216,7 @@ impl<'a> Parser<'a> {
                 } else if let Some(index) =
                     self.local_names.iter().position(|name| name == s)
                 {
-                    Expr::Local(index)
+                    Expr::Local(self.local_versions[index])
                 } else {
                     return Err(format!("unbound or unsupported identifier: {s}"));
                 };
@@ -345,22 +351,44 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("int"))?;
         self.expect(Token::Punct(b'{'))?;
-        // This bounded scalar-only profile admits immutable locals, but no
-        // assignments, mutable-referent capabilities, blocks or actor state.
-        // Every initializer executes once, in lexical source order. 'const',
-        // 'val', and type-first 'int x = ...' are all fixed bindings here.
+        // Each initializer/write executes eagerly once in lexical order.
+        // Immutable const/val/type-first declarations are single-assignment;
+        // explicit let rebinding creates a new SSA version, never an alias.
+        // This subset still has no blocks, actors or mutable referents.
         loop {
-            if self.current == Token::Word("let") {
-                return Err("Cranelift mutable let lowering is not implemented".into());
+            if let Token::Word(word) = self.current {
+                if let Some(index) = self.local_names.iter().position(|name| name == word) {
+                    if !self.local_mutable[index] {
+                        return Err(format!("cannot reassign immutable scalar local '{word}'"));
+                    }
+                    self.next()?;
+                    self.expect(Token::Punct(b'='))?;
+                    let assigned = self.expr(0, 0)?;
+                    self.expect(Token::Punct(b';'))?;
+                    if self.local_initializers.len() >= MAX_NODES {
+                        return Err("scalar SSA version budget exceeded".into());
+                    }
+                    let constant = constant_expr_value(&assigned, &self.const_values)?;
+                    let version = self.local_initializers.len();
+                    self.local_initializers.push(assigned);
+                    self.const_values.push(constant);
+                    self.local_versions[index] = version;
+                    continue;
+                }
             }
-            let explicit_const = self.take(Token::Word("const"))?;
-            let explicit_val = if explicit_const {
+            let explicit_let = self.take(Token::Word("let"))?;
+            let explicit_const = if explicit_let {
+                false
+            } else {
+                self.take(Token::Word("const"))?
+            };
+            let explicit_val = if explicit_const || explicit_let {
                 false
             } else {
                 self.take(Token::Word("val"))?
             };
             let type_first = self.take(Token::Word("int"))?;
-            if !explicit_const && !explicit_val && !type_first {
+            if !explicit_const && !explicit_val && !explicit_let && !type_first {
                 break;
             }
             let name = self.name()?;
@@ -393,6 +421,8 @@ impl<'a> Parser<'a> {
             // Publish only after the initializer is fully checked: the RHS
             // cannot refer to the local currently being declared.
             self.local_names.push(name);
+            self.local_mutable.push(explicit_let);
+            self.local_versions.push(self.local_initializers.len());
             self.local_initializers.push(initializer);
             self.const_values.push(const_value);
         }
