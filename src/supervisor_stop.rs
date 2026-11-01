@@ -128,7 +128,9 @@ impl SupervisorStopLedger {
 
     fn entry_mut(&mut self, child: ChildKey) -> Result<&mut Entry, &'static str> {
         self.entry(child)?;
-        self.children.get_mut(&child.logical_id).ok_or("missing child")
+        self.children
+            .get_mut(&child.logical_id)
+            .ok_or("missing child")
     }
 
     fn ticket_mut(&mut self, ticket: StopTicket) -> Result<&mut Entry, &'static str> {
@@ -174,10 +176,7 @@ impl SupervisorStopLedger {
         Ok(ticket)
     }
 
-    pub(crate) fn claim_host_invocation(
-        &mut self,
-        ticket: StopTicket,
-    ) -> Result<(), &'static str> {
+    pub(crate) fn claim_host_invocation(&mut self, ticket: StopTicket) -> Result<(), &'static str> {
         let entry = self.ticket_mut(ticket)?;
         if entry.invoked || entry.receipt != Receipt::Pending {
             return Err("STOP invocation already claimed or classified");
@@ -218,10 +217,7 @@ impl SupervisorStopLedger {
         Ok(entry.receipt)
     }
 
-    pub(crate) fn acknowledge_applied(
-        &mut self,
-        ticket: StopTicket,
-    ) -> Result<(), &'static str> {
+    pub(crate) fn acknowledge_applied(&mut self, ticket: StopTicket) -> Result<(), &'static str> {
         let entry = self.ticket_mut(ticket)?;
         if entry.receipt != Receipt::Applied {
             return Err("unconfirmed host STOP");
@@ -234,10 +230,7 @@ impl SupervisorStopLedger {
 
     /// Trust boundary: caller MUST have independently verified the external
     /// STOP result for this exact incarnation; no guest may call this.
-    pub(crate) fn reconcile_verified(
-        &mut self,
-        ticket: StopTicket,
-    ) -> Result<(), &'static str> {
+    pub(crate) fn reconcile_verified(&mut self, ticket: StopTicket) -> Result<(), &'static str> {
         let entry = self.ticket_mut(ticket)?;
         if entry.receipt != Receipt::Uncertain && entry.receipt != Receipt::Applied {
             return Err("STOP not ready for reconciliation");
@@ -290,9 +283,16 @@ mod tests {
         assert!(l.acknowledge_applied(t).is_err());
         assert!(l.reserve_stop(child).is_err());
         assert!(l.reconcile_verified(StopTicket { turn: 99, ..t }).is_err());
-        assert!(l.reconcile_verified(StopTicket {
-            child: ChildKey { actor: actor(4, 6), ..child }, ..t
-        }).is_err());
+        assert!(
+            l.reconcile_verified(StopTicket {
+                child: ChildKey {
+                    actor: actor(4, 6),
+                    ..child
+                },
+                ..t
+            })
+            .is_err()
+        );
         assert_eq!(l.snapshot(child).unwrap(), Phase::Stopping);
         l.reconcile_verified(t).unwrap();
         assert_eq!(l.snapshot(child).unwrap(), Phase::Stopped);
@@ -306,9 +306,21 @@ mod tests {
         let child = l.register(key).unwrap();
         assert!(l.register(key).is_err());
         assert!(l.register(actor(3, 1)).is_err());
-        assert!(l.snapshot(ChildKey { supervisor: 12, ..child }).is_err());
+        assert!(
+            l.snapshot(ChildKey {
+                supervisor: 12,
+                ..child
+            })
+            .is_err()
+        );
         assert!(l.snapshot(ChildKey { group: 12, ..child }).is_err());
-        assert!(l.snapshot(ChildKey { actor: actor(2, 2), ..child }).is_err());
+        assert!(
+            l.snapshot(ChildKey {
+                actor: actor(2, 2),
+                ..child
+            })
+            .is_err()
+        );
         assert!(ActorKey::new(0, 1).is_err());
         assert!(SupervisorStopLedger::new(0, 1, 1).is_err());
     }
