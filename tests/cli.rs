@@ -466,7 +466,7 @@ fn heap_ownership_requires_real_lowering_in_run_and_ir() {
         std::fs::remove_file(&path).unwrap();
     }
     fixture("fnc main():int{return 42;} // Arc<int> Array<int> rt borrow", &[],
-        true, "42\\n");
+        true, "42\n");
 }
 
 #[test]
