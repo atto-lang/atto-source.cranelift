@@ -286,6 +286,16 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Models require compiler-owned nominal graph identity, operation
+        // provenance, effect/resource admission and a .run ABI. This JIT
+        // bootstrap intentionally lowers only a scalar main function.
+        // Keep "model" contextual: it remains a valid parameter identifier.
+        if self.current == Token::Word("model") {
+            return Err(
+                "MODEL_LOWERING_UNSUPPORTED: Cranelift requires typed nominal ModelGraph lowering"
+                    .into(),
+            );
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
