@@ -336,3 +336,49 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
+
+
+#[test]
+fn rt_mut_share_is_never_lowered_to_scalar_clif() {
+    // Every context must reject before machine-code emission. No ordinary
+    // parser error or stderr-free JIT failure counts as a capability gate.
+    const GATE: &str = "native rt mut share requires verified SharedMutex<T> capability";
+    for (index, expression) in [
+        "rt mut share 42",
+        "(rt mut share 42)",
+        "1 + (rt mut share 42)",
+        "Integer.bitXor(rt mut share 1, 2)",
+        "rt mut share (rt mut share 1)",
+        "rt mut share (1 + 2)",
+    ].iter().enumerate() {
+        let file = std::env::temp_dir().join(format!(
+            "orescranelift-mutshare-{}-{index}.ores", std::process::id()
+        ));
+        std::fs::write(&file, format!("fnc main():int{{return {expression};}}\n")).unwrap();
+        for command in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(command)
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1), "{command}: unexpected compiler exit");
+            assert!(result.stdout.is_empty(), "{command}: emitted executable value or CLIF IR");
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(stderr.contains(GATE), "{command}: missing ownership diagnostic: {stderr}");
+            assert!(!stderr.contains("panic"), "{command}: compiler crashed");
+        }
+        std::fs::remove_file(file).unwrap();
+    }
+}
+
+#[test]
+fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
+    fixture(
+        "fnc main():int{return 42;} // rt mut share owned\n",
+        &[], true, "42\n"
+    );
+    fixture(
+        "fnc main():int{return 40+2;} // a second rt mut share\n",
+        &[], true, "42\n"
+    );
+}
