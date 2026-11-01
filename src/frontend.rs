@@ -4,6 +4,110 @@ const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_PARAMS: usize = 4;
 
+// Historical Java v1 Lexer.java keyword inventory (93 spellings), pinned to
+// Git blob bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a.
+// This only rejects reserved names in the narrow scalar parameter grammar.
+// It does not claim parity of native lexer tokens, parser, or guest runtime.
+const JAVA_V1_RESERVED_PARAMETER_NAMES: [&str; 93] = [
+    "abstract",
+    "actor",
+    "arr",
+    "as",
+    "async",
+    "await",
+    "block",
+    "break",
+    "catch",
+    "cb",
+    "class",
+    "conforms",
+    "const",
+    "continue",
+    "contract",
+    "cpu",
+    "def",
+    "default",
+    "defer",
+    "define",
+    "do",
+    "done",
+    "elif",
+    "else",
+    "elseif",
+    "end",
+    "eq",
+    "extends",
+    "false",
+    "fi",
+    "finally",
+    "fnc",
+    "for",
+    "from",
+    "generator",
+    "gpu",
+    "if",
+    "impl",
+    "implements",
+    "import",
+    "interface",
+    "is",
+    "isoactor",
+    "let",
+    "loop",
+    "match",
+    "matches",
+    "module",
+    "mut",
+    "namespace",
+    "nb",
+    "neq",
+    "new",
+    "nlex",
+    "null",
+    "obj",
+    "of",
+    "over",
+    "panic",
+    "private",
+    "pub",
+    "quantum",
+    "raise",
+    "readch",
+    "recover",
+    "return",
+    "routine",
+    "rt",
+    "select",
+    "self",
+    "shared",
+    "spawn",
+    "static",
+    "stop",
+    "struct",
+    "super",
+    "suspends",
+    "switch",
+    "then",
+    "throw",
+    "trait",
+    "trap",
+    "true",
+    "try",
+    "type",
+    "typeof",
+    "types",
+    "untrusted",
+    "val",
+    "void",
+    "while",
+    "writech",
+    "yield"
+];
+
+fn is_java_v1_reserved_parameter_name(name: &str) -> bool {
+    JAVA_V1_RESERVED_PARAMETER_NAMES.binary_search(&name).is_ok()
+}
+
 fn integer_digits(token: &str) -> Result<String, String> {
     let bytes = token.as_bytes();
     for (i, byte) in bytes.iter().enumerate() {
@@ -293,7 +397,7 @@ impl<'a> Parser<'a> {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
-                if matches!(
+                if is_java_v1_reserved_parameter_name(&name) || matches!(
                     name.as_str(),
                     "Integer"
                         | "int"
@@ -348,6 +452,33 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
+        assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
+        assert!(JAVA_V1_RESERVED_PARAMETER_NAMES.windows(2).all(|p| p[0] < p[1]));
+        for name in JAVA_V1_RESERVED_PARAMETER_NAMES {
+            let source = format!("fnc main({name}:int):int{{return {name};}}");
+            assert!(parse(&source).is_err(), "reserved Java v1 name accepted: {name}");
+        }
+        for name in ["owned", "eqx", "xneq", "island", "nullish", "panic_mode", "cpu_task"] {
+            let source = format!("fnc main({name}:int):int{{return {name};}}");
+            assert!(parse(&source).is_ok(), "ordinary name rejected: {name}");
+        }
+    }
+
+    #[test]
+    fn stage_zero_is_not_a_general_java_lexical_frontend() {
+        for expression in [
+            "#ready", "#'with spaces'", "critical-read", "transform-pipe",
+            "nb-select", "gpu", "cpu", "panic", "1 ^ 2",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            assert!(parse(&source).is_err(), "unsupported source admitted: {expression}");
+        }
+        // The restricted Cranelift scalar profile explicitly supports remainder.
+        assert!(parse("fnc main():int{return 7%3;}").is_ok());
+    }
+
     fn eval(e: &Expr, args: &[i64]) -> Result<i64, &'static str> {
         match e {
             Expr::Literal(x) => Ok(*x),
