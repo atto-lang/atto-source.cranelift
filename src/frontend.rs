@@ -209,6 +209,9 @@ impl<'a> Parser<'a> {
             Token::Word("stdio") => {
                 Err("process stdio is outside the Cranelift stage-0 scalar profile; no actor/process I/O alias is permitted".into())
             }
+            Token::Word("print") => {
+                Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
+            }
             Token::Word(s) => {
                 let index = self
                     .parameters
@@ -433,6 +436,7 @@ mod tests {
             "fnc main():int{return io;}",
             "fnc main():int{return io.out;}",
             "fnc main():int{return stdio;}",
+            "fnc main():int{return print;}",
         ] {
             let error = parse(source).expect_err(source);
             assert!(
