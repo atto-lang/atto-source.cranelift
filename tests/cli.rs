@@ -601,7 +601,10 @@ fn portable_scalar_v1_real_native_jit_16_positive_6_negative() {
         let record = format!(
             "\"id\": \"{id}\",\n      \"expression\": \"{expression}\",\n      \"expected\": \"{expected}\""
         );
-        assert!(CONTRACT.contains(&record), "missing manifest positive vector: {id}");
+        assert!(
+            CONTRACT.contains(&record),
+            "missing manifest positive vector: {id}"
+        );
         let source = format!("pub fnc main():int{{return {expression};}}");
         fixture(&source, &[], true, &format!("{expected}\n"));
     }
@@ -609,7 +612,10 @@ fn portable_scalar_v1_real_native_jit_16_positive_6_negative() {
         let record = format!(
             "\"id\": \"{id}\",\n      \"expression\": \"{expression}\",\n      \"reason\": \"{reason}\""
         );
-        assert!(CONTRACT.contains(&record), "missing manifest negative vector: {id}");
+        assert!(
+            CONTRACT.contains(&record),
+            "missing manifest negative vector: {id}"
+        );
         let source = format!("pub fnc main():int{{return {expression};}}");
         fixture(&source, &[], false, "");
     }
