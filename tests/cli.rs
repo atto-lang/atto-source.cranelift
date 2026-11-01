@@ -558,3 +558,59 @@ fn oversized_and_deeply_nested_sources_fail_closed() {
     );
     fixture(&deep, &[], false, "");
 }
+
+#[test]
+fn portable_scalar_v1_real_native_jit_16_positive_6_negative() {
+    // The same manifest blob is committed in Java, LLVM, .NET and Wasm.
+    // No native Oreslang stdlib harness is claimed by this Cranelift test.
+    // This uses the actual CLI -> frontend -> Cranelift JIT -> process stdout.
+    const CONTRACT: &str = include_str!("../contracts/parity/portable-scalar-v1-20261101.json");
+    assert!(CONTRACT.contains("\"schema_version\": \"2026-11-01.scalar-v1\""));
+    assert!(CONTRACT.contains("\"scope\": \"import-free-pure-i64\""));
+    assert_eq!(CONTRACT.matches("\"id\": \"").count(), 22);
+
+    let positive = [
+        ("zero", "0", "0"),
+        ("positive-forty-two", "6 * 7", "42"),
+        ("negative-forty-two", "-7 * 6", "-42"),
+        ("max-i64", "9223372036854775807", "9223372036854775807"),
+        ("min-i64", "-9223372036854775808", "-9223372036854775808"),
+        ("max-minus-one", "9223372036854775807 - 1", "9223372036854775806"),
+        ("min-plus-one", "-9223372036854775808 + 1", "-9223372036854775807"),
+        ("over-binary64-mantissa", "9007199254740993 - 9007199254740992", "1"),
+        ("negative-over-binary64", "-9007199254740993 - (-9007199254740992)", "-1"),
+        ("precedence", "2 + 3 * 4", "14"),
+        ("parentheses", "(2 + 3) * 4", "20"),
+        ("subtraction-left-assoc", "20 - 5 - 3", "12"),
+        ("grouped-subtraction", "20 - (5 - 3)", "18"),
+        ("double-negative", "-(-42)", "42"),
+        ("two-negative-factors", "(-7) * (-6)", "42"),
+        ("underscore-literal", "1_000 + 24", "1024"),
+    ];
+    let negative = [
+        ("div-int", "7 / 2", "unsupported-int-division"),
+        ("forbidden-caret", "7 ^ 3", "removed-operator"),
+        ("forbidden-double-caret", "7 ^^ 3", "removed-operator"),
+        ("forbidden-remainder", "7 % 3", "removed-operator"),
+        ("i64-overflow-literal", "9223372036854775808", "literal-out-of-range"),
+        ("negative-i64-underflow-literal", "-9223372036854775809", "literal-out-of-range"),
+    ];
+    assert_eq!(positive.len(), 16);
+    assert_eq!(negative.len(), 6);
+    for (id, expression, expected) in positive {
+        let record = format!(
+            "\"id\": \"{id}\",\n      \"expression\": \"{expression}\",\n      \"expected\": \"{expected}\""
+        );
+        assert!(CONTRACT.contains(&record), "missing manifest positive vector: {id}");
+        let source = format!("pub fnc main():int{{return {expression};}}");
+        fixture(&source, &[], true, &format!("{expected}\n"));
+    }
+    for (id, expression, reason) in negative {
+        let record = format!(
+            "\"id\": \"{id}\",\n      \"expression\": \"{expression}\",\n      \"reason\": \"{reason}\""
+        );
+        assert!(CONTRACT.contains(&record), "missing manifest negative vector: {id}");
+        let source = format!("pub fnc main():int{{return {expression};}}");
+        fixture(&source, &[], false, "");
+    }
+}
