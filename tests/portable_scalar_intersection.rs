@@ -17,7 +17,7 @@ fn identical_scalar_guest_bytes_execute_to_42() {
         ("39-maximum-minus-large-42.ores", "933170e4f02620ec5201c65e6cdfc7ef52c801c2"),
         ("40-min-plus-max-42.ores", "d0be662540d37a0caf21db846c10913ce09d7d65"),
         ("41-nested-grouping-42.ores", "1963f09603b5e78da27e6e26382f47b3cc132d92"),
-        ("42-immutable-default-local.ores", "094f98e1e01119a3de486e77ea87e7550dee0a49"),
+        ("42-immutable-default-local.ores", "bef40c26e62968279635ca4f0b3422aa0b500beb"),
         ("43-const-typed-local.ores", "328ab99f1ad6051090c09f302e38a5389c7362ae"),
         ("44-annotated-const-int.ores", "616abb5c2bf0109af91377d0e6da76f41bf9c1eb"),
     ];
