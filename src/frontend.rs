@@ -286,6 +286,21 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Stage-0 has no nominal type descriptors, sealed-state loans,
+        // actor identity or supervisor CONTROL lane. A declaration must never
+        // be reinterpreted as a scalar main() function.
+        let unsupported_kind = match self.current {
+            Token::Word("state") => Some("state container"),
+            Token::Word(kind @ ("actor" | "supervisor" | "grain" | "model"
+                | "enum" | "class" | "struct" | "record" | "interface"
+                | "trait" | "protocol" | "service")) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = unsupported_kind {
+            return Err(format!(
+                "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
+            ));
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
