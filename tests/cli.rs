@@ -522,3 +522,44 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
+
+#[test]
+fn rt_mut_share_in_immutable_initializers_is_rejected_before_ir() {
+    // The immutable-local syntax introduces another entry point for
+    // expressions. It must not bypass the existing ownership capability gate.
+    const GATE: &str = "native rt mut share requires verified SharedMutex<T> capability";
+    for (index, declaration) in [
+        "int alias=rt mut share 42;",
+        "const alias=rt mut share 42;",
+        "int prior=7; int alias=rt mut share prior;",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let file = std::env::temp_dir().join(format!(
+            "orescranelift-immutable-mutshare-{}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&file, format!("fnc main():int{{{declaration}return 7;}}\n"))
+            .unwrap();
+        for command in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(command)
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1), "{command}: unexpected exit");
+            assert!(
+                result.stdout.is_empty(),
+                "{command}: rejected ownership operation produced guest output or IR"
+            );
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                stderr.contains(GATE),
+                "{command}: wrong or missing ownership diagnostic: {stderr}"
+            );
+            assert!(!stderr.contains("panic"), "{command}: compiler panic");
+        }
+        std::fs::remove_file(file).unwrap();
+    }
+}
