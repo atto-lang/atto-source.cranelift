@@ -19,9 +19,17 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        // Do not follow the final component of an untrusted source path:
+        // a symlink could redirect source admission outside the intended file.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
     }
-    let file = options.open(&path).map_err(|e| e.to_string())?;
+    let file = options.open(&path).map_err(|e| {
+        #[cfg(unix)]
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            return "source symlinks are forbidden".to_owned();
+        }
+        e.to_string()
+    })?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("source must be a regular file".into());
     }
