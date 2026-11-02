@@ -53,7 +53,7 @@ are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
 This branch remains experimental. Passing scalar JIT and native AOT guest tests
-**does not** establish full AttoLang support, macro expansion, actor isolation,
+**does not** establish full AttoLang support, general macro expansion, actor isolation,
 or Forge self-hosting.
 
 ## Acceptance
@@ -85,7 +85,7 @@ A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
 
-## Experimental program-specific AOT object mode (not yet a standalone executable)
+## Experimental program-specific AOT object mode (separate from standalone executable)
 
 `cargo run --locked -- object example.ores output.o` emits a native relocatable
 object containing actual machine code generated from the admitted stage-0 scalar
@@ -96,10 +96,10 @@ The AOT code-generation path does **not** instantiate `JITModule`.
 
 This deliberately narrow AOT progress does not prove complete AttoLang guest
 AOT, actor/async/heap semantics, cross-platform standalone binaries, or
-type-safe imports/macros. `define macro` and `name!(...)` are still unsupported
-and must reject **before object emission**, not silently fall back to native JIT.
-Future compiler phases must expand hygienic typed macros at build time before
-this or any other backend emits a runnable artifact. The regular `run` command
+general typed macro semantics. The only admitted compile-time macro slice
+is the deliberately narrow, typed AST-only `Const<int>` quotation and
+`Syntax<Expr>` identity described below. Other macro forms reject **before
+object emission**, not silently fall back to native JIT. The regular `run` command
 continues to select optional trusted scalar JIT, and it is not a sandbox.
 
 The native-object integration test links the generated object using a tiny
@@ -124,9 +124,49 @@ no-overwrite hard link from a 0700 temporary build directory created in its
 destination directory; rejected source and failed builds must leave no output.
 
 This is still **only stage-0 scalar standalone guest AOT** on the host
-architecture, not complete AttoLang application AOT. Macros, actor turns,
-heaps, async, structured ownership and complete generics are unsupported,
+architecture, not complete AttoLang application AOT. General hygienic
+metaprogramming, actor turns, heaps, async, structured ownership and
+complete generics are unsupported,
 and must reject without falling back to the JIT. Cross-platform executable
 formats and native runtime packaging have not been qualified. Compilation
 requires the pinned Rust toolchain and a system linker **on the build host**;
 the linked guest program does not require those tools to execute.
+
+## Minimal typed-AST compile-time macro conformance slice
+
+This branch admits exactly two *compile-time* declarations before `fnc main`:
+
+```oreslang
+define macro literal(Const<int> value) -> Syntax<Expr> {
+    return quote(value);
+}
+define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+    return value;
+}
+fnc main():int {
+    return identity!(syntax expr literal!(const 40+2));
+}
+```
+
+`literal!(const 40+2)` evaluates closed signed-i64 arithmetic under
+checked overflow semantics and emits a **literal AST node**;
+`identity!(syntax expr 42)` forwards one typed expression AST node.
+The compiler erases these macro declarations and invocations before
+Cranelift emits IR. The resulting AOT executable contains neither macro
+evaluator nor source parser; optional JIT receives the same expanded AST.
+There is **no** source-string substitution or runtime macro expansion.
+
+Admission limits: at most eight declarations, 128 invocation expansions,
+the existing 4096 AST-node budget, 128 expression depth and 1 MiB source.
+Only the exact typed declaration/return bodies above are recognized.
+Dynamic `Const<int>`, overflow, unbound macro names, duplicate declarations,
+host `eval`, actor operations, non-identity templates, generated identifiers
+and repeated call-site syntax splicing fail closed **before** AOT output
+creation. There are no user-defined identifiers introduced by this slice;
+therefore it does **not** prove general hygienic identifier emission or
+ownership Copy/Sendable inference.
+
+Native integration tests execute contract cases MA001 and MA002 as real
+standalone program-specific guest binaries and separately through optional
+Cranelift JIT. This is a **restricted scalar subset**, not full shared
+MA001–MA008 conformance or Graal/LLVM/.NET/Wasm macro-AOT parity.
