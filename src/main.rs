@@ -7,9 +7,9 @@ fn run() -> Result<(), String> {
     let _ = argv.next();
     let mode = argv
         .next()
-        .ok_or("usage: orescranelift run|ir <file.ores> [i64 args...]")?;
+        .ok_or("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...]")?;
     if mode != "run" && mode != "ir" {
-        return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
+        return Err("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
     // Nonblocking admission is essential before descriptor-level validation:
