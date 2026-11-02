@@ -39,6 +39,15 @@ pub struct Program {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacroKind {
+    ConstI64Quote,
+    SyntaxExprIdentity,
+}
+
+const MAX_MACRO_DECLARATIONS: usize = 8;
+const MAX_MACRO_EXPANSIONS: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Token<'a> {
     Word(&'a str),
     Number(&'a str),
@@ -52,6 +61,8 @@ struct Parser<'a> {
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
+    macros: std::collections::BTreeMap<String, MacroKind>,
+    expansions: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -68,6 +79,8 @@ impl<'a> Parser<'a> {
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
+            macros: std::collections::BTreeMap::new(),
+            expansions: 0,
         };
         p.next()?;
         Ok(p)
@@ -109,7 +122,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
-        } else if b"()+-*%{};:,>.".contains(&first) {
+        } else if b"()+-*%{};:,>.<!".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
