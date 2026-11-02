@@ -55,6 +55,33 @@ enum Token<'a> {
     End,
 }
 
+/// This evaluator accepts only closed, side-effect-free scalar AST.
+/// It does not reparse strings and cannot inspect source/runtime authority.
+fn const_i64(expression: &Expr) -> Result<i64, String> {
+    match expression {
+        Expr::Literal(n) => Ok(*n),
+        Expr::Neg(x) => const_i64(x)?
+            .checked_neg()
+            .ok_or_else(|| "compile-time Const<int> overflow".into()),
+        Expr::Add(x, y) => {
+            let a = const_i64(x)?;
+            let b = const_i64(y)?;
+            a.checked_add(b).ok_or_else(|| "compile-time Const<int> overflow".into())
+        }
+        Expr::Sub(x, y) => {
+            let a = const_i64(x)?;
+            let b = const_i64(y)?;
+            a.checked_sub(b).ok_or_else(|| "compile-time Const<int> overflow".into())
+        }
+        Expr::Mul(x, y) => {
+            let a = const_i64(x)?;
+            let b = const_i64(y)?;
+            a.checked_mul(b).ok_or_else(|| "compile-time Const<int> overflow".into())
+        }
+        _ => Err("Const<int> must be a closed compile-time expression; runtime fallback is forbidden".into()),
+    }
+}
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -162,6 +189,66 @@ impl<'a> Parser<'a> {
         }
         Ok(x)
     }
+    /// A deliberately small typed declaration grammar; unsupported macro
+    /// bodies are rejected before native object/executable generation.
+    fn macro_declaration(&mut self) -> Result<(), String> {
+        if self.macros.len() >= MAX_MACRO_DECLARATIONS {
+            return Err("compile-time macro declaration budget exceeded".into());
+        }
+        let name = self.name()?;
+        if matches!(name.as_str(), "main" | "Integer" | "rt" | "quote" | "unquote"
+            | "fnc" | "macro" | "define" | "pub")
+            || self.macros.contains_key(&name) {
+            return Err("reserved or duplicate compile-time macro name".into());
+        }
+        self.expect(Token::Punct(b'('))?;
+        let kind = if self.take(Token::Word("Const"))? {
+            self.expect(Token::Punct(b'<'))?;
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'>'))?;
+            MacroKind::ConstI64Quote
+        } else if self.take(Token::Word("Syntax"))? {
+            self.expect(Token::Punct(b'<'))?;
+            self.expect(Token::Word("Expr"))?;
+            self.expect(Token::Punct(b'>'))?;
+            MacroKind::SyntaxExprIdentity
+        } else {
+            return Err("only Const<int> or Syntax<Expr> macro arguments supported".into());
+        };
+        let parameter = self.name()?;
+        if matches!(parameter.as_str(), "quote" | "unquote" | "eval" | "rt" | "main") {
+            return Err("reserved compile-time macro parameter".into());
+        }
+        self.expect(Token::Punct(b')'))?;
+        self.expect(Token::Punct(b'-'))?;
+        self.expect(Token::Punct(b'>'))?;
+        self.expect(Token::Word("Syntax"))?;
+        self.expect(Token::Punct(b'<'))?;
+        self.expect(Token::Word("Expr"))?;
+        self.expect(Token::Punct(b'>'))?;
+        self.expect(Token::Punct(b'{'))?;
+        self.expect(Token::Word("return"))?;
+        match kind {
+            MacroKind::ConstI64Quote => {
+                self.expect(Token::Word("quote"))?;
+                self.expect(Token::Punct(b'('))?;
+                if self.name()? != parameter {
+                    return Err("Const<int> quote must reference its exact parameter".into());
+                }
+                self.expect(Token::Punct(b')'))?;
+            }
+            MacroKind::SyntaxExprIdentity => {
+                if self.name()? != parameter {
+                    return Err("Syntax<Expr> identity must return its exact parameter".into());
+                }
+            }
+        }
+        self.expect(Token::Punct(b';'))?;
+        self.expect(Token::Punct(b'}'))?;
+        self.macros.insert(name, kind);
+        Ok(())
+    }
+
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -217,13 +304,40 @@ impl<'a> Parser<'a> {
                 Err("rt ownership operation requires checked ownership lowering".into())
             }
             Token::Word(s) => {
-                let index = self
-                    .parameters
-                    .iter()
-                    .position(|p| p == s)
-                    .ok_or_else(|| format!("unbound or unsupported identifier: {s}"))?;
+                let name = s.to_owned();
                 self.next()?;
-                self.node(Expr::Param(index))
+                if self.take(Token::Punct(b'!'))? {
+                    let kind = self.macros.get(&name).copied().ok_or_else(|| {
+                        format!("unresolved compile-time macro '{name}'; runtime fallback is forbidden")
+                    })?;
+                    self.expansions += 1;
+                    if self.expansions > MAX_MACRO_EXPANSIONS {
+                        return Err("compile-time macro expansion budget exceeded".into());
+                    }
+                    self.expect(Token::Punct(b'('))?;
+                    match kind {
+                        MacroKind::ConstI64Quote => {
+                            self.expect(Token::Word("const"))?;
+                            let argument = self.expr(0, depth + 1)?;
+                            self.expect(Token::Punct(b')'))?;
+                            let value = const_i64(&argument)?;
+                            self.node(Expr::Literal(value))
+                        }
+                        MacroKind::SyntaxExprIdentity => {
+                            self.expect(Token::Word("syntax"))?;
+                            self.expect(Token::Word("expr"))?;
+                            let argument = self.expr(0, depth + 1)?;
+                            self.expect(Token::Punct(b')'))?;
+                            // Exactly one AST occurrence is forwarded: no
+                            // identifier capture, copy amplification or reparse.
+                            Ok(argument)
+                        }
+                    }
+                } else {
+                    let index = self.parameters.iter().position(|p| p == &name)
+                        .ok_or_else(|| format!("unbound or unsupported identifier: {name}"))?;
+                    self.node(Expr::Param(index))
+                }
             }
             _ => Err(format!("expected scalar expression at byte {}", self.pos)),
         }
@@ -282,7 +396,17 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
     fn program(mut self) -> Result<Program, String> {
+        // Macro declarations are erased during this parser's typed AST
+        // lowering. The native backend receives only scalar Expr nodes.
         let mut seen_define = false;
+        while self.take(Token::Word("define"))? {
+            if self.take(Token::Word("macro"))? {
+                self.macro_declaration()?;
+            } else {
+                seen_define = true;
+                break;
+            }
+        }
         let mut seen_pub = false;
         loop {
             if self.take(Token::Word("define"))? {
@@ -318,7 +442,7 @@ impl<'a> Parser<'a> {
                         | "async"
                         | "await"
                         | "actor"
-                ) || self.parameters.contains(&name)
+                ) || self.parameters.contains(&name) || self.macros.contains_key(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
                 }
