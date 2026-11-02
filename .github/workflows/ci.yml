@@ -15,15 +15,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Verify exact source revision and Git tree
+      - name: Verify exact commit and indexed Git tree without checkout filters
         env:
           EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED"
-          git diff --quiet
+          [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED"
+          SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          test "$(git cat-file -t "$SOURCE_TREE")" = tree
+          # Never call git diff/status on untrusted .gitattributes: external
+          # clean filters can run code before compiler tests begin.
+          # write-tree compares only the checkout index to exact Git objects.
+          test "$(git write-tree)" = "$SOURCE_TREE"
           echo "SOURCE_COMMIT=$EXPECTED"
-          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          echo "SOURCE_TREE=$SOURCE_TREE"
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: "1.99.1"
