@@ -83,3 +83,15 @@ symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
+
+## Explicit full-AOT and mutable-state admission gate
+
+`orescranelift aot` and `orescranelift full-aot` explicitly reject with nonzero
+status rather than executing or packaging the stage-0 scalar JIT. Both `run`
+and `ir` reject `@Inject`/`@StateBacked` state-provider annotations,
+`define state container`, `define actor` and `define virtual actor`.
+This is intentional: native heap provenance, scoped borrow lowering,
+supervisor quiescence and deterministic object drop paths are unavailable.
+Comment-only annotation text remains inert. This is **not** evidence of full
+AOT, zero tracing GC or actor support. The negative gate verifies absence
+of generated IR, guest stdout and build artifacts.
