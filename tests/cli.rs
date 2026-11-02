@@ -449,3 +449,17 @@ fn named_rem_real_native_jit_and_fail_closed_divisors() {
     fixture("fnc main(x:int):int{return Integer.rem(x+1,-1);}",
             &["9223372036854775807"], false, "");
 }
+
+#[test]
+fn carriage_return_comment_boundary_is_not_an_effect_bypass_in_cli() {
+    fixture("fnc main():int{return 42;} // harmless % text\r\n", &[], true, "42\n");
+    for source in [
+        "fnc main():int{return 42;} // masked\r 7%3",
+        "fnc main():int{return 42;} // masked\r critical {}",
+        "fnc main():int{return 42;} // masked\r suspends",
+        "fnc main(critical:int):int{return critical;}",
+        "fnc main(suspends:int):int{return suspends;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
