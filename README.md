@@ -1,13 +1,19 @@
-# Oreslang Cranelift backend
+# AttoLang Cranelift backend
 
-An **independent Rust + Cranelift** experimental backend for Oreslang. It is
+**AttoLang** is the current public language name (formerly **Oreslang**).
+This branding change does not imply full-language parity, AOT or zero-GC guarantees.
+The repository's existing scalar `.atto` and `.ores` integration fixtures are retained.
+These files and naming changes do not certify this draft's new remainder or CI hardening.
+Do not rename repository identifiers or fixed ABIs solely for public branding.
+
+An **independent Rust + Cranelift** experimental backend for AttoLang. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
 
-## Stage-0 executable scalar profile
+## Stage-0 executable scalar profile (`.atto` and legacy `.ores`)
 
-This backend compiles a deliberately narrow Oreslang source subset
-into **actual Cranelift native JIT machine code**, with a checked overflow
+This backend compiles a deliberately narrow AttoLang source subset
+from `.atto` or legacy `.ores` files into **actual Cranelift native JIT machine code**, with a checked overflow
 status rather than an unchecked wrap or process trap.
 
 ```oreslang
@@ -15,8 +21,8 @@ fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
-cargo run --locked -- run example.ores 7 8 # 72
-cargo run --locked -- ir example.ores      # generated Cranelift IR
+cargo run --locked -- run example.atto 7 8 # 72
+cargo run --locked -- ir example.atto      # generated Cranelift IR
 cargo test --locked --all-targets
 ```
 
@@ -49,14 +55,14 @@ The numerator still executes checked arithmetic before computing remainder.
 Native JIT code executes inside this process. **It is not a sandbox** and
 there is no guest actor heap isolation or untrusted-source support.
 The entry ABI is internal (four i64 operands plus an output pointer returning
-an i32 status), not a published Oreslang or foreign-call ABI.
+an i32 status), not a published AttoLang or foreign-call ABI.
 
 Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
 This branch remains experimental. Passing its scalar JIT tests does **not**
-establish full Oreslang support, actor isolation or Forge self-hosting.
+establish full AttoLang support, actor isolation or Forge self-hosting.
 
 ## Acceptance
 
