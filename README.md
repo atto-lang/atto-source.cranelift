@@ -52,8 +52,9 @@ Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
-This branch remains experimental. Passing its scalar JIT tests does **not**
-establish full Oreslang support, actor isolation or Forge self-hosting.
+This branch remains experimental. Passing scalar JIT and native AOT guest tests
+**does not** establish full AttoLang support, macro expansion, actor isolation,
+or Forge self-hosting.
 
 ## Acceptance
 
@@ -105,3 +106,27 @@ The native-object integration test links the generated object using a tiny
 independent C host ABI shim and executes the result, including a checked
 overflow negative case. That is native **guest-AOT object** evidence, not a
 self-contained runtime binary.
+
+## Experimental scalar standalone native guest AOT executable
+
+`cargo run --locked -- build example.ores ./example` now emits a directly
+executable native guest application on supported Unix build hosts. Run
+`./example 7 8` for the source example above (72).
+
+The pipeline parses admitted AttoLang scalar source, emits a program-specific
+Cranelift native object, then links it with the compiler-owned fixed
+`src/aot_entry.rs` scalar process entrypoint using build-time `rustc` and the
+system native linker. The executable uses **neither runtime JIT nor a guest
+interpreter**. The entrypoint supplies checked i64 argv parsing, an
+exact-length argument check, a zero-filled fixed four-i64 native call ABI,
+and overflow/error exit codes. The output is published atomically by a
+no-overwrite hard link from a 0700 temporary build directory created in its
+destination directory; rejected source and failed builds must leave no output.
+
+This is still **only stage-0 scalar standalone guest AOT** on the host
+architecture, not complete AttoLang application AOT. Macros, actor turns,
+heaps, async, structured ownership and complete generics are unsupported,
+and must reject without falling back to the JIT. Cross-platform executable
+formats and native runtime packaging have not been qualified. Compilation
+requires the pinned Rust toolchain and a system linker **on the build host**;
+the linked guest program does not require those tools to execute.

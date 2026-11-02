@@ -48,7 +48,10 @@ fn run() -> Result<(), String> {
             // parses i64 argv and calls already-compiled native guest code.
             // No JIT or guest interpreter is embedded into the executable.
             return aot_link::link_executable(
-                &bytes, parsed.parameters.len(), std::path::Path::new(&output));
+                &bytes,
+                parsed.parameters.len(),
+                std::path::Path::new(&output),
+            );
         }
         let mut file = std::fs::OpenOptions::new()
             .write(true)

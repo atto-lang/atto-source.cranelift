@@ -71,7 +71,7 @@ fn native_execution_and_negative_controls() {
         "-9223372036854775808\n",
     );
     fixture("fnc main():int{return 1/0;}", &[], false, "");
-    fixture("fnc main():int{return 4;} // cafÃ©", &[], true, "4\n");
+    fixture("fnc main():int{return 4;} // cafÃÂ©", &[], true, "4\n");
     fixture("fnc main():int{return 1;} unsafe", &[], false, "");
 }
 
@@ -581,30 +581,50 @@ fn compiler_linked_aot_binary_executes_guest_without_jit_or_host_driver() {
 
     let compiler = env!("CARGO_BIN_EXE_orescranelift");
     let built = Command::new(compiler)
-        .arg("build").arg(&source).arg(&destination).output().unwrap();
-    assert!(built.status.success(),
-        "build: {}", String::from_utf8_lossy(&built.stderr));
+        .arg("build")
+        .arg(&source)
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "build: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
     assert!(built.stdout.is_empty(), "build mode emitted guest output");
 
     let guest = Command::new(&destination).arg("41").output().unwrap();
-    assert!(guest.status.success(), "{}", String::from_utf8_lossy(&guest.stderr));
+    assert!(
+        guest.status.success(),
+        "{}",
+        String::from_utf8_lossy(&guest.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&guest.stdout), "42\n");
 
     let overflow = Command::new(&destination)
-        .arg("9223372036854775807").output().unwrap();
+        .arg("9223372036854775807")
+        .output()
+        .unwrap();
     assert_eq!(overflow.status.code(), Some(1));
     assert!(overflow.stdout.is_empty());
     assert!(String::from_utf8_lossy(&overflow.stderr).contains("overflow"));
 
     let wrong_arity = Command::new(&destination).output().unwrap();
     assert_eq!(wrong_arity.status.code(), Some(64));
-    let bad_number = Command::new(&destination).arg("not-an-i64").output().unwrap();
+    let bad_number = Command::new(&destination)
+        .arg("not-an-i64")
+        .output()
+        .unwrap();
     assert_eq!(bad_number.status.code(), Some(65));
 
     // Build mode fails without touching an existing executable.
     let before = std::fs::read(&destination).unwrap();
     let replay = Command::new(compiler)
-        .arg("build").arg(&source).arg(&destination).output().unwrap();
+        .arg("build")
+        .arg(&source)
+        .arg(&destination)
+        .output()
+        .unwrap();
     assert!(!replay.status.success());
     assert_eq!(std::fs::read(&destination).unwrap(), before);
 
@@ -612,13 +632,23 @@ fn compiler_linked_aot_binary_executes_guest_without_jit_or_host_driver() {
         "fnc main():int{return identity!(42);}",
         "fnc main():int{return 1/0;}",
         "define macro f() -> Syntax<Expr> { return quote(42); }",
-    ].iter().enumerate() {
+    ]
+    .iter()
+    .enumerate()
+    {
         let bad = dir.join(format!("bad-{index}.ores"));
         let out = dir.join(format!("bad-{index}.exe"));
         std::fs::write(&bad, invalid).unwrap();
         let rejected = Command::new(compiler)
-            .arg("build").arg(&bad).arg(&out).output().unwrap();
-        assert!(!rejected.status.success(), "unsupported source admitted: {invalid}");
+            .arg("build")
+            .arg(&bad)
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            !rejected.status.success(),
+            "unsupported source admitted: {invalid}"
+        );
         assert!(rejected.stdout.is_empty());
         assert!(!out.exists(), "unsupported source left executable behind");
     }
