@@ -568,3 +568,59 @@ fn unsupported_macros_fail_closed_in_both_execution_and_aot_emission() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn compiler_linked_aot_binary_executes_guest_without_jit_or_host_driver() {
+    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("atto-standalone-{}-{id}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let source = dir.join("source.ores");
+    let destination = dir.join("standalone-guest");
+    std::fs::write(&source, "fnc main(x:int):int{return x+1;}").unwrap();
+
+    let compiler = env!("CARGO_BIN_EXE_orescranelift");
+    let built = Command::new(compiler)
+        .arg("build").arg(&source).arg(&destination).output().unwrap();
+    assert!(built.status.success(),
+        "build: {}", String::from_utf8_lossy(&built.stderr));
+    assert!(built.stdout.is_empty(), "build mode emitted guest output");
+
+    let guest = Command::new(&destination).arg("41").output().unwrap();
+    assert!(guest.status.success(), "{}", String::from_utf8_lossy(&guest.stderr));
+    assert_eq!(String::from_utf8_lossy(&guest.stdout), "42\n");
+
+    let overflow = Command::new(&destination)
+        .arg("9223372036854775807").output().unwrap();
+    assert_eq!(overflow.status.code(), Some(1));
+    assert!(overflow.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&overflow.stderr).contains("overflow"));
+
+    let wrong_arity = Command::new(&destination).output().unwrap();
+    assert_eq!(wrong_arity.status.code(), Some(64));
+    let bad_number = Command::new(&destination).arg("not-an-i64").output().unwrap();
+    assert_eq!(bad_number.status.code(), Some(65));
+
+    // Build mode fails without touching an existing executable.
+    let before = std::fs::read(&destination).unwrap();
+    let replay = Command::new(compiler)
+        .arg("build").arg(&source).arg(&destination).output().unwrap();
+    assert!(!replay.status.success());
+    assert_eq!(std::fs::read(&destination).unwrap(), before);
+
+    for (index, invalid) in [
+        "fnc main():int{return identity!(42);}",
+        "fnc main():int{return 1/0;}",
+        "define macro f() -> Syntax<Expr> { return quote(42); }",
+    ].iter().enumerate() {
+        let bad = dir.join(format!("bad-{index}.ores"));
+        let out = dir.join(format!("bad-{index}.exe"));
+        std::fs::write(&bad, invalid).unwrap();
+        let rejected = Command::new(compiler)
+            .arg("build").arg(&bad).arg(&out).output().unwrap();
+        assert!(!rejected.status.success(), "unsupported source admitted: {invalid}");
+        assert!(rejected.stdout.is_empty());
+        assert!(!out.exists(), "unsupported source left executable behind");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

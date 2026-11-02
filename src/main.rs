@@ -1,3 +1,4 @@
+mod aot_link;
 mod backend;
 mod frontend;
 use std::io::{Read, Write};
@@ -7,9 +8,9 @@ fn run() -> Result<(), String> {
     let _ = argv.next();
     let mode = argv
         .next()
-        .ok_or("usage: orescranelift run|ir|object <file.ores> [args|output.o]")?;
-    if mode != "run" && mode != "ir" && mode != "object" {
-        return Err("usage: orescranelift run|ir|object <file.ores> [args|output.o]".into());
+        .ok_or("usage: orescranelift run|ir|object|build <file.ores> [args|output]")?;
+    if mode != "run" && mode != "ir" && mode != "object" && mode != "build" {
+        return Err("usage: orescranelift run|ir|object|build <file.ores> [args|output]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
     // Nonblocking admission is essential before descriptor-level validation:
@@ -36,12 +37,19 @@ fn run() -> Result<(), String> {
     let parsed = frontend::parse(source)?;
     // AOT object emission must not instantiate a JITModule. Compile source
     // completely before creating the output so parse/IR rejection leaves none.
-    if mode == "object" {
+    if mode == "object" || mode == "build" {
         let output = argv.next().ok_or("object mode needs an output path")?;
         if argv.next().is_some() {
             return Err("object mode takes exactly one output path".into());
         }
         let bytes = backend::compile_object(&parsed)?;
+        if mode == "build" {
+            // The link shim is part of the compiler distribution; it only
+            // parses i64 argv and calls already-compiled native guest code.
+            // No JIT or guest interpreter is embedded into the executable.
+            return aot_link::link_executable(
+                &bytes, parsed.parameters.len(), std::path::Path::new(&output));
+        }
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
