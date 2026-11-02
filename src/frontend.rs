@@ -113,7 +113,9 @@ impl<'a> Parser<'a> {
             self.current = Token::Punct(first);
         } else {
             if first == b'%' {
-                return Err(format!("noncanonical '%' source operator; use named Integer.rem/mod at byte {start}"));
+                return Err(format!(
+                    "noncanonical '%' source operator; use named Integer.rem/mod at byte {start}"
+                ));
             }
             return Err(format!("invalid character at byte {start}"));
         }
