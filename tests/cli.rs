@@ -357,6 +357,11 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
         "Integer.bitXor(rt mut share 1, 2)",
         "rt mut share (rt mut share 1)",
         "rt mut share (1 + 2)",
+        // Shared six-vector checked-denial intersection with LLVM->Wasm.
+        "1 + (rt mut share 2)",
+        "rt mut share (rt borrow 3)",
+        "rt mut share (rt mut borrow 4)",
+        "rt mut share (rt mut share 5)",
     ].iter().enumerate() {
         let file = std::env::temp_dir().join(format!(
             "orescranelift-mutshare-{}-{index}.ores", std::process::id()
@@ -371,8 +376,11 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
             assert_eq!(result.status.code(), Some(1), "{command}: unexpected compiler exit");
             assert!(result.stdout.is_empty(), "{command}: emitted executable value or CLIF IR");
             let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(stderr.starts_with("orescranelift: "),
+                "{command}: no native compiler-owned diagnostic: {stderr}");
             assert!(stderr.contains(GATE), "{command}: missing ownership diagnostic: {stderr}");
-            assert!(!stderr.contains("panic"), "{command}: compiler crashed");
+            assert!(!stderr.contains("panicked at") && !stderr.contains("thread 'main' panicked"),
+                "{command}: compiler crashed");
         }
         std::fs::remove_file(file).unwrap();
     }
