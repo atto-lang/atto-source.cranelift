@@ -157,7 +157,7 @@ fn native_integer_bitxor_source_execution() {
         false,
         "",
     );
-    fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
+    fixture("fnc main():int{return Integer.rem(9,4);}", &[], true, "1\n");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
         "fnc main():int{return Integer.bitXor(1,Integer.bitXor(4,2));}",
@@ -421,4 +421,31 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         true,
         "42\n",
     );
+}
+
+#[test]
+fn named_rem_real_native_jit_and_fail_closed_divisors() {
+    for (source, args, result) in [
+        ("fnc main():int{return Integer.rem(-7,3);}", &[][..], "-1\n"),
+        ("fnc main():int{return Integer.rem(7,-3);}", &[][..], "1\n"),
+        ("fnc main():int{return Integer.rem(-9223372036854775808,-1);}", &[][..], "0\n"),
+        ("fnc main(x:int):int{return Integer.rem(x,3);}", &["-7"][..], "-1\n"),
+        ("fnc main(x:int):int{return Integer.rem(x,-9223372036854775808);}", &["7"][..], "7\n"),
+        ("fnc main():int{return Integer.rem(8,3)*2;}", &[][..], "4\n"),
+    ] {
+        fixture(source, args, true, result);
+    }
+    for source in [
+        "fnc main(x:int):int{return Integer.rem(x,0);}",
+        "fnc main(x:int,y:int):int{return Integer.rem(x,y);}",
+        "fnc main():int{return Integer.rem(7,1+1);}",
+        "fnc main():int{return Integer.mod(7,3);}",
+        "fnc main():int{return Integer.rem(7);}",
+        "fnc main():int{return Integer.rem(7,3,1);}",
+        "fnc main():int{return 7%3;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    fixture("fnc main(x:int):int{return Integer.rem(x+1,-1);}",
+            &["9223372036854775807"], false, "");
 }
