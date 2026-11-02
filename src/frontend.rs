@@ -66,19 +66,25 @@ fn const_i64(expression: &Expr) -> Result<i64, String> {
         Expr::Add(x, y) => {
             let a = const_i64(x)?;
             let b = const_i64(y)?;
-            a.checked_add(b).ok_or_else(|| "compile-time Const<int> overflow".into())
+            a.checked_add(b)
+                .ok_or_else(|| "compile-time Const<int> overflow".into())
         }
         Expr::Sub(x, y) => {
             let a = const_i64(x)?;
             let b = const_i64(y)?;
-            a.checked_sub(b).ok_or_else(|| "compile-time Const<int> overflow".into())
+            a.checked_sub(b)
+                .ok_or_else(|| "compile-time Const<int> overflow".into())
         }
         Expr::Mul(x, y) => {
             let a = const_i64(x)?;
             let b = const_i64(y)?;
-            a.checked_mul(b).ok_or_else(|| "compile-time Const<int> overflow".into())
+            a.checked_mul(b)
+                .ok_or_else(|| "compile-time Const<int> overflow".into())
         }
-        _ => Err("Const<int> must be a closed compile-time expression; runtime fallback is forbidden".into()),
+        _ => Err(
+            "Const<int> must be a closed compile-time expression; runtime fallback is forbidden"
+                .into(),
+        ),
     }
 }
 
@@ -196,9 +202,11 @@ impl<'a> Parser<'a> {
             return Err("compile-time macro declaration budget exceeded".into());
         }
         let name = self.name()?;
-        if matches!(name.as_str(), "main" | "Integer" | "rt" | "quote" | "unquote"
-            | "fnc" | "macro" | "define" | "pub")
-            || self.macros.contains_key(&name) {
+        if matches!(
+            name.as_str(),
+            "main" | "Integer" | "rt" | "quote" | "unquote" | "fnc" | "macro" | "define" | "pub"
+        ) || self.macros.contains_key(&name)
+        {
             return Err("reserved or duplicate compile-time macro name".into());
         }
         self.expect(Token::Punct(b'('))?;
@@ -216,7 +224,10 @@ impl<'a> Parser<'a> {
             return Err("only Const<int> or Syntax<Expr> macro arguments supported".into());
         };
         let parameter = self.name()?;
-        if matches!(parameter.as_str(), "quote" | "unquote" | "eval" | "rt" | "main") {
+        if matches!(
+            parameter.as_str(),
+            "quote" | "unquote" | "eval" | "rt" | "main"
+        ) {
             return Err("reserved compile-time macro parameter".into());
         }
         self.expect(Token::Punct(b')'))?;
@@ -308,7 +319,9 @@ impl<'a> Parser<'a> {
                 self.next()?;
                 if self.take(Token::Punct(b'!'))? {
                     let kind = self.macros.get(&name).copied().ok_or_else(|| {
-                        format!("unresolved compile-time macro '{name}'; runtime fallback is forbidden")
+                        format!(
+                            "unresolved compile-time macro '{name}'; runtime fallback is forbidden"
+                        )
                     })?;
                     self.expansions += 1;
                     if self.expansions > MAX_MACRO_EXPANSIONS {
@@ -334,7 +347,10 @@ impl<'a> Parser<'a> {
                         }
                     }
                 } else {
-                    let index = self.parameters.iter().position(|p| p == &name)
+                    let index = self
+                        .parameters
+                        .iter()
+                        .position(|p| p == &name)
                         .ok_or_else(|| format!("unbound or unsupported identifier: {name}"))?;
                     self.node(Expr::Param(index))
                 }
@@ -442,7 +458,8 @@ impl<'a> Parser<'a> {
                         | "async"
                         | "await"
                         | "actor"
-                ) || self.parameters.contains(&name) || self.macros.contains_key(&name)
+                ) || self.parameters.contains(&name)
+                    || self.macros.contains_key(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
                 }
@@ -560,19 +577,22 @@ mod tests {
         let literal = parse(
             "define macro literal(Const<int> value) -> Syntax<Expr> { return quote(value); }\n\
              fnc main():int{return literal!(const 40+2);}",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(literal.parameters.len(), 0);
         assert_eq!(literal.result, Expr::Literal(42));
         let identity = parse(
             "define macro identity(Syntax<Expr> value) -> Syntax<Expr> { return value; }\n\
              fnc main():int{return identity!(syntax expr 42);}",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(identity.result, Expr::Literal(42));
         let nested = parse(
             "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\n\
              define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return x; }\n\
              fnc main():int{return identity!(syntax expr literal!(const 6*7));}",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(nested.result, Expr::Literal(42));
     }
 
@@ -590,7 +610,10 @@ mod tests {
             "define pub macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main():int{return literal!(const 42);}",
         ];
         for source in negatives {
-            assert!(parse(source).is_err(), "unsupported compile-time macro accepted: {source}");
+            assert!(
+                parse(source).is_err(),
+                "unsupported compile-time macro accepted: {source}"
+            );
         }
         let error = parse(
             "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main(x:int):int{return literal!(const x);}",

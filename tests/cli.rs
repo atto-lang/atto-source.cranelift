@@ -690,22 +690,38 @@ fn canonical_typed_macro_scalar_guest_aot_and_jit_execute() {
             "{case} AOT build stderr: {}",
             String::from_utf8_lossy(&built.stderr)
         );
-        assert!(built.stdout.is_empty(), "AOT compiler must not execute guest");
+        assert!(
+            built.stdout.is_empty(),
+            "AOT compiler must not execute guest"
+        );
         let native = Command::new(&binary).output().unwrap();
         assert!(native.status.success(), "{case} guest failed");
         assert_eq!(String::from_utf8_lossy(&native.stdout), "42\n");
-        let jit = Command::new(compiler).arg("run").arg(&input).output().unwrap();
+        let jit = Command::new(compiler)
+            .arg("run")
+            .arg(&input)
+            .output()
+            .unwrap();
         assert!(jit.status.success(), "{case} optional JIT failed");
         assert_eq!(String::from_utf8_lossy(&jit.stdout), "42\n");
     }
     for (case, source) in [
-        ("unbound-macro", "fnc main():int{return missing!(const 42);}"),
-        ("runtime-const",
-         "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main(x:int):int{return literal!(const x);}"),
-        ("macro-eval",
-         "define macro literal(Const<int> v) -> Syntax<Expr> { return eval(v); }\nfnc main():int{return literal!(const 42);}"),
-        ("const-overflow",
-         "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main():int{return literal!(const 9223372036854775807+1);}"),
+        (
+            "unbound-macro",
+            "fnc main():int{return missing!(const 42);}",
+        ),
+        (
+            "runtime-const",
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main(x:int):int{return literal!(const x);}",
+        ),
+        (
+            "macro-eval",
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return eval(v); }\nfnc main():int{return literal!(const 42);}",
+        ),
+        (
+            "const-overflow",
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main():int{return literal!(const 9223372036854775807+1);}",
+        ),
     ] {
         let input = dir.join(format!("{case}.ores"));
         let binary = dir.join(format!("{case}.guest"));
@@ -716,8 +732,14 @@ fn canonical_typed_macro_scalar_guest_aot_and_jit_execute() {
             .arg(&binary)
             .output()
             .unwrap();
-        assert!(!rejected.status.success(), "{case} should reject at compile-time");
-        assert!(rejected.stdout.is_empty(), "{case} printed unexpected stdout");
+        assert!(
+            !rejected.status.success(),
+            "{case} should reject at compile-time"
+        );
+        assert!(
+            rejected.stdout.is_empty(),
+            "{case} printed unexpected stdout"
+        );
         assert!(!binary.exists(), "{case} left partial AOT artifact");
     }
     std::fs::remove_dir_all(dir).unwrap();
