@@ -8,6 +8,10 @@ fn native_ci_checkout_is_bound_to_pr_head_without_persisted_credentials() {
     assert!(WORKFLOW.contains("test \"$(git rev-parse --verify HEAD)\" = \"$EXPECTED\""));
     assert!(WORKFLOW.contains("test \"$(git write-tree)\" = \"$SOURCE_TREE\""));
     assert!(WORKFLOW.contains("git cat-file -t \"$SOURCE_TREE\""));
+    assert!(WORKFLOW.contains("tracked raw bytes differ from indexed Git object"));
+    assert!(WORKFLOW.contains("os.O_NOFOLLOW"));
+    assert!(WORKFLOW.contains("git(\"ls-files\", \"--others\", \"-z\")"));
+    assert!(WORKFLOW.contains("EXACT_WORKTREE_PASS"));
     assert!(WORKFLOW.contains("cargo test --locked --all-targets --verbose"));
 }
 
