@@ -1,34 +1,79 @@
 //! Honest GLM/MoE cross-backend frontier for the stage-0 Cranelift JIT.
 //! These are executable positive and explicit unsupported-source tests.
 //! They do not prove that the shared 20-program GLM corpus compiles here.
-use std::process::{Command, Output};
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+const COMPILER_DEADLINE: Duration = Duration::from_secs(5);
+
+struct GuestFixture(PathBuf);
+
+impl Drop for GuestFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 fn run_guest(mode: &str, source: &str, args: &[&str]) -> Output {
+    assert!(matches!(mode, "run" | "ir"), "only actual compiler modes allowed");
     let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
+    let fixture = GuestFixture(std::env::temp_dir().join(format!(
         "ores-cranelift-glm-{}-{sequence}.ores",
         std::process::id()
-    ));
-    // Distinct paths per concurrent invocation; no preexisting path overwrite.
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .unwrap();
+    )));
+    // create_new never overwrites a predictable preexisting name or symlink.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
     use std::io::Write;
+    let mut file = options.open(&fixture.0).unwrap();
     file.write_all(source.as_bytes()).unwrap();
+    file.sync_all().unwrap();
     drop(file);
-    let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+
+    // Avoid indefinite CI hangs on compiler deadlocks or runaway JITs.
+    // The piped output is at most pipe-capacity while the child is blocked;
+    // it is drained after exit, rather than creating an unbounded reader.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode)
-        .arg(&path)
+        .arg(&fixture.0)
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
-    std::fs::remove_file(&path).unwrap();
-    result
+    let deadline = Instant::now() + COMPILER_DEADLINE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("native compiler exceeded five-second per-case deadline");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("native compiler child status failed: {error}");
+            }
+        }
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.stdout.len() <= 65536 && output.stderr.len() <= 65536,
+        "native compiler output exceeded bounded test budget"
+    );
+    output
 }
 
 fn expect_native(source: &str, args: &[&str], expected: &str) {
@@ -45,7 +90,23 @@ fn expect_unsupported(source: &str) {
         assert!(!result.status.success(), "unsupported GLM source admitted via {mode}");
         assert!(result.stdout.is_empty(), "unsupported source printed output via {mode}");
         assert!(!result.stderr.is_empty(), "rejection lacks diagnostic via {mode}");
+        assert_eq!(result.status.code(), Some(1), "rejection must be a compiler diagnostic");
+        assert!(
+            !String::from_utf8_lossy(&result.stderr).contains("panicked at"),
+            "unsupported source crashed the compiler in {mode}"
+        );
     }
+}
+
+#[test]
+fn supported_scalar_produces_native_clif_in_ir_mode() {
+    let output = run_guest("ir", "fnc main():int{return 40+2;}", &[]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("function"),
+        "positive source must lower into Cranelift IR"
+    );
 }
 
 #[test]
