@@ -20,10 +20,10 @@ impl Drop for GuestFixture {
 fn run_guest(mode: &str, source: &str, args: &[&str]) -> Output {
     assert!(matches!(mode, "run" | "ir"), "only actual compiler modes allowed");
     let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
-    let fixture = GuestFixture(std::env::temp_dir().join(format!(
+    let path = std::env::temp_dir().join(format!(
         "ores-cranelift-glm-{}-{sequence}.ores",
         std::process::id()
-    )));
+    ));
     // create_new never overwrites a predictable preexisting name or symlink.
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -33,7 +33,10 @@ fn run_guest(mode: &str, source: &str, args: &[&str]) -> Output {
         options.mode(0o600);
     }
     use std::io::Write;
-    let mut file = options.open(&fixture.0).unwrap();
+    let mut file = options.open(&path).unwrap();
+    // Only an actually created file may be owned and unlinked on Drop.
+    // A failed exclusive create must never unlink someone else's path.
+    let fixture = GuestFixture(path);
     file.write_all(source.as_bytes()).unwrap();
     file.sync_all().unwrap();
     drop(file);
