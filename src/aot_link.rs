@@ -6,7 +6,7 @@ mod native {
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs;
 use std::io::Write;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -72,10 +72,9 @@ pub fn link_executable(object: &[u8], arity: usize, output: &Path) -> Result<(),
         .arg("--edition=2024")
         .args(["-C", "opt-level=2", "-C", "panic=abort", "-C"])
         .arg(linkarg)
-        .arg("--")
-        .arg(&source)
         .arg("-o")
         .arg(&binary)
+        .arg(&source)
         .env("ATTO_AOT_ARITY", arity.to_string())
         .output()
         .map_err(|e| format!("cannot invoke build-time native linker: {e}"))?;
