@@ -109,6 +109,8 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
+        } else if first == b'@' {
+            return Err("source annotations require typed state-provider and ownership lowering; unsupported in scalar Cranelift".into());
         } else if b"()+-*%{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -285,6 +287,9 @@ impl<'a> Parser<'a> {
             } else {
                 break;
             }
+        }
+        if matches!(self.current, Token::Word("state" | "virtual" | "actor")) {
+            return Err("state containers and actor declarations require typed ownership, actor memory and lifecycle lowering; unsupported in scalar Cranelift".into());
         }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
