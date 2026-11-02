@@ -446,8 +446,12 @@ fn named_rem_real_native_jit_and_fail_closed_divisors() {
     ] {
         fixture(source, &[], false, "");
     }
-    fixture("fnc main(x:int):int{return Integer.rem(x+1,-1);}",
-            &["9223372036854775807"], false, "");
+    fixture(
+        "fnc main(x:int):int{return Integer.rem(x+1,-1);}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
 }
 
 #[test]
