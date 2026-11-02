@@ -113,7 +113,9 @@ impl<'a> Parser<'a> {
             self.current = Token::Punct(first);
         } else {
             if first == b'%' {
-                return Err(format!("noncanonical '%' source operator; use named Integer.rem/mod at byte {start}"));
+                return Err(format!(
+                    "noncanonical '%' source operator; use named Integer.rem/mod at byte {start}"
+                ));
             }
             return Err(format!("invalid character at byte {start}"));
         }
@@ -206,7 +208,8 @@ impl<'a> Parser<'a> {
                 let divisor = match rhs {
                     Expr::Literal(v) => v,
                     Expr::Neg(inner) => match *inner {
-                        Expr::Literal(v) => v.checked_neg()
+                        Expr::Literal(v) => v
+                            .checked_neg()
                             .ok_or("Integer.rem divisor out of range")?,
                         _ => return Err("Integer.rem requires a signed literal divisor".into()),
                     },
@@ -463,9 +466,8 @@ mod tests {
         }
         // A checked arithmetic error in the numerator must never be
         // optimized away, even when the result divisor is -1.
-        let overflowing = parse(
-            "fnc main(x:int):int{return Integer.rem(x+1,-1);}"
-        ).unwrap();
+        let overflowing = parse("fnc main(x:int):int{return Integer.rem(x+1,-1);}")
+            .unwrap();
         assert_eq!(eval(&overflowing.result, &[i64::MAX]), Err("overflow"));
     }
     #[test]
