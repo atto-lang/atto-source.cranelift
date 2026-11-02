@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' {
+                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
                     self.pos += 1;
                 }
                 continue;
@@ -301,6 +301,8 @@ impl<'a> Parser<'a> {
                         | "rt"
                         | "async"
                         | "await"
+                        | "critical"
+                        | "suspends"
                         | "actor"
                 ) || self.parameters.contains(&name)
                 {
@@ -418,6 +420,20 @@ mod tests {
         // source comment, and must not erase the preceding valid function.
         let commented = parse("fnc main():int{return 42;} // removed % operator").unwrap();
         assert_eq!(eval(&commented.result, &[]), Ok(42));
+    }
+    #[test]
+    fn carriage_return_terminates_line_comment_and_reserved_effect_names_fail() {
+        let valid = parse("fnc main():int{return 42;} // harmless % text\r\n").unwrap();
+        assert_eq!(eval(&valid.result, &[]), Ok(42));
+        for source in [
+            "fnc main():int{return 42;} // comment\r %",
+            "fnc main():int{return 42;} // comment\r critical",
+            "fnc main():int{return 42;} // comment\r suspends",
+            "fnc main(critical:int):int{return critical;}",
+            "fnc main(suspends:int):int{return suspends;}",
+        ] {
+            assert!(parse(source).is_err(), "source admission bypass: {source:?}");
+        }
     }
     #[test]
     fn named_rem_literal_divisor_contract() {
