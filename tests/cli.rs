@@ -303,12 +303,20 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     let fifo =
         std::env::temp_dir().join(format!("orescranelift-fifo-{}-{nonce}", std::process::id()));
     let link = fifo.with_extension("link");
+    let regular = fifo.with_extension("ores");
+    let regular_link = fifo.with_extension("regular-link");
     let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: the CString provides a valid NUL-terminated POSIX pathname.
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     symlink(&fifo, &link).unwrap();
+    std::fs::write(&regular, "fnc main():int{return 42;}").unwrap();
+    symlink(&regular, &regular_link).unwrap();
 
-    for source in [&fifo, &link] {
+    for (source, expected_diagnostic) in [
+        (&fifo, "source must be a regular file"),
+        (&link, "source symlinks are forbidden"),
+        (&regular_link, "source symlinks are forbidden"),
+    ] {
         for mode in ["run", "ir"] {
             let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
                 .arg(mode)
@@ -339,12 +347,14 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
                 "{mode} emitted stdout on rejection"
             );
             assert!(
-                String::from_utf8_lossy(&result.stderr).contains("source must be a regular file"),
+                String::from_utf8_lossy(&result.stderr).contains(expected_diagnostic),
                 "{mode} returned wrong diagnostic: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
         }
     }
+    std::fs::remove_file(regular_link).unwrap();
+    std::fs::remove_file(regular).unwrap();
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
