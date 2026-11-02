@@ -487,7 +487,7 @@ int main(int argc, char **argv) {
   int32_t status = oreslang_scalar_entry((int64_t)x, 0, 0, 0, &result);
   if (status == 1) return 73;
   if (status != 0) return 76;
-  printf("%" PRId64 "\\n", result);
+  printf("%" PRId64 "\n", result);
   return 0;
 }
 "#).unwrap();
@@ -497,7 +497,7 @@ int main(int argc, char **argv) {
     assert!(linked.status.success(), "linker: {}", String::from_utf8_lossy(&linked.stderr));
     let okay = Command::new(&binary).arg("41").output().unwrap();
     assert!(okay.status.success(), "{}", String::from_utf8_lossy(&okay.stderr));
-    assert_eq!(String::from_utf8_lossy(&okay.stdout), "42\\n");
+    assert_eq!(String::from_utf8_lossy(&okay.stdout), "42\n");
     let overflow = Command::new(&binary).arg("9223372036854775807").output().unwrap();
     assert_eq!(overflow.status.code(), Some(73), "checked overflow must survive AOT lowering");
     assert!(overflow.stdout.is_empty());
