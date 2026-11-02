@@ -198,7 +198,7 @@ fn canonical_percent_operator_refused_by_real_jit_cli() {
     ] {
         fixture(source, args, false, "");
     }
-    fixture("fnc main():int{return 7*6;}", &[], true, "42\\n");
+    fixture("fnc main():int{return 7*6;}", &[], true, "42\n");
 }
 
 #[test]
