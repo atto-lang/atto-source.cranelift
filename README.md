@@ -80,9 +80,12 @@ blob or provide executed cross-backend equivalence evidence.
 
 ## Unix source file admission
 
-The CLI opens source descriptors nonblocking before validating that the
-*opened descriptor* is a regular file. This rejects FIFO inputs, including
-symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
-A dedicated native CLI regression imposes a three-second hang guard.
+On Unix, the CLI opens source descriptors with `O_NONBLOCK`,
+`O_CLOEXEC`, and `O_NOFOLLOW` before validating that the opened descriptor
+is a regular file. This rejects FIFOs without blocking, and rejects a final
+source-path symlink even when it points to an otherwise valid regular source.
+Native CLI regressions cover both `run` and `ir`, including a three-second
+hang guard. This check does not reject symlinked **parent directories**, and
+is not a sandbox against a malicious compiler or concurrent file mutation.
 Non-Unix systems retain the existing source-file handling behavior and do
-not claim that nonblocking POSIX guarantee.
+not claim POSIX no-follow guarantees.
