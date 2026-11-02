@@ -22,12 +22,12 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
-literal divisor (`%`), and line comments.
+grouping, unary +/-, binary + - *, named `Integer.rem(numerator, divisor)` with a
+compiler-proven nonzero signed literal divisor, and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
 native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
-named functions (including `rem`, `mod`, and `pow`) remain unsupported.
+named functions (`mod`, `pow`, dynamic-divisor `rem`) remain unsupported.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
@@ -36,6 +36,9 @@ Rejected: **everything else**, including imports, helper functions, user-defined
 classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
 structural types, UTF-8 identifiers, and any trailing code.
 
+`%` syntax is retired and rejected at lexical admission. The restricted named
+`Integer.rem` lowers to actual native signed remainder; dynamic and zero
+divisors are still rejected before JIT rather than pretending full Java parity.
 Signed remainder follows Java truncation-toward-zero semantics, including
 `i64::MIN % -1 == 0`. This intentionally matches the restricted LLVM
 literal-divisor parity slice, not general Java runtime expression coverage.
