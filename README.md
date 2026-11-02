@@ -22,24 +22,24 @@ cargo test --locked --all-targets
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - *, signed remainder with a proven nonzero
-literal divisor (`%`), and line comments.
+grouping, unary +/-, binary + - *, and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
-named functions (including `rem`, `mod`, and `pow`) remain unsupported.
+native `bxor` instruction; caret operators remain rejected.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
-Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, dynamic/zero-divisor remainder,
+Rejected: **everything else**, including removed arithmetic operators (`%`, `^`, `^^`),
+imports, helper functions, user-defined calls,
+classes, actors, heaps, ownership, recursion, async, control flow, division, remainder syntax,
 structural types, UTF-8 identifiers, and any trailing code.
 
-Signed remainder follows Java truncation-toward-zero semantics, including
-`i64::MIN % -1 == 0`. This intentionally matches the restricted LLVM
-literal-divisor parity slice, not general Java runtime expression coverage.
-The numerator still executes checked arithmetic before computing remainder.
+The source operators `%`, `^` and `^^` are all rejected, in line with
+Oreslang's revised operator policy. `Integer.bitXor(a,b)` remains a separate
+named integer operation; it must not be parsed as a caret operator.
+The Cranelift scalar subset does not yet expose a portable named remainder
+operation. Other named `Integer.*` functions remain unsupported.
 
 ## Explicit security boundary
 

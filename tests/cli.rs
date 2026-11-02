@@ -159,11 +159,12 @@ fn native_integer_bitxor_source_execution() {
     );
     fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
+    // The removed '%' source spelling must fail even inside named bitXor.
     fixture(
         "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
         &[],
-        true,
-        "7\n",
+        false,
+        "",
     );
     for expression in [
         "Integer.bitXor(9223372036854775807+1,0)",
@@ -181,40 +182,26 @@ fn native_integer_bitxor_source_execution() {
 }
 
 #[test]
-fn native_signed_remainder_literal_divisor() {
-    for (source, args, expected) in [
-        ("fnc main():int{return -7%3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 7%-3;}", &[][..], "1\n"),
-        ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
-        ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
+fn removed_modulo_operator_never_executes_native_code() {
+    // Every historical positive remainder fixture is now a compile reject.
+    // The backend must emit no stdout and must never JIT these programs.
+    for (source, args) in [
+        ("fnc main():int{return -7%3;}", &[][..]),
+        ("fnc main():int{return 7%-3;}", &[][..]),
+        ("fnc main():int{return -7%-3;}", &[][..]),
+        ("fnc main():int{return 8%3*2;}", &[][..]),
+        ("fnc main():int{return 20%6%3;}", &[][..]),
+        ("fnc main():int{return -9223372036854775808%-1;}", &[][..]),
         (
             "fnc main(x:int):int{return x%-1;}",
             &["-9223372036854775808"][..],
-            "0\n",
         ),
         (
             "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["-9223372036854775808"][..],
-            "0\n",
+            &["7"][..],
         ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["9223372036854775807"][..],
-            "9223372036854775807\n",
-        ),
-        ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
-    ] {
-        fixture(source, args, true, expected);
-    }
-    // A -1 divisor must not erase a checked overflow in its numerator.
-    fixture(
-        "fnc main(x:int):int{return (x+1)%-1;}",
-        &["9223372036854775807"],
-        false,
-        "",
-    );
-    for (source, args) in [
+        ("fnc main():int{return 8-7%3*2;}", &[][..]),
+        ("fnc main(x:int):int{return (x+1)%-1;}", &["7"][..]),
         ("fnc main(x:int):int{return x%0;}", &["7"][..]),
         ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
         ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
@@ -223,10 +210,16 @@ fn native_signed_remainder_literal_divisor() {
             "fnc main(x:int):int{return x%-9223372036854775809;}",
             &["7"][..],
         ),
-        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
     ] {
         fixture(source, args, false, "");
     }
+    // Prove unaffected named bit XOR executes actual Cranelift machine code.
+    fixture(
+        "fnc main():int{return Integer.bitXor(40,2);}",
+        &[],
+        true,
+        "42\n",
+    );
 }
 
 #[test]
@@ -450,7 +443,6 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
-
 
 #[test]
 fn native_platform_portability_v1_checked_i64_source_matrix() {
