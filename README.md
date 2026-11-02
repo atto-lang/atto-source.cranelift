@@ -83,3 +83,25 @@ symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
+
+## Experimental program-specific AOT object mode (not yet a standalone executable)
+
+`cargo run --locked -- object example.ores output.o` emits a native relocatable
+object containing actual machine code generated from the admitted stage-0 scalar
+AttoLang source, exporting `oreslang_scalar_entry` with the same checked i64
+ABI as the JIT path: four signed i64 values, `int64_t *result`, `int32_t` status
+(0 success; 1 overflow). An external host entrypoint must link this object.
+The AOT code-generation path does **not** instantiate `JITModule`.
+
+This deliberately narrow AOT progress does not prove complete AttoLang guest
+AOT, actor/async/heap semantics, cross-platform standalone binaries, or
+type-safe imports/macros. `define macro` and `name!(...)` are still unsupported
+and must reject **before object emission**, not silently fall back to native JIT.
+Future compiler phases must expand hygienic typed macros at build time before
+this or any other backend emits a runnable artifact. The regular `run` command
+continues to select optional trusted scalar JIT, and it is not a sandbox.
+
+The native-object integration test links the generated object using a tiny
+independent C host ABI shim and executes the result, including a checked
+overflow negative case. That is native **guest-AOT object** evidence, not a
+self-contained runtime binary.

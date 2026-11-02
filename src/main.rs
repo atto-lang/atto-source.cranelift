@@ -1,15 +1,15 @@
 mod backend;
 mod frontend;
-use std::io::Read;
+use std::io::{Read, Write};
 
 fn run() -> Result<(), String> {
     let mut argv = std::env::args();
     let _ = argv.next();
     let mode = argv
         .next()
-        .ok_or("usage: orescranelift run|ir <file.ores> [i64 args...]")?;
-    if mode != "run" && mode != "ir" {
-        return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
+        .ok_or("usage: orescranelift run|ir|object <file.ores> [args|output.o]")?;
+    if mode != "run" && mode != "ir" && mode != "object" {
+        return Err("usage: orescranelift run|ir|object <file.ores> [args|output.o]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
     // Nonblocking admission is essential before descriptor-level validation:
@@ -34,6 +34,25 @@ fn run() -> Result<(), String> {
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
     let parsed = frontend::parse(source)?;
+    // AOT object emission must not instantiate a JITModule. Compile source
+    // completely before creating the output so parse/IR rejection leaves none.
+    if mode == "object" {
+        let output = argv.next().ok_or("object mode needs an output path")?;
+        if argv.next().is_some() {
+            return Err("object mode takes exactly one output path".into());
+        }
+        let bytes = backend::compile_object(&parsed)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true).create_new(true).open(&output)
+            .map_err(|e| format!("cannot exclusively create AOT object: {e}"))?;
+        // On failed writes, remove only the output we just created.
+        if let Err(err) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&output);
+            return Err(format!("AOT object write failed: {err}"));
+        }
+        return Ok(());
+    }
     let values = argv
         .map(|v| {
             v.parse::<i64>()

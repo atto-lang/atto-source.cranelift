@@ -3,6 +3,8 @@ use crate::frontend::{Expr, Program};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_codegen::settings;
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 
 pub struct Compiled {
@@ -76,12 +78,14 @@ fn emit(
     }
 }
 
-pub fn compile(source: &Program) -> Result<Compiled, String> {
-    let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
-    let mut module = JITModule::new(builder);
+fn define_scalar_entry<M: Module>(
+    module: &mut M,
+    source: &Program,
+    linkage: Linkage,
+) -> Result<(cranelift_module::FuncId, String), String> {
     let mut sig = module.make_signature();
-    // Stable internal entry ABI: four i64 values + output pointer -> i32 status.
-    // 0 is success; 1 is *checked arithmetic overflow*, output unchanged.
+    // One ABI across AOT object files and optional native JIT.
+    // Four i64 arguments plus an output pointer, returning i32 status.
     for _ in 0..4 {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -89,7 +93,7 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         .push(AbiParam::new(module.target_config().pointer_type()));
     sig.returns.push(AbiParam::new(types::I32));
     let id = module
-        .declare_function("oreslang_scalar_entry", Linkage::Local, &sig)
+        .declare_function("oreslang_scalar_entry", linkage, &sig)
         .map_err(|e| e.to_string())?;
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -115,8 +119,30 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         .define_function(id, &mut ctx)
         .map_err(|e| e.to_string())?;
     module.clear_context(&mut ctx);
+    Ok((id, clif))
+}
+
+pub fn compile(source: &Program) -> Result<Compiled, String> {
+    let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
+    let mut module = JITModule::new(builder);
+    let (id, clif) = define_scalar_entry(&mut module, source, Linkage::Local)?;
     module.finalize_definitions().map_err(|e| e.to_string())?;
     Ok(Compiled { module, id, clif })
+}
+
+/// Program-specific ahead-of-time native object, *not* an interpreter image.
+/// No JIT memory is allocated or used along this path. The caller must link
+/// the object with a host entrypoint and verify the resulting executable.
+pub fn compile_object(source: &Program) -> Result<Vec<u8>, String> {
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(settings::builder()))
+        .map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, b"atto-stage0-aot".to_vec(), default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    define_scalar_entry(&mut module, source, Linkage::Export)?;
+    module.finish().emit().map_err(|e| e.to_string())
 }
 
 impl Compiled {
