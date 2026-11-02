@@ -556,6 +556,49 @@ mod tests {
         }
     }
     #[test]
+    fn typed_macro_ast_expands_before_native_codegen() {
+        let literal = parse(
+            "define macro literal(Const<int> value) -> Syntax<Expr> { return quote(value); }\n\
+             fnc main():int{return literal!(const 40+2);}",
+        ).unwrap();
+        assert_eq!(literal.parameters.len(), 0);
+        assert_eq!(literal.result, Expr::Literal(42));
+        let identity = parse(
+            "define macro identity(Syntax<Expr> value) -> Syntax<Expr> { return value; }\n\
+             fnc main():int{return identity!(syntax expr 42);}",
+        ).unwrap();
+        assert_eq!(identity.result, Expr::Literal(42));
+        let nested = parse(
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\n\
+             define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return x; }\n\
+             fnc main():int{return identity!(syntax expr literal!(const 6*7));}",
+        ).unwrap();
+        assert_eq!(nested.result, Expr::Literal(42));
+    }
+
+    #[test]
+    fn macro_negative_compiler_admission_cannot_use_runtime_fallback() {
+        let negatives = [
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main(x:int):int{return literal!(const x);}",
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main():int{return literal!(const 9223372036854775807+1);}",
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return eval(v); }\nfnc main():int{return literal!(const 42);}",
+            "define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return x; }\nfnc main():int{return identity!(const 42);}",
+            "define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return x; }\nfnc main():int{return identity!(syntax expr unknown);}",
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\ndefine macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main():int{return literal!(const 42);}",
+            "fnc main():int{return unknown!(const 42);}",
+            "define macro duplicate(Syntax<Expr> x) -> Syntax<Expr> { return quote(x+x); }\nfnc main():int{return duplicate!(syntax expr 21);}",
+            "define pub macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main():int{return literal!(const 42);}",
+        ];
+        for source in negatives {
+            assert!(parse(source).is_err(), "unsupported compile-time macro accepted: {source}");
+        }
+        let error = parse(
+            "define macro literal(Const<int> v) -> Syntax<Expr> { return quote(v); }\nfnc main(x:int):int{return literal!(const x);}",
+        ).unwrap_err();
+        assert!(error.contains("runtime fallback is forbidden"), "{error}");
+    }
+
+    #[test]
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
