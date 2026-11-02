@@ -548,7 +548,7 @@ fn unsupported_macros_fail_closed_in_both_execution_and_aot_emission() {
         std::env::temp_dir().join(format!("atto-macro-reject-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
     for (index, src) in [
-        "define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return x; } fnc main():int{return 42;}",
+        "define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return quote(x); } fnc main():int{return 42;}",
         "fnc main():int{return identity!(42);}",
         "fnc main():int{return eval(\"fnc bad():int{return 2;}\");}",
     ].iter().enumerate() {
