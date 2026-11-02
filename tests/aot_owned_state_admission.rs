@@ -53,24 +53,42 @@ fn full_aot_requests_cannot_fall_back_to_jit_or_create_artifacts() {
 fn unsupported_state_and_actor_source_never_emits_ir_or_executes() {
     let dir = directory();
     for (index, (source_text, expected)) in [
-        ("@Inject(MutableStateContainer())\ndefine class Counter as\nend",
-            "source annotations require typed state-provider and ownership lowering"),
-        ("@StateBacked(MutableStateContainer(scope = #instance))\ndefine class Counter as\nend",
-            "source annotations require typed state-provider and ownership lowering"),
-        ("@MutableStateContainer()\ndefine class Counter as\nend",
-            "source annotations require typed state-provider and ownership lowering"),
-        ("define state container Counter as\nend",
-            "state containers and actor declarations require typed ownership"),
-        ("define pub state container Counter as\nend",
-            "state containers and actor declarations require typed ownership"),
-        ("define virtual actor Counter as\nend",
-            "state containers and actor declarations require typed ownership"),
-        ("define pub actor Counter as\nend",
-            "state containers and actor declarations require typed ownership"),
-        ("fnc main():int{return rt borrow 1;}",
-            "rt ownership operation requires checked ownership lowering"),
-        ("fnc main():int{return rt mut share 1;}",
-            "native rt mut share requires verified SharedMutex<T> capability"),
+        (
+            "@Inject(MutableStateContainer())\ndefine class Counter as\nend",
+            "source annotations require typed state-provider and ownership lowering",
+        ),
+        (
+            "@StateBacked(MutableStateContainer(scope = #instance))\ndefine class Counter as\nend",
+            "source annotations require typed state-provider and ownership lowering",
+        ),
+        (
+            "@MutableStateContainer()\ndefine class Counter as\nend",
+            "source annotations require typed state-provider and ownership lowering",
+        ),
+        (
+            "define state container Counter as\nend",
+            "state containers and actor declarations require typed ownership",
+        ),
+        (
+            "define pub state container Counter as\nend",
+            "state containers and actor declarations require typed ownership",
+        ),
+        (
+            "define virtual actor Counter as\nend",
+            "state containers and actor declarations require typed ownership",
+        ),
+        (
+            "define pub actor Counter as\nend",
+            "state containers and actor declarations require typed ownership",
+        ),
+        (
+            "fnc main():int{return rt borrow 1;}",
+            "rt ownership operation requires checked ownership lowering",
+        ),
+        (
+            "fnc main():int{return rt mut share 1;}",
+            "native rt mut share requires verified SharedMutex<T> capability",
+        ),
     ]
     .iter()
     .enumerate()
@@ -80,7 +98,10 @@ fn unsupported_state_and_actor_source_never_emits_ir_or_executes() {
         for mode in ["run", "ir"] {
             let result = execute(mode, &path);
             assert_eq!(result.status.code(), Some(1), "{mode}: {source_text}");
-            assert!(result.stdout.is_empty(), "{mode}: emitted guest stdout or IR");
+            assert!(
+                result.stdout.is_empty(),
+                "{mode}: emitted guest stdout or IR"
+            );
             let stderr = String::from_utf8_lossy(&result.stderr);
             assert!(stderr.contains(expected), "{mode}: {stderr}");
             assert!(!stderr.contains("panic"), "{mode}: crashed: {stderr}");
@@ -101,7 +122,11 @@ fn annotations_in_comments_do_not_reject_valid_scalar_guest() {
     )
     .unwrap();
     let result = execute("run", &source);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
     std::fs::remove_file(source).unwrap();
     std::fs::remove_dir(dir).unwrap();
