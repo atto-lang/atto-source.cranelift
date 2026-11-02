@@ -1,9 +1,21 @@
-use std::process::Command;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-// Cargo runs integration tests in parallel. Never let fixtures overwrite or
-// unlink each other's source files: doing so masks compiler outcomes.
+// Integration tests run concurrently. A fixture must never overwrite or
+// delete a pre-existing path, including a symlink placed by another process.
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+const NATIVE_DEADLINE: Duration = Duration::from_secs(5);
+
+struct GuestFixture(PathBuf);
+
+impl Drop for GuestFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
@@ -13,30 +25,74 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
         sequence,
         source.len()
     ));
-    std::fs::write(&path, source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).unwrap();
+    // Create the removal guard only AFTER the exclusive open succeeds.
+    let source_file = GuestFixture(path);
+    file.write_all(source.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
-        .arg(&path)
+        .arg(&source_file.0)
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
-    std::fs::remove_file(path).unwrap();
+    let deadline = Instant::now() + NATIVE_DEADLINE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Cranelift guest compiler exceeded five-second deadline");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Cranelift guest child status failed: {error}");
+            }
+        }
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.stdout.len() <= 65536 && output.stderr.len() <= 65536,
+        "Cranelift guest emitted excessive output"
+    );
     assert_eq!(
-        output.status.success(),
-        ok,
-        "stderr: {}",
+        output.status.code(),
+        Some(if ok { 0 } else { 1 }),
+        "unexpected compiler status: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     if ok {
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+        assert!(output.stderr.is_empty(), "successful compiler printed diagnostics");
     } else {
+        assert!(output.stdout.is_empty(), "rejected compilation printed stdout");
         assert!(
-            output.stdout.is_empty(),
-            "rejected compilation printed stdout"
+            output.stderr.starts_with(b"orescranelift: "),
+            "rejection requires a compiler-owned diagnostic"
         );
-        assert!(!output.stderr.is_empty(), "rejection requires a diagnostic");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("panicked at"),
+            "compiler panic must not masquerade as source rejection"
+        );
     }
 }
+
 #[test]
 fn native_execution_and_negative_controls() {
     fixture("fnc main():int{return 2+3*4;}", &[], true, "14\n");
