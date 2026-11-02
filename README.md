@@ -2,22 +2,22 @@
 
 **AttoLang** is the current public language name (formerly **Oreslang**).
 The independent Cranelift JIT compiles a deliberately limited signed-i64 scalar subset, not full AttoLang.
-This branding change does not establish new syntax, source-extension support,
-execution parity, AOT capabilities or zero-GC guarantees. New source SHOULD
-use `.atto` only after this particular backend has passed a real compile/run
-admission test; `.ores` remains supported wherever already implemented.
+This branding change does not imply full-language parity, AOT capabilities or
+zero-GC guarantees. This backend's checked signed-i64 scalar subset has passed
+real native execution tests using both `.atto` and legacy `.ores` files; new
+fixtures for this verified subset SHOULD use `.atto`.
 Do not rename repositories, dependencies, commands or fixed interfaces merely
 to make their names match the public brand.
 
 
-An **independent Rust + Cranelift** experimental backend for Oreslang. It is
+An **independent Rust + Cranelift** experimental backend for AttoLang. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
 
-## Stage-0 executable scalar profile
+## Stage-0 executable scalar profile (validated `.atto` and `.ores`)
 
 This backend compiles a deliberately narrow Oreslang source subset
-into **actual Cranelift native JIT machine code**, with a checked overflow
+into **actual Cranelift native JIT machine code** from `.atto` or `.ores` source, with a checked overflow
 status rather than an unchecked wrap or process trap.
 
 ```oreslang
@@ -25,8 +25,9 @@ fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
-cargo run --locked -- run example.ores 7 8 # 72
-cargo run --locked -- ir example.ores      # generated Cranelift IR
+cargo run --locked -- run example.atto 7 8 # 72
+cargo run --locked -- ir example.atto      # generated Cranelift IR
+cargo test --locked --all-targets            # includes .atto/.ores execution parity
 cargo test --locked --all-targets
 ```
 
@@ -56,7 +57,7 @@ The numerator still executes checked arithmetic before computing remainder.
 Native JIT code executes inside this process. **It is not a sandbox** and
 there is no guest actor heap isolation or untrusted-source support.
 The entry ABI is internal (four i64 operands plus an output pointer returning
-an i32 status), not a published Oreslang or foreign-call ABI.
+an i32 status), not a published AttoLang or foreign-call ABI.
 
 Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
