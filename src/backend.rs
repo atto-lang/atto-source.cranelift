@@ -1,11 +1,11 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
 use crate::frontend::{Expr, Program};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, types};
+use cranelift_codegen::settings;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_codegen::settings;
-use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 
 pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.

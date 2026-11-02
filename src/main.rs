@@ -43,7 +43,9 @@ fn run() -> Result<(), String> {
         }
         let bytes = backend::compile_object(&parsed)?;
         let mut file = std::fs::OpenOptions::new()
-            .write(true).create_new(true).open(&output)
+            .write(true)
+            .create_new(true)
+            .open(&output)
             .map_err(|e| format!("cannot exclusively create AOT object: {e}"))?;
         // On failed writes, remove only the output we just created.
         if let Err(err) = file.write_all(&bytes).and_then(|_| file.sync_all()) {

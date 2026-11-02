@@ -71,7 +71,7 @@ fn native_execution_and_negative_controls() {
         "-9223372036854775808\n",
     );
     fixture("fnc main():int{return 1/0;}", &[], false, "");
-    fixture("fnc main():int{return 4;} // café", &[], true, "4\n");
+    fixture("fnc main():int{return 4;} // cafÃ©", &[], true, "4\n");
     fixture("fnc main():int{return 1;} unsafe", &[], false, "");
 }
 
@@ -455,8 +455,7 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
 #[test]
 fn full_native_scalar_aot_object_executes_without_guest_jit() {
     let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "atto-object-{}-{nonce}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("atto-object-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
     let source = dir.join("guest.ores");
     let object = dir.join("guest.o");
@@ -465,12 +464,22 @@ fn full_native_scalar_aot_object_executes_without_guest_jit() {
     std::fs::write(&source, "fnc main(x:int):int{return x+1;}").unwrap();
     let generated = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .args(["object", source.to_str().unwrap(), object.to_str().unwrap()])
-        .output().unwrap();
-    assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
-    assert!(generated.stdout.is_empty(), "object mode should not forge guest stdout");
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    assert!(
+        generated.stdout.is_empty(),
+        "object mode should not forge guest stdout"
+    );
     let bytes = std::fs::read(&object).unwrap();
     assert!(bytes.starts_with(b"\x7fELF"), "expected ELF object");
-    std::fs::write(&c, r#"
+    std::fs::write(
+        &c,
+        r#"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -490,28 +499,53 @@ int main(int argc, char **argv) {
   printf("%" PRId64 "\n", result);
   return 0;
 }
-"#).unwrap();
-    let linked = Command::new("cc").args([
-        "-o",binary.to_str().unwrap(), c.to_str().unwrap(), object.to_str().unwrap()
-    ]).output().unwrap();
-    assert!(linked.status.success(), "linker: {}", String::from_utf8_lossy(&linked.stderr));
+"#,
+    )
+    .unwrap();
+    let linked = Command::new("cc")
+        .args([
+            "-o",
+            binary.to_str().unwrap(),
+            c.to_str().unwrap(),
+            object.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        linked.status.success(),
+        "linker: {}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
     let okay = Command::new(&binary).arg("41").output().unwrap();
-    assert!(okay.status.success(), "{}", String::from_utf8_lossy(&okay.stderr));
+    assert!(
+        okay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&okay.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&okay.stdout), "42\n");
-    let overflow = Command::new(&binary).arg("9223372036854775807").output().unwrap();
-    assert_eq!(overflow.status.code(), Some(73), "checked overflow must survive AOT lowering");
+    let overflow = Command::new(&binary)
+        .arg("9223372036854775807")
+        .output()
+        .unwrap();
+    assert_eq!(
+        overflow.status.code(),
+        Some(73),
+        "checked overflow must survive AOT lowering"
+    );
     assert!(overflow.stdout.is_empty());
     // A repeat object build must not overwrite existing artifacts.
     let replay = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .args(["object", source.to_str().unwrap(), object.to_str().unwrap()])
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(!replay.status.success());
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[test]
 fn unsupported_macros_fail_closed_in_both_execution_and_aot_emission() {
     let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("atto-macro-reject-{}-{nonce}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("atto-macro-reject-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
     for (index, src) in [
         "define macro identity(Syntax<Expr> x) -> Syntax<Expr> { return x; } fnc main():int{return 42;}",
