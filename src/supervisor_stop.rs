@@ -6,6 +6,12 @@
 //! All identity/ticket fields are private to trusted Cranelift host code.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Nonsecret, process-unique ledger instance discriminator. Logical child IDs,
+// actor IDs, and turn counters can repeat across newly constructed registries.
+// If this counter exhausts, never silently reuse a domain in this process.
+static NEXT_LEDGER_DOMAIN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ActorKey {
@@ -24,6 +30,7 @@ impl ActorKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ChildKey {
+    domain: u64,
     supervisor: u64,
     group: u64,
     logical_id: u64,
@@ -63,6 +70,7 @@ struct Entry {
 /// Single-writer CONTROL ledger. Exclusive `&mut self` is the mutation
 /// authority; a concurrent host must place this behind its runtime gate.
 pub(crate) struct SupervisorStopLedger {
+    domain: u64,
     supervisor: u64,
     group: u64,
     capacity: usize,
@@ -76,7 +84,11 @@ impl SupervisorStopLedger {
         if supervisor == 0 || group == 0 || capacity == 0 || capacity > 65_536 {
             return Err("invalid supervisor/group or capacity");
         }
+        let domain = NEXT_LEDGER_DOMAIN
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+            .map_err(|_| "supervisor ledger domain exhausted")?;
         Ok(Self {
+            domain,
             supervisor,
             group,
             capacity,
@@ -97,6 +109,7 @@ impl SupervisorStopLedger {
             return Err("duplicate physical actor identity");
         }
         let child = ChildKey {
+            domain: self.domain,
             supervisor: self.supervisor,
             group: self.group,
             logical_id: self.next_child,
@@ -117,7 +130,10 @@ impl SupervisorStopLedger {
     }
 
     fn entry(&self, child: ChildKey) -> Result<&Entry, &'static str> {
-        if child.supervisor != self.supervisor || child.group != self.group {
+        if child.domain != self.domain
+            || child.supervisor != self.supervisor
+            || child.group != self.group
+        {
             return Err("foreign supervisor or group");
         }
         match self.children.get(&child.logical_id) {
@@ -297,6 +313,34 @@ mod tests {
         l.reconcile_verified(t).unwrap();
         assert_eq!(l.snapshot(child).unwrap(), Phase::Stopped);
         assert!(l.reconcile_verified(t).is_err());
+    }
+
+    #[test]
+    fn identical_numeric_names_in_distinct_ledgers_do_not_authorize_replay() {
+        // A restarted host may legitimately reuse the same supervisor/group,
+        // actor, logical child index and CONTROL turn. Instance identity must
+        // still reject an old ticket before invoking any host-side effect.
+        let mut old = SupervisorStopLedger::new(8, 9, 1).unwrap();
+        let mut current = SupervisorStopLedger::new(8, 9, 1).unwrap();
+        assert_ne!(old.domain, current.domain);
+        let original = old.register(actor(2, 1)).unwrap();
+        let replacement = current.register(actor(2, 1)).unwrap();
+        assert_eq!(original.logical_id, replacement.logical_id);
+        assert_eq!(original.actor, replacement.actor);
+        old.assert_physically_finalized(original).unwrap();
+        current.assert_physically_finalized(replacement).unwrap();
+        let old_ticket = old.reserve_stop(original).unwrap();
+        let new_ticket = current.reserve_stop(replacement).unwrap();
+        assert_eq!(old_ticket.turn, new_ticket.turn);
+        assert!(current.snapshot(original).is_err());
+        assert!(current.claim_host_invocation(old_ticket).is_err());
+        assert!(current.mark_applied(old_ticket).is_err());
+        assert!(current.reconcile_verified(old_ticket).is_err());
+        assert_eq!(current.receipt(new_ticket).unwrap(), Receipt::Pending);
+        current.claim_host_invocation(new_ticket).unwrap();
+        current.mark_applied(new_ticket).unwrap();
+        current.acknowledge_applied(new_ticket).unwrap();
+        assert_eq!(current.snapshot(replacement).unwrap(), Phase::Stopped);
     }
 
     #[test]
