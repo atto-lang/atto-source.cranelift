@@ -1,6 +1,7 @@
 //! Honest GLM/MoE cross-backend frontier for the stage-0 Cranelift JIT.
 //! These are executable positive and explicit unsupported-source tests.
 //! They do not prove that the shared 20-program GLM corpus compiles here.
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,6 +9,26 @@ use std::time::{Duration, Instant};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const COMPILER_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_CAPTURE: usize = 65536;
+
+// Always drain both pipes while the compiler is alive. Waiting for process
+// exit before draining can deadlock on diagnostics larger than pipe capacity.
+fn drain_bounded(mut input: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut stored = Vec::new();
+    let mut exceeded = false;
+    let mut buf = [0u8; 8192];
+    loop {
+        let len = input.read(&mut buf)?;
+        if len == 0 {
+            return Ok((stored, exceeded));
+        }
+        let remaining = MAX_CAPTURE.saturating_sub(stored.len());
+        stored.extend_from_slice(&buf[..len.min(remaining)]);
+        if len > remaining {
+            exceeded = true;
+        }
+    }
+}
 
 struct GuestFixture(PathBuf);
 
@@ -42,8 +63,7 @@ fn run_guest(mode: &str, source: &str, args: &[&str]) -> Output {
     drop(file);
 
     // Avoid indefinite CI hangs on compiler deadlocks or runaway JITs.
-    // The piped output is at most pipe-capacity while the child is blocked;
-    // it is drained after exit, rather than creating an unbounded reader.
+    // Each pipe is drained concurrently with strictly bounded storage.
     let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode)
         .arg(&fixture.0)
@@ -52,6 +72,10 @@ fn run_guest(mode: &str, source: &str, args: &[&str]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let stdout_pipe = child.stdout.take().expect("captured stdout");
+    let stderr_pipe = child.stderr.take().expect("captured stderr");
+    let stdout_thread = std::thread::spawn(move || drain_bounded(stdout_pipe));
+    let stderr_thread = std::thread::spawn(move || drain_bounded(stderr_pipe));
     let deadline = Instant::now() + COMPILER_DEADLINE;
     loop {
         match child.try_wait() {
@@ -71,12 +95,16 @@ fn run_guest(mode: &str, source: &str, args: &[&str]) -> Output {
             }
         }
     }
-    let output = child.wait_with_output().unwrap();
+    let status = child.wait().expect("compiler termination status");
+    let (stdout, stdout_exceeded) = stdout_thread.join().expect("stdout reader panicked")
+        .expect("stdout read failed");
+    let (stderr, stderr_exceeded) = stderr_thread.join().expect("stderr reader panicked")
+        .expect("stderr read failed");
     assert!(
-        output.stdout.len() <= 65536 && output.stderr.len() <= 65536,
-        "native compiler output exceeded bounded test budget"
+        !stdout_exceeded && !stderr_exceeded,
+        "native compiler exceeded 64 KiB per-stream output budget"
     );
-    output
+    Output { status, stdout, stderr }
 }
 
 fn expect_native(source: &str, args: &[&str], expected: &str) {
@@ -92,12 +120,12 @@ fn expect_unsupported(source: &str) {
         let result = run_guest(mode, source, &[]);
         assert!(!result.status.success(), "unsupported GLM source admitted via {mode}");
         assert!(result.stdout.is_empty(), "unsupported source printed output via {mode}");
-        assert!(!result.stderr.is_empty(), "rejection lacks diagnostic via {mode}");
         assert_eq!(result.status.code(), Some(1), "rejection must be a compiler diagnostic");
-        assert!(
-            !String::from_utf8_lossy(&result.stderr).contains("panicked at"),
-            "unsupported source crashed the compiler in {mode}"
-        );
+        let diagnostic = String::from_utf8_lossy(&result.stderr);
+        assert!(diagnostic.starts_with("orescranelift: "),
+            "unsupported-source refusal must originate from Cranelift frontend");
+        assert!(!diagnostic.contains("panicked at") && !diagnostic.contains("stack backtrace"),
+            "unsupported source crashed the compiler in {mode}");
     }
 }
 
@@ -176,4 +204,21 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
     expect_unsupported("pub fnc main():int{return 3 / 2;}");
+}
+
+#[test]
+fn excessive_source_and_nul_bytes_are_bounded_frontend_rejections() {
+    expect_unsupported(&format!("fnc main():int{{return 42;}}//{}", "x".repeat(1024 * 1024)));
+    expect_unsupported("fnc main():int{return 42;}\u{0000}");
+}
+
+#[test]
+fn oversized_diagnostic_capture_is_reported_as_failure_not_truncated_success() {
+    let data = vec![b'X'; MAX_CAPTURE + 4096];
+    let (captured, overflow) = drain_bounded(&data[..]).unwrap();
+    assert_eq!(captured.len(), MAX_CAPTURE);
+    assert!(overflow, "truncation must be explicit");
+    let (captured, overflow) = drain_bounded(&data[..MAX_CAPTURE]).unwrap();
+    assert_eq!(captured.len(), MAX_CAPTURE);
+    assert!(!overflow, "exact capture limit remains admissible");
 }
