@@ -31,6 +31,10 @@ fn injection_capabilities_fail_closed_in_run_and_ir() {
         "@StateContainer()\ndefine actor Foo as\nstate {}\nend\n",
         "@Inject(SessionState)\ndefine class Foo as\nend\n",
         "@Inject\ndefine fnc main():int{return 7;}\n",
+        "@Inject\ndefine class Foo as\nend\n",
+        "@Inject<MutableStateContainer()>\ndefine class Foo as\nend\n",
+        "@StateContainer()\ndefine class Foo as\nend\n",
+        "@Inject(SessionState)\npub fnc main():int{return 42;}\n",
     ];
     for program in programs {
         let expected_annotation = if program.starts_with("@Inject") {
