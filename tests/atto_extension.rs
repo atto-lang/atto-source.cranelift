@@ -80,6 +80,10 @@ fn canonical_atto_path_supports_ir_and_native_execution() {
         .output()
         .expect("run AttoLang guest");
     std::fs::remove_file(path).expect("clean up AttoLang IR fixture");
-    assert!(guest.status.success(), "{}", String::from_utf8_lossy(&guest.stderr));
+    assert!(
+        guest.status.success(),
+        "{}",
+        String::from_utf8_lossy(&guest.stderr)
+    );
     assert_eq!(guest.stdout, b"42\n");
 }
