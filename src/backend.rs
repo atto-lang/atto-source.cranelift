@@ -21,27 +21,20 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        ShiftRight8(x) => {
+            // Signed Cranelift arithmetic shift of i64, preserving sign.
+            // The parser admits only the constant 8, matching ODB1 byte
+            // extraction for 0..i31::MAX without float narrowing.
+            let input = emit(x, b, params, error);
+            let eight = b.ins().iconst(types::I64, 8);
+            b.ins().sshr(input, eight)
+        }
         BitXor(x, y) => {
             // Both operands are emitted in lexical order. bxor is an actual
             // native Cranelift instruction, not a host-side reference oracle.
             let lhs = emit(x, b, params, error);
             let rhs = emit(y, b, params, error);
             b.ins().bxor(lhs, rhs)
-        }
-        Rem(lhs, divisor) => {
-            // Evaluation of lhs (including checked overflow) is mandatory.
-            let numerator = emit(lhs, b, params, error);
-            // Signed remainder by -1 is always zero under Java semantics,
-            // but native srem(i64::MIN, -1) can trap/produce poison.
-            if *divisor == -1 {
-                b.ins().iconst(types::I64, 0)
-            } else {
-                // The parser proved this is a nonzero literal. Reject any
-                // untrusted AST that would introduce a zero divisor.
-                assert_ne!(*divisor, 0, "internal invalid remainder divisor");
-                let denominator = b.ins().iconst(types::I64, *divisor);
-                b.ins().srem(numerator, denominator)
-            }
         }
         _ => {
             let (value, overflow) = match e {
@@ -74,6 +67,14 @@ fn emit(
             value
         }
     }
+}
+
+fn validate_ir(
+    func: &cranelift_codegen::ir::Function,
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+) -> Result<(), String> {
+    cranelift_codegen::verify_function(func, isa)
+        .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
@@ -110,6 +111,9 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     b.ins().return_(&[fail]);
     b.seal_all_blocks();
     b.finalize(module.target_config());
+    // Unconditional SSA, CFG, type and ABI verification before native emission.
+    // This must not depend on Cranelift's optional enable_verifier setting.
+    validate_ir(&ctx.func, module.isa())?;
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -142,5 +146,30 @@ impl Compiled {
         } else {
             Err("invalid generated native status".into())
         }
+    }
+}
+
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_clif_is_rejected_before_native_codegen() {
+        let builder = JITBuilder::new(default_libcall_names()).unwrap();
+        let module = JITModule::new(builder);
+        let mut func = cranelift_codegen::ir::Function::new();
+        // A signature requiring an i64 return cannot legally return zero values.
+        func.signature.returns.push(AbiParam::new(types::I64));
+        let mut fbctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut func, &mut fbctx);
+        let entry = b.create_block();
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        b.ins().return_(&[]);
+        b.finalize(module.target_config());
+
+        let error = validate_ir(&func, module.isa())
+            .expect_err("malformed CLIF must fail independently of codegen settings");
+        assert!(error.starts_with("CLIF verification failed:"), "{error}");
     }
 }
