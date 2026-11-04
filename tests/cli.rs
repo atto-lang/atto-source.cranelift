@@ -28,6 +28,10 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     if ok {
+        assert!(
+            output.stderr.is_empty(),
+            "successful native execution emitted stderr"
+        );
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     } else {
         // The scalar CLI's owned compiler rejection is exit(1) with a
@@ -1566,4 +1570,379 @@ fn actor_supervisor_authority_fails_before_ir_or_execution() {
         true,
         "42\n",
     );
+}
+
+// Real native Cranelift JIT guest execution of the shared scalar expressions.
+// Backend subset deliberately excludes actors, imports, control flow and classes.
+#[test]
+fn shared_five_backend_scalar_wave_native_jit() {
+    // The bytes supplied to the JIT are those of the shared native .ores
+    // corpus, including its two comment lines and final LF. Do not rewrite
+    // to a host-language arithmetic expression.
+    for (id, expression) in [
+        ("34", "(2 + 3) * 8 + 2"),
+        ("35", "-(-42)"),
+        ("36", "(100 - 16) - 42"),
+        ("37", "-7 * -6"),
+        ("38", "(7 - 14) * -6"),
+        ("39", "9223372036854775807 - 9223372036854775765"),
+        ("40", "-9223372036854775808 + 9223372036854775807 + 43"),
+        ("41", "2 * (3 + 4) * 3"),
+        ("50", "2 * 3 * 7"),
+        ("51", "(0 - 7) * (0 - 6)"),
+        ("52", "(21 + 21) + (0 - 0)"),
+        ("53", "6 * 7"),
+        ("54", "(-7) * (-6)"),
+        ("55", "9223372036854775807 - 9223372036854775807 + 42"),
+        ("56", "-9223372036854775808 - (-9223372036854775808) + 42"),
+        ("57", "(100 - 58) * (0 + 1)"),
+    ] {
+        let source = format!(
+            "// {id}: candidate source-identical checked-i64 scalar program.\n\
+             // Expected integer result 42; guest execution on each backend is unverified.\n\
+             pub fnc main(): int {{ return {expression}; }}\n"
+        );
+        fixture(&source, &[], true, "42\n");
+    }
+    for expression in [
+        "9223372036854775808",
+        "7 / 2",
+        "-(-9223372036854775808)",
+        "5 ^ 3",
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            false,
+            "",
+        );
+    }
+}
+
+#[test]
+fn signed_i64_boundary_identities_execute_in_native_cranelift_jit() {
+    // These are actual Oreslang guest expressions. No Rust arithmetic oracle
+    // or conversion through f64 may be substituted for the native result.
+    for (expression, expected) in [
+        ("0 - 0", "0\n"),
+        ("-9223372036854775808 + 1", "-9223372036854775807\n"),
+        ("9223372036854775807 - 1", "9223372036854775806\n"),
+        ("(-9223372036854775807) - 1", "-9223372036854775808\n"),
+        ("9223372036854775807 + 0", "9223372036854775807\n"),
+        ("(0 - 42) * -1", "42\n"),
+        ("-(-9223372036854775807)", "9223372036854775807\n"),
+        ("(6 * 7) + (2 - 2)", "42\n"),
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+    // Run-time parameters cannot be folded by the host language.
+    fixture(
+        "pub fnc main(x:int):int{return x+1;}",
+        &["41"],
+        true,
+        "42\n",
+    );
+    fixture(
+        "pub fnc main(x:int,y:int):int{return x*y;}",
+        &["6", "7"],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn scalar_cast_and_ownership_features_fail_closed_before_jit_lowering() {
+    // Java #2405, LLVM #1256, .NET #282 and Wasm #219 have staged
+    // scalar-cast contracts; Cranelift now supports only *identity i64*
+    // casts, not bool, Option, dynamic tags or actor ownership lowering.
+    // These MUST be reclassified with native-positive receipts before
+    // granting capability parity. A generic parser error is not parity.
+    for source in [
+        "pub fnc main(): int { return 42 as bool; }",
+        "pub fnc main(): int { return 42 as Object; }",
+        "pub fnc main(as:int):int{return as;}",
+        "pub fnc main(): int { return 42 as? int; }",
+        "pub fnc main(): int { const x = true; return 42; }",
+        "pub fnc main(): int { const x = 42 as bool; return 42; }",
+        "pub fnc main(): int { let x = 41; x = 42; return x; }",
+        "pub fnc main(): int { return rt borrow 42; }",
+        "pub fnc main(): int { return match 42 over on 42 { 42; } end; }",
+        "pub async fnc main(): int { return 42; }",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn orestra_capacity_arithmetic_is_checked_in_native_jit() {
+    // Orestra reservation math depends on subtract-first i64 arithmetic.
+    // These are scalar intermediates only: this backend does NOT run the
+    // allocator, sealed actor state, a container, or any Orestra controller.
+    for (expression, expected) in [
+        ("(1000 - 600) - 358", "42\n"),
+        ("(9223372036854775807 - 9223372036854775700) - 65", "42\n"),
+        ("(9223372036854775807 - 9223372036854775765)", "42\n"),
+        ("(-9223372036854775808 + 100) + 9223372036854775750", "42\n"),
+        ("1000000 - 999958", "42\n"),
+        ("(0 - 1) * -42", "42\n"),
+        ("(9223372036854775807 - 9223372036854775806) * 42", "42\n"),
+        ("(0 - 9223372036854775807) + 9223372036854775807", "0\n"),
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+    // Checked overflow in an intermediate cannot be disguised by
+    // multiplication by zero or subtraction of another huge value.
+    for expression in [
+        "9223372036854775807 - (-1)",
+        "-9223372036854775808 - 1",
+        "(9223372036854775807 + 1) * 0",
+        "(9223372036854775807 * 2) - 9223372036854775807",
+        "(-9223372036854775808 * -1)",
+        "-(-9223372036854775808)",
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}"),
+            &[],
+            false,
+            "",
+        );
+    }
+    fixture(
+        "pub fnc main(x:int):int{return x+1;}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+    fixture(
+        "pub fnc main(x:int):int{return x-1;}",
+        &["-9223372036854775808"],
+        false,
+        "",
+    );
+    fixture(
+        "pub fnc main(x:int,y:int):int{return x*y;}",
+        &["4611686018427387904", "2"],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn five_backend_checked_i64_identity_cast_jit_execution() {
+    // Native JIT guest source, not a Rust arithmetic model.
+    for expression in ["(7 as int)+35", "(7 as int as int)+35", "((2+5) as int)*6"] {
+        fixture(
+            &format!("pub fnc main():int{{return {expression};}}"),
+            &[],
+            true,
+            "42\n",
+        );
+    }
+    for expression in [
+        "7 as bool",
+        "true as int",
+        "9223372036854775808 as int",
+        "7 as? int",
+    ] {
+        fixture(
+            &format!("pub fnc main():int{{return {expression};}}"),
+            &[],
+            false,
+            "",
+        );
+    }
+}
+
+#[test]
+fn unsupported_checked_cast_emits_no_clif_or_guest_output() {
+    // A failed cast must not become an executable JIT artifact or an IR
+    // disclosure. Test both CLI modes against an actual source file.
+    const ERROR: &str = "unsupported checked cast target";
+    for (index, expression) in [
+        "7 as bool",
+        "7 as string",
+        "7 as Object",
+        "7 as int as bool",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-cast-reject-{}-{nonce}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            format!("pub fnc main():int{{return {expression};}}\n"),
+        )
+        .unwrap();
+        for mode in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                result.status.code(),
+                Some(1),
+                "{mode}: invalid failure exit"
+            );
+            assert!(result.stdout.is_empty(), "{mode}: emitted guest value/CLIF");
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(stderr.contains(ERROR), "{mode}: wrong diagnostic: {stderr}");
+            assert!(!stderr.contains("panicked"), "{mode}: compiler panicked");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+// Same eight exact UTF-8 expressions pinned in
+// oreslang-platform-conformance PR #275 (six values + two checked overflows).
+// This executes *real* Cranelift JIT guest code when cargo tests actually run.
+// Merely authoring these cases does NOT prove native execution or other backends.
+#[test]
+fn pinned_eight_case_checked_i64_parity_guest() {
+    for (source, stdout) in [
+        ("pub fnc main(): int { return 42; }\n", "42\n"),
+        ("pub fnc main(): int { return 4 + 6 * (5 - 1); }\n", "28\n"),
+        ("pub fnc main(): int { return -(7 * 3); }\n", "-21\n"),
+        (
+            "pub fnc main(): int { return -9223372036854775808; }\n",
+            "-9223372036854775808\n",
+        ),
+        (
+            "pub fnc main(): int { return 9223372036854775807; }\n",
+            "9223372036854775807\n",
+        ),
+        (
+            "pub fnc main(): int { return 9223372036854775807 - 1; }\n",
+            "9223372036854775806\n",
+        ),
+    ] {
+        fixture(source, &[], true, stdout);
+    }
+    for source in [
+        "pub fnc main(): int { return 9223372036854775807 + 1; }\n",
+        "pub fnc main(): int { return 4611686018427387904 * 2; }\n",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn checked_i64_parity_overflow_never_uses_wrapped_intermediates() {
+    for (source, args) in [
+        (
+            "fnc main(x:int):int{return x+1;}",
+            &["9223372036854775807"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x*2;}",
+            &["4611686018427387904"][..],
+        ),
+        (
+            "fnc main(x:int):int{return (x+1)*0;}",
+            &["9223372036854775807"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn orestra_scalar_capacity_and_execution_canaries_native_jit() {
+    // Real Cranelift JIT source-to-machine-code tests, *not* orchestration.
+    // Actors, scheduler reservations, imports and resource fencing remain
+    // unavailable in this stage-0 scalar frontend.
+    for (expression, expected) in [
+        ("(1000 - 600) - 400", "0\n"),
+        ("(9223372036854775807 - 9223372036854775700) - 65", "42\n"),
+        ("73", "73\n"),
+    ] {
+        fixture(
+            &format!("pub fnc main(): int {{ return {expression}; }}\n"),
+            &[],
+            true,
+            expected,
+        );
+    }
+    // An intermediate signed64 overflow must never wrap into a result.
+    fixture(
+        "pub fnc main(): int { return (9223372036854775807 + 1) - 1; }\n",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn oreslana_portable_scalar_capacity_and_nonzero_guest_execution() {
+    // Every call compiles actual Oreslang source to native Cranelift JIT
+    // machine code. These do NOT test classes, Array<int>, actors or WAL.
+    for (source, expected) in [
+        (
+            "fnc main(): int { return (4096 - 64) + (32 * 2) - 4096; }\n",
+            "0\n",
+        ),
+        ("pub fnc main(): int { return 73; }\n", "73\n"),
+        (
+            "pub fnc main(): int { return (9223372036854775807 - 9223372036854775800) * 6; }\n",
+            "42\n",
+        ),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+    // A late overflowing intermediate must not be rescued by a later zero.
+    fixture(
+        "pub fnc main(): int { return (9223372036854775807 + 1) * 0; }\n",
+        &[],
+        false,
+        "",
+    );
+    // Fail closed on precisely the Oreslana structures unsupported by the
+    // independent scalar-only Cranelift frontend.
+    for source in [
+        "define pub class OreslanaLedger as end",
+        "pub fnc main():int{ let mut Array<int> accounts = new Array<int>(); return 0; }",
+        "pub fnc main():int{ return Some(42).unwrap(); }",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn byte_identical_v2_checked_cast_guests_execute_or_reject() {
+    // These files must remain byte-identical to Java #2405, LLVM #1256,
+    // Wasm #219 and .NET #282, not translated into Cranelift-specific source.
+    // Git blob SHA-1 positive: 1a80e07da1289c87d04454866883f4e06cfc8d77
+    // Git blob SHA-1 negative: ecc4ccea80f016243e38f351df60cfad9eb6e136
+    let positive = include_str!("../contracts/v1/portable-checked-cast-positive-v2.ores");
+    let negative = include_str!("../contracts/v1/portable-checked-cast-negative-v2.ores");
+    assert_eq!(
+        positive.as_bytes(),
+        b"pub fnc main():int{return (7 as int)+(35 as int);}\n"
+    );
+    assert_eq!(
+        negative.as_bytes(),
+        b"pub fnc main():int{return (7 as int) as bool;}\n"
+    );
+    // Actual Oreslang source -> Cranelift JIT -> stdout, not a host oracle.
+    fixture(positive, &[], true, "42\n");
+    // Unsupported int-to-bool cast must not generate a successful guest.
+    fixture(negative, &[], false, "");
 }
