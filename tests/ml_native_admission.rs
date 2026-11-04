@@ -1,87 +1,24 @@
-//! Compiler CLI acceptance for the *current* stage-0 ML arithmetic slice.
-//! This tests the real Oreslang -> Cranelift JIT only when Cargo runs.
-//! It does not claim FP64, tensor, autograd, actor, or other backend parity.
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+//! Real stage-0 scalar native-JIT acceptance, not ML tensor/autograd parity.
+//! Use one bounded test harness for both IR and execution.
+#[path = "support/mod.rs"]
+mod support;
 
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-// Keep file-backed child output outside OS pipes: try_wait() does not drain
-// pipes and verbose IR/stderr could otherwise fill a pipe and deadlock.
-// Files are created exclusively, mode 0600 on Unix, and removed on panics.
-struct ScratchFiles(Vec<PathBuf>);
-impl Drop for ScratchFiles {
-    fn drop(&mut self) {
-        for path in &self.0 {
-            let _ = std::fs::remove_file(path);
-        }
-    }
+fn execute(source: &str, mode: &str) -> std::process::Output {
+    support::run_source(mode, source.as_bytes(), &[])
 }
 
-fn exclusive_file(path: &Path, guard: &mut ScratchFiles) -> File {
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let file = opts
-        .open(path)
-        .expect("exclusive temporary fixture/output creation");
-    guard.0.push(path.to_path_buf());
-    file
-}
-
-fn execute(source: &str, mode: &str) -> Output {
-    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path: PathBuf = std::env::temp_dir().join(format!(
-        "orescranelift-ml-admission-{}-{nonce}.ores",
-        std::process::id()
-    ));
-    // The unique source/output filenames must not overwrite existing files
-    // or symlinks, including during simultaneous Cargo test invocations.
-    let mut cleanup = ScratchFiles(Vec::new());
-    let mut file = exclusive_file(&path, &mut cleanup);
-    file.write_all(source.as_bytes()).expect("write fixture");
-    file.sync_all().expect("sync fixture");
-    drop(file);
-
-    let stdout_path = path.with_extension("stdout");
-    let stderr_path = path.with_extension("stderr");
-    let stdout = exclusive_file(&stdout_path, &mut cleanup);
-    let stderr = exclusive_file(&stderr_path, &mut cleanup);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg(mode)
-        .arg(&path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .expect("invoke actual Cranelift compiler CLI");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("poll compiler subprocess") {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("Cranelift {mode} exceeded five-second native admission guard");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    // No pipe read deadlock: the child wrote to bounded-lifetime regular files.
-    // Drop cleans up even if a read/assertion panics.
-    Output {
-        status,
-        stdout: std::fs::read(&stdout_path).expect("read native stdout"),
-        stderr: std::fs::read(&stderr_path).expect("read native stderr"),
-    }
+#[test]
+fn native_compiler_output_capture_is_bounded_and_refuses_truncation() {
+    let oversize = vec![b'Q'; 65_536 + 8192];
+    let (captured, truncated) = support::drain_bounded(&oversize[..]).unwrap();
+    assert_eq!(captured.len(), 65_536);
+    assert!(truncated, "oversized diagnostics must never count as valid output");
+    let (exact, truncated) = support::drain_bounded(&oversize[..65_536]).unwrap();
+    assert_eq!(exact.len(), 65_536);
+    assert!(!truncated, "exact-size output is admissible");
+    let (empty, truncated) = support::drain_bounded(&oversize[..0]).unwrap();
+    assert!(empty.is_empty());
+    assert!(!truncated);
 }
 
 #[test]

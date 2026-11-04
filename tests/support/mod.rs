@@ -42,7 +42,7 @@ impl Drop for GuestSource {
     }
 }
 
-fn drain_bounded(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+pub(crate) fn drain_bounded(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::new();
     let mut over_limit = false;
     let mut buffer = [0_u8; 8192];
