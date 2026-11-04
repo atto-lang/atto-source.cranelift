@@ -150,7 +150,7 @@ fn canonical_atto_path_supports_ir_and_native_execution() {
     );
     let guest = native_execution("atto", SOURCE);
     assert_eq!(guest.status.code(), Some(0));
-    assert_eq!(guest.stdout, b"42\\n");
+    assert_eq!(guest.stdout, b"42\n");
     assert!(guest.stderr.is_empty());
 }
 
