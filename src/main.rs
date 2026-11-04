@@ -20,7 +20,9 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        // Reject a symlink leaf to prevent a caller-controlled source path from
+        // resolving to a different file (or a special device) at open time.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
     }
     let file = options.open(&path).map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
