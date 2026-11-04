@@ -94,3 +94,18 @@ symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
+
+## Actor Sync v1 admission: unsupported on stage-0
+
+The [Oreslang Actor Sync v1 draft conformance contract](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/300)
+requires source actors, isolated actor-owned state, non-reentrant turns, async
+durable persistence and typed changefeed cursors. **This Cranelift backend has
+none of those semantics yet.** As long as its compiler is scalar-only, it
+must reject source actor and virtual sync constructs without emitting IR or a
+guest executable.
+
+`tests/actor_sync_admission.rs` adds 12 negative guest admission sources in
+both `run` and `ir` CLI modes plus a positive scalar-with-comments guard.
+These are **source rejection** tests and cannot be counted as AS01–AS24
+guest implementation parity. Native actor IR, actor memory ownership and an
+execution ABI must land first (issue #17). Cranelift is independent of Forge.
