@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,6 +8,24 @@ use std::time::{Duration, Instant};
 // delete a pre-existing path, including a symlink placed by another process.
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 const NATIVE_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_CAPTURE: usize = 65536;
+
+// Drain both compiler output streams while the child is running. Otherwise
+// an oversized diagnostic can fill the pipe and prevent process exit.
+fn drain_bounded(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    let mut overflow = false;
+    let mut buf = [0_u8; 8192];
+    loop {
+        let len = pipe.read(&mut buf)?;
+        if len == 0 {
+            return Ok((bytes, overflow));
+        }
+        let available = MAX_CAPTURE.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&buf[..len.min(available)]);
+        overflow |= len > available;
+    }
+}
 
 struct GuestFixture(PathBuf);
 
@@ -47,6 +65,10 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let stdout_pipe = child.stdout.take().expect("captured child stdout");
+    let stderr_pipe = child.stderr.take().expect("captured child stderr");
+    let stdout_reader = std::thread::spawn(move || drain_bounded(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || drain_bounded(stderr_pipe));
     let deadline = Instant::now() + NATIVE_DEADLINE;
     loop {
         match child.try_wait() {
@@ -66,11 +88,16 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
             }
         }
     }
-    let output = child.wait_with_output().unwrap();
+    let status = child.wait().expect("compiler termination status");
+    let (stdout, stdout_overflow) = stdout_reader
+        .join().expect("stdout reader panicked").expect("stdout read failed");
+    let (stderr, stderr_overflow) = stderr_reader
+        .join().expect("stderr reader panicked").expect("stderr read failed");
     assert!(
-        output.stdout.len() <= 65536 && output.stderr.len() <= 65536,
-        "Cranelift guest emitted excessive output"
+        !stdout_overflow && !stderr_overflow,
+        "Cranelift guest exceeded bounded output capture"
     );
+    let output = std::process::Output { status, stdout, stderr };
     assert_eq!(
         output.status.code(),
         Some(if ok { 0 } else { 1 }),
@@ -91,6 +118,17 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
             "compiler panic must not masquerade as source rejection"
         );
     }
+}
+
+#[test]
+fn bounded_native_capture_detects_oversized_diagnostics_without_blocking() {
+    let data = vec![b'X'; MAX_CAPTURE + 2048];
+    let (captured, overflow) = drain_bounded(&data[..]).unwrap();
+    assert_eq!(captured.len(), MAX_CAPTURE);
+    assert!(overflow, "oversized diagnostic cannot pass as truncated success");
+    let (at_limit, overflow) = drain_bounded(&data[..MAX_CAPTURE]).unwrap();
+    assert_eq!(at_limit.len(), MAX_CAPTURE);
+    assert!(!overflow, "exact-size diagnostic remains admissible");
 }
 
 #[test]
