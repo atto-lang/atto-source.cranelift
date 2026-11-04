@@ -83,6 +83,19 @@ source examples from Forge's scalar/v1 contract. These are candidate
 differential test cases; the repository does not yet pin a shared fixture
 blob or provide executed cross-backend equivalence evidence.
 
+## Fail-closed tenant and CLI admission
+
+The Cranelift stage-0 compiler has **no actor runtime, IsolateVM, tenant
+heap, supervisor CONTROL lane, ownership borrowing or untrusted native JIT
+sandbox**. Actor/tenant constructs remain rejected in both `run` and
+`ir` modes rather than being accepted as scalar aliases. The
+`tenant_fail_closed` CLI integration suite probes those boundaries.
+
+Before loading source or compiling any native code, `run` rejects more
+than four runtime arguments (the fixed native entry ABI); `ir` rejects
+all runtime arguments. This argument-vector admission is not a resource
+quota on the host process and does not authorize hostile source execution.
+
 ## Unix source file admission
 
 The CLI opens source descriptors nonblocking before validating that the
