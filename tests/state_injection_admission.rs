@@ -55,7 +55,9 @@ fn injection_capabilities_fail_closed_in_run_and_ir() {
             );
             let stderr = String::from_utf8_lossy(&result.stderr);
             assert!(
-                stderr.contains(&format!("STATE_INJECTION_UNSUPPORTED: @{expected_annotation}")),
+                stderr.contains(&format!(
+                    "STATE_INJECTION_UNSUPPORTED: @{expected_annotation}"
+                )),
                 "{mode} incorrect diagnostic for {program}: {stderr}"
             );
         }
@@ -68,9 +70,7 @@ fn unknown_annotations_are_explicitly_unsupported() {
         let result = run_source("@AnotherAnnotation\ndefine fnc main():int{return 7;}", mode);
         assert!(!result.status.success());
         assert!(result.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&result.stderr).contains("ANNOTATION_UNSUPPORTED")
-        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("ANNOTATION_UNSUPPORTED"));
     }
 }
 
@@ -86,7 +86,10 @@ fn comments_cannot_trigger_injection_diagnostics_or_break_scalar_main() {
             "{mode} rejected comment-only annotation: {}",
             String::from_utf8_lossy(&result.stderr)
         );
-        assert!(!result.stdout.is_empty(), "{mode} failed to run/emit scalar control");
+        assert!(
+            !result.stdout.is_empty(),
+            "{mode} failed to run/emit scalar control"
+        );
     }
 }
 
@@ -95,15 +98,23 @@ fn failed_state_injection_does_not_report_ir_as_guest_stdout() {
     // Test both entry-mode paths with token-local positions, including leading
     // comments and UTF-8 source. A rejection must never be a generic parse
     // failure or an IR-emitting fallback.
-    for prefix in ["", "// header annotation @Inject is not active\n", "// é safe comment\n"] {
-        let source = format!("{prefix}@StateBacked(MutableStateContainer(scope = #instance))\ndefine class Inventory as\nlet int count = 0;\nend\n");
+    for prefix in [
+        "",
+        "// header annotation @Inject is not active\n",
+        "// é safe comment\n",
+    ] {
+        let source = format!(
+            "{prefix}@StateBacked(MutableStateContainer(scope = #instance))\ndefine class Inventory as\nlet int count = 0;\nend\n"
+        );
         for mode in ["run", "ir"] {
             let result = run_source(&source, mode);
             assert!(!result.status.success(), "{mode} accepted state backing");
             assert!(result.stdout.is_empty(), "{mode} emitted partial result");
             let diagnostic = String::from_utf8_lossy(&result.stderr);
-            assert!(diagnostic.contains("STATE_INJECTION_UNSUPPORTED: @StateBacked"),
-                "{mode} wrong capability diagnostic: {diagnostic}");
+            assert!(
+                diagnostic.contains("STATE_INJECTION_UNSUPPORTED: @StateBacked"),
+                "{mode} wrong capability diagnostic: {diagnostic}"
+            );
         }
     }
 }

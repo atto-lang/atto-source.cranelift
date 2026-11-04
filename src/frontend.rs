@@ -104,12 +104,17 @@ impl<'a> Parser<'a> {
                 end += 1;
             }
             let name = &self.input[self.pos..end];
-            if matches!(name, "Inject" | "StateBacked" | "MutableStateContainer" | "StateContainer") {
+            if matches!(
+                name,
+                "Inject" | "StateBacked" | "MutableStateContainer" | "StateContainer"
+            ) {
                 return Err(format!(
                     "STATE_INJECTION_UNSUPPORTED: @{name} requires owned state, typed borrow checking and lifecycle lowering"
                 ));
             }
-            return Err(format!("ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"));
+            return Err(format!(
+                "ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"
+            ));
         }
         if first.is_ascii_alphabetic() || first == b'_' {
             while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
