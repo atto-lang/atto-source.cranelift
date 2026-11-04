@@ -261,7 +261,7 @@ fn input_rejection_is_specific_and_emits_no_guest_output() {
     let cases = [
         ("invalid-utf8", vec![0xff_u8], "source is not valid UTF-8"),
         ("over-budget", vec![b' '; 1024 * 1024 + 1], "source exceeds 1 MiB limit"),
-        ("nul-source", b"fnc main():int{return 42;}\\0".to_vec(), "source contains NUL byte"),
+        ("nul-source", b"fnc main():int{return 42;}\0".to_vec(), "source contains NUL byte"),
     ];
     for (label, bytes, diagnostic) in cases {
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
