@@ -178,3 +178,5 @@ not RFC6455 protocol support, actor ownership, WebSocket guest compilation,
 or parity with Java, LLVM, WASM, Forge or .NET.
 
 
+
+Experimental `isolate` mode applies a two-argument trusted scalar JIT to two separate tenant states. This is host lifecycle bookkeeping, not an untrusted native sandbox or source actor lowering. See docs/VM_ISOLATE_CONTRACT.md.
