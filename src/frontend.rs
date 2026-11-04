@@ -79,7 +79,9 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' {
+                // CR-only files are legal source input, so a line comment
+                // must not swallow the following model declaration.
+                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
                     self.pos += 1;
                 }
                 continue;
@@ -436,6 +438,28 @@ mod tests {
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
         }
+    }
+    #[test]
+    fn model_declarations_fail_closed_without_reserving_model_identifiers() {
+        for source in [
+            "define model x as Identity() end",
+            "define model PriceEstimate() as Identity() end",
+            "define pub model x as Identity() end",
+            "pub define model x as Identity() end",
+            "define // comment\nmodel x as Identity() end",
+            "define // comment\rmodel x as Identity() end",
+            "define // comment\r\nmodel x as Identity() end",
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(
+                error.contains("DECL_KIND_UNSUPPORTED: model"),
+                "wrong admission diagnostic for {source}: {error}"
+            );
+        }
+        let ordinary = parse("fnc main(model:int):int{return model+1;}").unwrap();
+        assert_eq!(eval(&ordinary.result, &[41]), Ok(42));
+        let commented = parse("fnc main():int{return 42;} // define model Fake").unwrap();
+        assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
     #[test]
     fn precedence_and_arguments() {

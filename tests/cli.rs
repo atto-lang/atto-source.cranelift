@@ -1230,3 +1230,24 @@ fn actor_io_never_emits_scalar_value_or_clif_before_actor_ir_exists() {
         std::fs::remove_file(file).unwrap();
     }
 }
+
+#[test]
+fn model_graph_source_cannot_reach_cranelift_native_jit() {
+    // These are actual CLI/compiled-guest admission paths, not a host
+    // string-matching oracle. No IR or result may be published.
+    for source in [
+        "define model x as Identity() end",
+        "define model PriceEstimate() as Identity() end",
+        "define pub model x as Identity() end",
+        "pub define model x as Identity() end",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // The contextual identifier remains valid in the scalar profile.
+    fixture(
+        "fnc main(model:int):int{return model+1;}",
+        &["41"],
+        true,
+        "42\n",
+    );
+}
