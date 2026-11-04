@@ -55,3 +55,13 @@ jobs:
           test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke.atto" 12)" = 42
           printf 'fnc main(x:int):int{return (x+2)*3;}\n' > "$RUNNER_TEMP/smoke-legacy.ores"
           test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke-legacy.ores" 12)" = 42
+      - name: Compile six canonical native Oreslang scalar fixtures and execute JIT
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin orescranelift
+          export CRANELIFT_COMPILER_SHA256="$(sha256sum target/debug/orescranelift | cut -d ' ' -f 1)"
+          test "${#CRANELIFT_COMPILER_SHA256}" -eq 64
+          sh -n scripts/verify-portable-scalar.sh
+          sh scripts/verify-portable-scalar.sh target/debug/orescranelift
