@@ -1,6 +1,6 @@
 //! Tenant admission for the experimental native Cranelift host.
-//! This is NOT machine-code sandboxing; untrusted native JIT guests require
-//! a separately supervised OS process and an authenticated IPC boundary.
+//! This is NOT machine-code sandboxing and does not admit untrusted guests.
+//! Untrusted JIT requires independently proven isolation, quotas and interruption.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -417,8 +417,16 @@ mod tests {
         let vm = OresVM::new(2).unwrap();
         // An invalid ID must not consume a generation or tenant capacity.
         for id in [
-            "", ".", "..", "../escape", "tenant/other", "tenant\\other",
-            "tenant:other", "tenant other", "bad\\0name", "ténant",
+            "",
+            ".",
+            "..",
+            "../escape",
+            "tenant/other",
+            "tenant\\other",
+            "tenant:other",
+            "tenant other",
+            "bad\\0name",
+            "ténant",
         ] {
             assert!(vm.create_isolate(id, 1, 1).is_err(), "accepted {id:?}");
         }

@@ -34,8 +34,8 @@ a security sandbox. No general guest-code tenant isolation is claimed.
 7. Include a distinct status/result ABI, including legitimate signed
    negative values. Check native artifact entry ABI **before** function
    pointer casts; ABI version mismatch must fail closed.
-8. An in-process isolate is **not an OS security sandbox**. Native/FFI
-   arbitrary pointers require process-level separation for hostile tenants.
+8. An in-process isolate is **not an OS security sandbox**. This prototype cannot safely admit hostile native/FFI arbitrary pointers.
+   Untrusted JIT needs a separately proven isolation boundary.
 
 ## V8 lessons and crucial differences
 
@@ -64,7 +64,8 @@ the current in-process JIT still has host-process memory access and is
 **not** untrusted multi-tenant sandboxing. Never link Forge to Cranelift:
 these backends remain independent. The next implementation must pass a
 versioned isolate context to Cranelift-generated guest code and then
-define an authenticated out-of-process executor for hostile guests.
+define and verify the isolation boundary before admitting hostile guests.
+This prototype does not mandate one process per tenant or AOT for untrusted code.
 `cargo test --locked --all-targets` must be executed in a real runner;
 Rust 1.99.1 was unavailable in the local container.
 
