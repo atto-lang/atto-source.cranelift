@@ -572,3 +572,31 @@ fn heap_container_source_refuses_scalar_only_jit_fallback() {
     // Keep the already supported common scalar intersection executable.
     fixture("pub fnc main(): int { return 21 + 21; }", &[], true, "42\n");
 }
+
+#[test]
+fn source_testkit_async_callback_task_and_actor_syntax_fails_closed() {
+    // Scalar-only Cranelift must not silently accept a test body that creates
+    // async work it cannot join, observe, cancel or physically retire.
+    // These are capability *rejection* checks, NOT successful TestKit parity.
+    for source in [
+        "pub async fnc main(): int { return 42; }",
+        "suspends fnc main(): int { return 42; }",
+        "fnc main():int{return await 42;}",
+        "fnc main():int{return (async task || -> {return 42;})();}",
+        "fnc main():int{return (|int x| -> x)(42);}",
+        "fnc main():int{return spawn Worker();}",
+        "define actor Worker as end\nfnc main():int{return 42;}",
+        "import fnc run_suite from 'ores.std/testing';\nfnc main():int{return 42;}",
+        "fnc main():int{return trap worker.send(42);}",
+        "fnc main():int{return 42;}\nfnc test_async():int{return 7;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // Reject only *syntax*, not words embedded in comments.
+    fixture(
+        "fnc main():int{return 42;} // async task callback actor await",
+        &[],
+        true,
+        "42\n",
+    );
+}
