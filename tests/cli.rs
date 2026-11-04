@@ -1489,3 +1489,61 @@ fn unsupported_websocket_and_transport_actor_source_fails_before_native_jit() {
         "",
     );
 }
+
+#[test]
+fn actor_supervisor_authority_fails_before_ir_or_execution() {
+    // Neither host-native execution nor CLIF emission is allowed to interpret
+    // actor authority without a real guest actor runtime and capability model.
+    for source in [
+        "define actor Worker as end",
+        "define supervisor actor Manager as end",
+        "define proxy actor Remote as end",
+        "fnc main():int{return spawn Worker();}",
+        "fnc main():int{return stop;}",
+        "fnc main(ActorRef:int):int{return 42;}",
+        "fnc main():int{return 42;} actor",
+    ] {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-authority-{}-{sequence}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{mode} unexpectedly admitted {source}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted native output or CLIF"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(
+                    if source.starts_with("define actor") {
+                        "DECL_KIND_UNSUPPORTED: actor"
+                    } else if source.starts_with("define supervisor") {
+                        "DECL_KIND_UNSUPPORTED: supervisor"
+                    } else {
+                        "actor and supervisor capabilities are unsupported in Cranelift stage-0"
+                    }
+                ),
+                "{mode} did not produce capability-specific denial: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    // Authority words in comments are not executable syntax.
+    fixture(
+        "fnc main():int{return 42;} // actor supervisor spawn stop ActorRef",
+        &[],
+        true,
+        "42\n",
+    );
+}

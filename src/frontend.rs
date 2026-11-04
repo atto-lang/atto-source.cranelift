@@ -232,6 +232,21 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Stage-0 has no actor runtime, supervisory CONTROL channel, or
+            // minted ActorRef capability. Reject reserved authority syntax
+            // lexically, including in unconsumed trailing source, before CLIF.
+            // Comments are already skipped above.
+            if matches!(
+                self.current,
+                Token::Word("proxy")
+                    | Token::Word("spawn")
+                    | Token::Word("stop")
+                    | Token::Word("ActorRef")
+            ) {
+                return Err(
+                    "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
+                );
+            }
             // Not a semantic type rejection or a successful sum-type compile:
             // the scalar-only Cranelift backend cannot represent tagged
             // Option/Result payloads or classify guest trap control effects.
@@ -552,6 +567,7 @@ impl<'a> Parser<'a> {
                             | "async"
                             | "await"
                             | "actor"
+                            | "supervisor"
                             | "isoactor"
                             | "panic"
                             | "raise"
@@ -615,6 +631,11 @@ impl<'a> Parser<'a> {
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
+        if matches!(self.current, Token::Word("actor" | "supervisor")) {
+            return Err(
+                "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
+            );
+        }
         self.expect(Token::End)?;
         Ok(Program {
             parameters: self.parameters,
