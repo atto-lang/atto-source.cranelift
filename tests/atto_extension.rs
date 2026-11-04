@@ -50,7 +50,12 @@ fn drain_bounded(mut stream: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
 }
 
 fn native_execution(extension: &str, source: &str) -> Output {
+    native_execution_mode(extension, source, "run")
+}
+
+fn native_execution_mode(extension: &str, source: &str, mode: &str) -> Output {
     assert!(matches!(extension, "atto" | "ores"));
+    assert!(matches!(mode, "run" | "ir"));
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "attolang-cranelift-{}-{id}.{extension}",
@@ -58,7 +63,7 @@ fn native_execution(extension: &str, source: &str) -> Output {
     ));
     let fixture = create_source(&path, source).expect("exclusive source creation");
     let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("run")
+        .arg(mode)
         .arg(&fixture.0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -131,6 +136,22 @@ fn atto_and_ores_both_fail_closed_for_unsupported_guest_syntax() {
             );
         }
     }
+}
+
+#[test]
+fn canonical_atto_path_supports_ir_and_native_execution() {
+    const SOURCE: &str = "fnc main():int{return (20+1)*2;}";
+    let ir = native_execution_mode("atto", SOURCE, "ir");
+    assert_eq!(ir.status.code(), Some(0), "AttoLang IR mode must compile");
+    assert!(ir.stderr.is_empty(), "successful IR emitted diagnostics");
+    assert!(
+        String::from_utf8_lossy(&ir.stdout).contains("function"),
+        "expected actual Cranelift function IR"
+    );
+    let guest = native_execution("atto", SOURCE);
+    assert_eq!(guest.status.code(), Some(0));
+    assert_eq!(guest.stdout, b"42\\n");
+    assert!(guest.stderr.is_empty());
 }
 
 #[test]
