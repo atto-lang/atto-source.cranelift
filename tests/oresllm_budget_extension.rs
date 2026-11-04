@@ -37,9 +37,18 @@ fn run_case(expression: &str, expected: Option<&str>) {
             "JIT guest produced incorrect signed-i64 output"
         );
     } else {
-        assert!(!output.status.success(), "{expression}: invalid guest admitted");
-        assert!(output.stdout.is_empty(), "{expression}: rejection leaked stdout");
-        assert!(!output.stderr.is_empty(), "{expression}: missing diagnostic");
+        assert!(
+            !output.status.success(),
+            "{expression}: invalid guest admitted"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{expression}: rejection leaked stdout"
+        );
+        assert!(
+            !output.stderr.is_empty(),
+            "{expression}: missing diagnostic"
+        );
     }
 }
 
