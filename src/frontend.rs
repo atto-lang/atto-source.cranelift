@@ -153,12 +153,16 @@ impl<'a> Parser<'a> {
             let remainder = &b[self.pos..];
             let intrinsic = b"Inject";
             let exact = remainder.starts_with(intrinsic)
-                && remainder.get(intrinsic.len()).is_none_or(|next|
-                    !next.is_ascii_alphanumeric() && *next != b'_');
+                && remainder
+                    .get(intrinsic.len())
+                    .is_none_or(|next| !next.is_ascii_alphanumeric() && *next != b'_');
             if exact {
                 return Err("@Inject state-container lowering requires verified private regions, scoped borrows and runtime admission; unsupported in Cranelift".into());
             }
-            return Err("source annotations require checked compiler lowering; unsupported in Cranelift".into());
+            return Err(
+                "source annotations require checked compiler lowering; unsupported in Cranelift"
+                    .into(),
+            );
         } else if b"()+-*%{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -341,9 +345,10 @@ impl<'a> Parser<'a> {
         // be reinterpreted as a scalar main() function.
         let unsupported_kind = match self.current {
             Token::Word("state") => Some("state container"),
-            Token::Word(kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model"
-                | "enum" | "class" | "struct" | "record" | "interface"
-                | "trait" | "protocol" | "service")) => Some(kind),
+            Token::Word(
+                kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model" | "enum" | "class"
+                | "struct" | "record" | "interface" | "trait" | "protocol" | "service"),
+            ) => Some(kind),
             _ => None,
         };
         if let Some(kind) = unsupported_kind {

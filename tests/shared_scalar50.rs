@@ -10,13 +10,18 @@ fn scalar50_native_jit_exact_shared_sources() {
     assert!(CORPUS.ends_with('\n') && !CORPUS.contains('\r'));
     let mut ids = HashSet::new();
     let mut count = 0_usize;
-    for row in CORPUS.lines().filter(|line| !line.starts_with('#') && !line.is_empty()) {
+    for row in CORPUS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
         let fields: Vec<_> = row.split('\t').collect();
         assert_eq!(fields.len(), 3, "invalid source corpus record");
         count += 1;
         assert_eq!(fields[0], format!("scalar-{count:03}"));
         assert!(ids.insert(fields[0]), "duplicate scalar case");
-        let expected: i64 = fields[1].parse().expect("canonical positive i64 expectation");
+        let expected: i64 = fields[1]
+            .parse()
+            .expect("canonical positive i64 expectation");
         assert!((1..128).contains(&expected));
         let source = fields[2];
         assert!(source.starts_with("pub fnc main(): int { return "));

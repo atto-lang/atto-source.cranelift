@@ -6,7 +6,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 fn case(bytes: &[u8], mode: &str, args: &[&str], diagnostic: &str) {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "orescranelift-admission-{}-{id}.ores", std::process::id()
+        "orescranelift-admission-{}-{id}.ores",
+        std::process::id()
     ));
     std::fs::write(&path, bytes).expect("write isolated source fixture");
     let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
@@ -27,8 +28,12 @@ fn case(bytes: &[u8], mode: &str, args: &[&str], diagnostic: &str) {
 
 #[test]
 fn invalid_utf8_is_rejected_before_frontend_or_jit() {
-    case(b"fnc main():int{return 42;} // \xff", "run", &[],
-        "source is not valid UTF-8");
+    case(
+        b"fnc main():int{return 42;} // \xff",
+        "run",
+        &[],
+        "source is not valid UTF-8",
+    );
 }
 
 #[test]
@@ -43,19 +48,29 @@ fn malformed_runtime_i64_is_not_silently_coerced() {
     let source = b"fnc main(x:int):int{return x+1;}";
     for invalid in ["+1", "1_0", "18446744073709551616", "1.5"] {
         // Rust's i64 parser accepts +1, so do not classify it as an error.
-        if invalid == "+1" { continue; }
+        if invalid == "+1" {
+            continue;
+        }
         case(source, "run", &[invalid], "invalid i64 argument");
     }
 }
 
 #[test]
 fn ir_mode_must_refuse_runtime_arguments() {
-    case(b"fnc main(x:int):int{return x+1;}", "ir", &["1"],
-        "ir mode does not accept arguments");
+    case(
+        b"fnc main(x:int):int{return x+1;}",
+        "ir",
+        &["1"],
+        "ir mode does not accept arguments",
+    );
 }
 
 #[test]
 fn runtime_arity_is_checked_before_native_execution() {
-    case(b"fnc main(x:int):int{return x+1;}", "run", &[],
-        "runtime argument count mismatch");
+    case(
+        b"fnc main(x:int):int{return x+1;}",
+        "run",
+        &[],
+        "runtime argument count mismatch",
+    );
 }

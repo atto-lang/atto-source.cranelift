@@ -52,7 +52,10 @@ fn rejects_every_unsupported_nominal_declaration_without_output() {
         for mode in ["run", "ir"] {
             let output = run_source(source, mode);
             assert!(!output.status.success(), "{mode} accepted {source}");
-            assert!(output.stdout.is_empty(), "{mode} emitted output for {source}");
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted output for {source}"
+            );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 stderr.contains("DECL_KIND_UNSUPPORTED"),
