@@ -199,12 +199,18 @@ fn rejected_removed_modulo_operator() {
         ("fnc main():int{return 8%3*2;}", &[][..]),
         ("fnc main():int{return 20%6%3;}", &[][..]),
         ("fnc main():int{return 8-7%3*2;}", &[][..]),
-        ("fnc main(x:int):int{return x%-1;}", &["-9223372036854775808"][..]),
+        (
+            "fnc main(x:int):int{return x%-1;}",
+            &["-9223372036854775808"][..],
+        ),
         ("fnc main(x:int):int{return x%0;}", &["7"][..]),
         ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
         ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
         ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
-        ("fnc main(x:int):int{return (x+1)%-1;}", &["9223372036854775807"][..]),
+        (
+            "fnc main(x:int):int{return (x+1)%-1;}",
+            &["9223372036854775807"][..],
+        ),
     ] {
         fixture(source, args, false, "");
     }
