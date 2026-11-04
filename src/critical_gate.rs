@@ -45,7 +45,7 @@ pub struct CriticalGate {
 impl CriticalGate {
     pub fn new() -> Result<Self, String> {
         let old = NEXT_SCOPE
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
             .map_err(|_| "critical gate scope ids exhausted".to_owned())?;
         Ok(Self {
             scope: old + 1,
@@ -55,9 +55,13 @@ impl CriticalGate {
 
     fn next_ticket(&self, state: &mut State) -> Result<Ticket, String> {
         state.issued = state
-            .issued.checked_add(1)
+            .issued
+            .checked_add(1)
             .ok_or_else(|| "critical ticket sequence exhausted".to_owned())?;
-        Ok(Ticket { scope: self.scope, sequence: state.issued })
+        Ok(Ticket {
+            scope: self.scope,
+            sequence: state.issued,
+        })
     }
 
     /// Immediate nonblocking attempt. Never queues or waits on the metadata
@@ -78,7 +82,9 @@ impl CriticalGate {
 
     /// Admission never waits for the current guest critical body.
     pub fn request(&self) -> Result<Request, String> {
-        let mut state = self.state.lock()
+        let mut state = self
+            .state
+            .lock()
             .map_err(|_| "critical gate metadata poisoned")?;
         if state.retired {
             return Err("critical gate retired".into());
@@ -90,20 +96,27 @@ impl CriticalGate {
         let ticket = self.next_ticket(&mut state)?;
         if immediate {
             state.owner = Some(ticket);
-            Ok(Request { ticket, admission: Admission::Acquired })
+            Ok(Request {
+                ticket,
+                admission: Admission::Acquired,
+            })
         } else {
             state.waiting.push_back(ticket);
-            Ok(Request { ticket, admission: Admission::Queued })
+            Ok(Request {
+                ticket,
+                admission: Admission::Queued,
+            })
         }
     }
 
     /// Release owner with FIFO handoff or cancel queued ticket. Returns the
     /// successor token to enqueue *outside* the gate. Never executes guest code.
     pub fn release(&self, ticket: Ticket) -> Result<Option<Ticket>, String> {
-        let mut state = self.state.lock()
+        let mut state = self
+            .state
+            .lock()
             .map_err(|_| "critical gate metadata poisoned")?;
-        if ticket.scope != self.scope || ticket.sequence == 0 ||
-            ticket.sequence > state.issued {
+        if ticket.scope != self.scope || ticket.sequence == 0 || ticket.sequence > state.issued {
             return Err("foreign or invalid critical ticket".into());
         }
         if state.retired {
@@ -113,26 +126,39 @@ impl CriticalGate {
             state.owner = state.waiting.pop_front();
             return Ok(state.owner);
         }
-        if let Some(index) = state.waiting.iter().position(|candidate| *candidate == ticket) {
+        if let Some(index) = state
+            .waiting
+            .iter()
+            .position(|candidate| *candidate == ticket)
+        {
             state.waiting.remove(index);
         }
         Ok(None)
     }
 
     pub fn holds(&self, ticket: Ticket) -> Result<bool, String> {
-        let state = self.state.lock().map_err(|_| "critical gate metadata poisoned")?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "critical gate metadata poisoned")?;
         Ok(!state.retired && ticket.scope == self.scope && state.owner == Some(ticket))
     }
 
     pub fn waiting(&self) -> Result<usize, String> {
-        let state = self.state.lock().map_err(|_| "critical gate metadata poisoned")?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "critical gate metadata poisoned")?;
         Ok(state.waiting.len())
     }
 
     /// Caller must first quiesce any physically executing critical body.
     /// This denies stale admission but cannot interrupt an active mutation.
     pub fn retire(&self) -> Result<(), String> {
-        let mut state = self.state.lock().map_err(|_| "critical gate metadata poisoned")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "critical gate metadata poisoned")?;
         state.retired = true;
         state.owner = None;
         state.waiting.clear();
@@ -180,7 +206,10 @@ mod tests {
         assert!(gate.request().is_err());
         let replacement = CriticalGate::new().unwrap();
         assert!(!replacement.holds(next.ticket).unwrap());
-        assert_eq!(replacement.request().unwrap().admission, Admission::Acquired);
+        assert_eq!(
+            replacement.request().unwrap().admission,
+            Admission::Acquired
+        );
     }
 
     #[test]
@@ -199,7 +228,9 @@ mod tests {
         let owner = gate.request().unwrap();
         let successor = gate.request().unwrap();
         let copy = Arc::clone(&gate);
-        let handed = std::thread::spawn(move || copy.release(owner.ticket).unwrap()).join().unwrap();
+        let handed = std::thread::spawn(move || copy.release(owner.ticket).unwrap())
+            .join()
+            .unwrap();
         assert_eq!(handed, Some(successor.ticket));
         assert!(gate.holds(successor.ticket).unwrap());
         let _ = gate.release(successor.ticket).unwrap();
