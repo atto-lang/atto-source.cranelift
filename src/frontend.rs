@@ -487,6 +487,9 @@ impl<'a> Parser<'a> {
                 "E_SUSPENDS_UNSUPPORTED: stage-0 lacks continuation and effect lowering".into(),
             );
         }
+        if self.current == Token::Word("suspend") {
+            return Err("E_SUSPENDS_UNSUPPORTED: suspends requires continuation lowering".into());
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
@@ -905,5 +908,43 @@ mod tests {
                 .is_err()
         );
         assert!(parse("fnc main():int{return 42;} // comment\r").is_ok());
+    }
+    #[test]
+    fn critical_suspends_v1_fails_closed_without_runtime_lowering() {
+        for (source, expected) in [
+            ("async fnc main():int{return 1;}", "E_CALLABLE_MODIFIERS"),
+            (
+                "suspends fnc main():int{return 1;}",
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                "suspend fnc main():int{return 1;}",
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                "critical fnc main():int{return 1;}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "suspends critical fnc main():int{return 1;}",
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                "fnc main():int{critical{return 1;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{try critical{return 1;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert!(parse("// critical suspends async\nfnc main():int{return 7;}").is_ok());
+        let scalar = parse("fnc main(critical_count:int):int{return critical_count+1;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[41]), Ok(42));
+        let scalar = parse("fnc main(suspend_count:int):int{return suspend_count+1;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[41]), Ok(42));
     }
 }

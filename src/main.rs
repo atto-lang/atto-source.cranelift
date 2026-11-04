@@ -1,4 +1,5 @@
 mod backend;
+pub mod critical_gate;
 mod frontend;
 mod state_region;
 pub mod uhl1;
