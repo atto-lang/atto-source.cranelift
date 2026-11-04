@@ -342,6 +342,14 @@ impl<'a> Parser<'a> {
 }
 
 fn has_actor_pubsub_surface(text: &str) -> bool {
+    has_unsupported_actor_surface(text, false)
+}
+
+fn has_actor_pipe_surface(text: &str) -> bool {
+    has_unsupported_actor_surface(text, true)
+}
+
+fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     // Stage-0 stays scalar-only. Detect the pub/sub surface before ordinary
     // parsing so it cannot accidentally reach CLIF emission as the frontend
     // grows. Comments and quoted literals are inert.
@@ -362,6 +370,8 @@ fn has_actor_pubsub_surface(text: &str) -> bool {
     let mut index = 0usize;
     let mut previous: Option<Tok<'_>> = None;
     let mut before_previous: Option<Tok<'_>> = None;
+    let mut third_previous: Option<Tok<'_>> = None;
+    let mut pending_pipe = false;
 
     while index < bytes.len() {
         let byte = bytes[index];
@@ -445,10 +455,42 @@ fn has_actor_pubsub_surface(text: &str) -> bool {
             (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
             _ => false,
         };
-        if found {
+        if !detect_pipe && found {
             return true;
         }
+        if detect_pipe {
+            let static_dot = matches!(
+                (before_previous, previous, current),
+                (Some(Tok::Id("ActorUtils")), Some(Tok::Sym(b'.')), Tok::Id("pipe"))
+            );
+            let static_colon = matches!(
+                (third_previous, before_previous, previous, current),
+                (Some(Tok::Id("ActorUtils")), Some(Tok::Sym(b':')),
+                 Some(Tok::Sym(b':')), Tok::Id("pipe"))
+            );
+            let right_start = match current {
+                Tok::Id(word) => !matches!(
+                    word, "then" | "fi" | "end" | "else" | "as" | "case" | "over"
+                ),
+                Tok::Sym(b'(' | b'[') => true,
+                _ => false,
+            };
+            if static_dot || static_colon || (pending_pipe && right_start) {
+                return true;
+            }
+            let left_end = match previous {
+                Some(Tok::Id(word)) => !matches!(
+                    word, "fnc" | "routine" | "method" | "define" | "pub"
+                        | "static" | "val" | "let" | "const" | "final"
+                        | "return" | "spawn" | "pipe" | "as" | "case"
+                ),
+                Some(Tok::Sym(b')' | b']' | b'}')) => true,
+                _ => false,
+            };
+            pending_pipe = matches!(current, Tok::Id("pipe")) && left_end;
+        }
 
+        third_previous = before_previous;
         before_previous = previous;
         previous = Some(current);
     }
@@ -459,6 +501,9 @@ fn has_actor_pubsub_surface(text: &str) -> bool {
 pub fn parse(text: &str) -> Result<Program, String> {
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
+    }
+    if has_actor_pipe_surface(text) {
+        return Err("native actor pipe source lowering unsupported".into());
     }
     Parser::new(text)?.program()
 }
@@ -514,6 +559,31 @@ mod tests {
         assert!(parse("fnc main(runtime_pubsub:int):int{return runtime_pubsub;}").is_ok());
 
 
+    }
+
+    #[test]
+    fn actor_pipe_preflight_rejects_source_without_misreading_functional_forward() {
+        for src in [
+            "return spawn Source() pipe spawn Sink();",
+            "return ActorUtils::pipe(spawn Source(), spawn Sink());",
+            "return ActorUtils.pipe(spawn Source(), spawn Sink());",
+            "return first pipe second;",
+        ] {
+            assert!(has_actor_pipe_surface(src), "must reject actor pipe: {src}");
+            assert!(parse(src).unwrap_err().contains(
+                "native actor pipe source lowering unsupported"));
+        }
+        for inert in [
+            "fnc pipe(x:int):int{return x;}",
+            "fnc main(pipe:int):int{return pipe+1;}",
+            "fnc main():int{return 42;} // spawn A() pipe spawn B()",
+            r#"fnc main():int{return 42;} "ActorUtils::pipe(A,B)""#,
+            "fnc main(x:int):int{return x |> add_one;}",
+        ] {
+            assert!(!has_actor_pipe_surface(inert), "must ignore inert: {inert}");
+        }
+        assert!(parse("fnc pipe(x:int):int{return x;}").is_ok(),
+            "a contextual pipe operator must not ban functions named pipe");
     }
 
     #[test]
