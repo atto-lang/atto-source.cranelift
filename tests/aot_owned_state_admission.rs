@@ -55,32 +55,29 @@ fn unsupported_state_and_actor_source_never_emits_ir_or_executes() {
     for (index, (source_text, expected)) in [
         (
             "@Inject(MutableStateContainer())\ndefine class Counter as\nend",
-            "source annotations require typed state-provider and ownership lowering",
+            "STATE_INJECTION_UNSUPPORTED:",
         ),
         (
             "@StateBacked(MutableStateContainer(scope = #instance))\ndefine class Counter as\nend",
-            "source annotations require typed state-provider and ownership lowering",
+            "STATE_INJECTION_UNSUPPORTED:",
         ),
         (
             "@MutableStateContainer()\ndefine class Counter as\nend",
-            "source annotations require typed state-provider and ownership lowering",
+            "STATE_INJECTION_UNSUPPORTED:",
         ),
         (
             "define state container Counter as\nend",
-            "state containers and actor declarations require typed ownership",
+            "DECL_KIND_UNSUPPORTED:",
         ),
         (
             "define pub state container Counter as\nend",
-            "state containers and actor declarations require typed ownership",
+            "DECL_KIND_UNSUPPORTED:",
         ),
         (
             "define virtual actor Counter as\nend",
             "state containers and actor declarations require typed ownership",
         ),
-        (
-            "define pub actor Counter as\nend",
-            "state containers and actor declarations require typed ownership",
-        ),
+        ("define pub actor Counter as\nend", "DECL_KIND_UNSUPPORTED:"),
         (
             "fnc main():int{return rt borrow 1;}",
             "rt ownership operation requires checked ownership lowering",

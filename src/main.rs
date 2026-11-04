@@ -1,21 +1,44 @@
 mod backend;
 mod frontend;
+mod state_region;
+pub mod uhl1;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
     let mut argv = std::env::args();
     let _ = argv.next();
-    let mode = argv
-        .next()
-        .ok_or("usage: orescranelift run|ir <file.ores> [i64 args...]")?;
+    let mode = argv.next().ok_or(
+        "usage: orescranelift run|ir <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+    )?;
+    if mode == "hotload-capabilities" {
+        if argv.next().is_some() {
+            return Err("hotload-capabilities accepts no source or guest arguments".into());
+        }
+        println!(
+            "{}",
+            uhl1::query(uhl1::ABI_VERSION).map_err(|_| "unsupported UHL-1 interface version")?
+        );
+        return Ok(());
+    }
     // AOT may never silently fall back to the in-process stage-0 JIT.
     if mode == "aot" || mode == "full-aot" {
         return Err("full AOT object/executable emission is not implemented by the Cranelift scalar backend; refusing JIT fallback".into());
     }
     if mode != "run" && mode != "ir" {
-        return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
+        return Err("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = argv.next().ok_or("missing source file")?;
+    // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
+    // argv BEFORE opening files, parsing source or allocating executable
+    // memory. Reading at most five elements also avoids collecting an
+    // unbounded attacker-supplied argument vector.
+    let supplied: Vec<String> = argv.by_ref().take(5).collect();
+    if mode == "ir" && !supplied.is_empty() {
+        return Err("ir mode does not accept arguments".into());
+    }
+    if supplied.len() > 4 {
+        return Err("too many runtime arguments".into());
+    }
     // Nonblocking admission is essential before descriptor-level validation:
     // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
     let mut options = std::fs::OpenOptions::new();
@@ -23,7 +46,19 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        // Reject a symlink leaf to prevent a caller-controlled source path from
+        // resolving to a different file (or a special device) at open time.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    // Reject a final-component symlink before opening. On Unix O_NOFOLLOW
+    // closes the check/open race, including a symlink swapped in afterward.
+    // Intermediate path-component symlinks remain outside this boundary.
+    if std::fs::symlink_metadata(&path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("source must be a regular file (symlinks forbidden)".into());
     }
     let file = options.open(&path).map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
@@ -38,15 +73,13 @@ fn run() -> Result<(), String> {
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
     let parsed = frontend::parse(source)?;
-    let values = argv
+    let values = supplied
+        .into_iter()
         .map(|v| {
             v.parse::<i64>()
                 .map_err(|_| "invalid i64 argument".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if mode == "ir" && !values.is_empty() {
-        return Err("ir mode does not accept arguments".into());
-    }
     if mode == "run" && values.len() != parsed.parameters.len() {
         return Err("runtime argument count mismatch".into());
     }
