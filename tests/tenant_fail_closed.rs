@@ -10,7 +10,8 @@ fn reject_cli(mode: &str, source: &str) {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "orescranelift-tenant-negative-{}-{}.ores",
-        std::process::id(), id
+        std::process::id(),
+        id
     ));
     std::fs::write(&path, source).expect("write fixture");
     let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
@@ -19,8 +20,14 @@ fn reject_cli(mode: &str, source: &str) {
         .output()
         .expect("run native compiler");
     std::fs::remove_file(&path).expect("remove fixture");
-    assert!(!out.status.success(), "{mode} admitted unsupported tenant source: {source}");
-    assert!(out.stdout.is_empty(), "{mode} emitted native guest result/IR on refusal: {source}");
+    assert!(
+        !out.status.success(),
+        "{mode} admitted unsupported tenant source: {source}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{mode} emitted native guest result/IR on refusal: {source}"
+    );
     assert!(
         !out.stderr.is_empty(),
         "{mode} failed without an explicit diagnostic: {source}"
@@ -36,7 +43,6 @@ fn reject_cli(mode: &str, source: &str) {
     );
 }
 
-
 #[test]
 fn scalar_positive_controls_prove_native_run_and_ir_still_work() {
     // Negatives alone are not semantic evidence: a compiler that rejects
@@ -44,22 +50,29 @@ fn scalar_positive_controls_prove_native_run_and_ir_still_work() {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "orescranelift-scalar-positive-{}-{}.ores",
-        std::process::id(), id
+        std::process::id(),
+        id
     ));
-    std::fs::write(&path, "fnc main():int{return (6*7);}\n")
-        .expect("write positive fixture");
+    std::fs::write(&path, "fnc main():int{return (6*7);}\n").expect("write positive fixture");
     for mode in ["run", "ir"] {
         let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
             .arg(mode)
             .arg(&path)
             .output()
             .expect("execute native compiler positive control");
-        assert!(out.status.success(), "{mode}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(out.stderr.is_empty(), "{mode}: unexpected diagnostic");
         if mode == "run" {
             assert_eq!(out.stdout, b"42\n", "native guest scalar result");
         } else {
-            assert!(!out.stdout.is_empty(), "successful native IR must not be empty");
+            assert!(
+                !out.stdout.is_empty(),
+                "successful native IR must not be empty"
+            );
         }
     }
     std::fs::remove_file(&path).expect("remove positive fixture");
@@ -171,7 +184,5 @@ fn bounded_arguments_rejected_before_source_open_and_jit() {
         .expect("invoke native compiler");
     assert!(!ir.status.success());
     assert!(ir.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&ir.stderr).contains("ir mode does not accept arguments")
-    );
+    assert!(String::from_utf8_lossy(&ir.stderr).contains("ir mode does not accept arguments"));
 }
