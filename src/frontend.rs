@@ -95,6 +95,27 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let first = b[self.pos];
         self.pos += 1;
+        // Stage-0 cannot bind injected state lifetimes or borrow authority.
+        // Surface a deliberate diagnostic before any source can be compiled.
+        // Inspect only lexed source, so comment text cannot trigger admission.
+        if first == b'@' {
+            let mut end = self.pos;
+            while end < b.len() && (b[end].is_ascii_alphanumeric() || b[end] == b'_') {
+                end += 1;
+            }
+            let name = &self.input[self.pos..end];
+            if matches!(
+                name,
+                "Inject" | "StateBacked" | "MutableStateContainer" | "StateContainer"
+            ) {
+                return Err(format!(
+                    "STATE_INJECTION_UNSUPPORTED: @{name} requires owned state, typed borrow checking and lifecycle lowering"
+                ));
+            }
+            return Err(format!(
+                "ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"
+            ));
+        }
         if first.is_ascii_alphabetic() || first == b'_' {
             while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
             {
