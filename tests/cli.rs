@@ -634,3 +634,25 @@ fn orie_portable_checked_scalar_native_jit() {
         "expected a checked-overflow diagnosis, got: {diagnostic}"
     );
 }
+
+#[test]
+fn reserved_actor_control_and_ownership_parameters_never_execute() {
+    // This stage-0 JIT cannot implement actor supervision or ownership guards.
+    // Reserved operation words must never be accepted as scalar aliases.
+    for keyword in [
+        "rt", "panic", "raise", "throw", "recover", "defer", "spawn", "stop", "select", "match",
+        "switch", "suspend", "share", "borrow", "take", "copy", "gpu", "cpu", "isoactor", "let",
+        "val", "const", "final",
+    ] {
+        let source = format!("fnc main({keyword}:int):int{{return {keyword};}}");
+        fixture(&source, &["42"], false, "");
+    }
+}
+
+#[test]
+fn snake_case_parameter_names_containing_reserved_words_still_execute() {
+    for name in ["rt_count", "panic_count", "spawn_count", "gpu_cycles"] {
+        let source = format!("fnc main({name}:int):int{{return {name};}}");
+        fixture(&source, &["42"], true, "42\n");
+    }
+}

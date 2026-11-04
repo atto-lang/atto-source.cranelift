@@ -375,6 +375,28 @@ impl<'a> Parser<'a> {
                         | "async"
                         | "await"
                         | "actor"
+                        | "isoactor"
+                        | "panic"
+                        | "raise"
+                        | "throw"
+                        | "recover"
+                        | "defer"
+                        | "spawn"
+                        | "stop"
+                        | "select"
+                        | "match"
+                        | "switch"
+                        | "suspend"
+                        | "let"
+                        | "val"
+                        | "const"
+                        | "final"
+                        | "share"
+                        | "borrow"
+                        | "take"
+                        | "copy"
+                        | "gpu"
+                        | "cpu"
                 ) || self.parameters.contains(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
@@ -513,6 +535,29 @@ mod tests {
         }
         assert!(parse("fnc main():int{return 7;} // Option Result trap").is_ok());
     }
+    #[test]
+    fn actor_control_ownership_keywords_are_not_scalar_parameters() {
+        for keyword in [
+            "rt", "panic", "raise", "throw", "recover", "defer", "spawn", "stop", "select",
+            "match", "switch", "suspend", "share", "borrow", "take", "copy", "gpu", "cpu",
+            "isoactor", "let", "val", "const", "final",
+        ] {
+            let source = format!("fnc main({keyword}:int):int{{return {keyword};}}");
+            assert!(
+                parse(&source).is_err(),
+                "{keyword} rebound into scalar parameter"
+            );
+        }
+        // Valid snake_case identifiers containing reserved substrings remain legal.
+        for name in ["rt_count", "panic_count", "spawn_count", "gpu_cycles"] {
+            let source = format!("fnc main({name}:int):int{{return {name};}}");
+            let parsed = parse(&source).unwrap();
+            assert_eq!(eval(&parsed.result, &[42]), Ok(42));
+        }
+        let ownership = parse("fnc main():int{return rt mut share;}").unwrap_err();
+        assert!(ownership.contains("SharedMutex"), "{ownership}");
+    }
+
     #[test]
     fn fail_closed() {
         for source in [
