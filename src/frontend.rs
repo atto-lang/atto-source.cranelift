@@ -443,13 +443,15 @@ mod tests {
     #[test]
     fn actor_control_ownership_keywords_are_not_scalar_parameters() {
         for keyword in [
-            "rt", "panic", "raise", "throw", "recover", "defer",
-            "spawn", "stop", "select", "match", "switch", "suspend",
-            "share", "borrow", "take", "copy", "gpu", "cpu",
+            "rt", "panic", "raise", "throw", "recover", "defer", "spawn", "stop", "select",
+            "match", "switch", "suspend", "share", "borrow", "take", "copy", "gpu", "cpu",
             "isoactor", "let", "val", "const", "final",
         ] {
             let source = format!("fnc main({keyword}:int):int{{return {keyword};}}");
-            assert!(parse(&source).is_err(), "{keyword} rebound into scalar parameter");
+            assert!(
+                parse(&source).is_err(),
+                "{keyword} rebound into scalar parameter"
+            );
         }
         // Valid snake_case identifiers containing reserved substrings remain legal.
         for name in ["rt_count", "panic_count", "spawn_count", "gpu_cycles"] {
