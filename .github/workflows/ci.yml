@@ -51,5 +51,7 @@ jobs:
       - name: Executable source smoke
         run: |
           set -euo pipefail
-          printf 'fnc main(x:int):int{return (x+2)*3;}\n' > "$RUNNER_TEMP/smoke.ores"
-          test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke.ores" 12)" = 42
+          printf 'fnc main(x:int):int{return (x+2)*3;}\n' > "$RUNNER_TEMP/smoke.atto"
+          test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke.atto" 12)" = 42
+          printf 'fnc main(x:int):int{return (x+2)*3;}\n' > "$RUNNER_TEMP/smoke-legacy.ores"
+          test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke-legacy.ores" 12)" = 42

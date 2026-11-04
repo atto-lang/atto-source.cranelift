@@ -38,7 +38,10 @@ fn fixture(name: &str, expected: Option<&str>) {
                 name,
                 String::from_utf8_lossy(&ir.stderr)
             );
-            assert!(!ir.stdout.is_empty(), "IR emitted no native code for {name}");
+            assert!(
+                !ir.stdout.is_empty(),
+                "IR emitted no native code for {name}"
+            );
             assert!(
                 run.status.success(),
                 "JIT rejected {}: {}",
@@ -90,8 +93,7 @@ fn fixture(name: &str, expected: Option<&str>) {
                     "{phase} wrong rejection category for {name}: {diagnostic}"
                 );
                 assert!(
-                    !diagnostic.contains("panicked at")
-                        && !diagnostic.contains("stack backtrace"),
+                    !diagnostic.contains("panicked at") && !diagnostic.contains("stack backtrace"),
                     "{phase} compiler crashed instead of rejecting {name}: {diagnostic}"
                 );
             }
