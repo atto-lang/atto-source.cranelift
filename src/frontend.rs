@@ -490,7 +490,38 @@ impl<'a> Parser<'a> {
         if self.current == Token::Word("suspend") {
             return Err("E_SUSPENDS_UNSUPPORTED: suspends requires continuation lowering".into());
         }
+        // The Cranelift stage-0 JIT has no actor heap, mailbox,
+        // supervisor/control lane, nominal superclass layout or trait
+        // witness dispatch. Recognize actor prefixes explicitly rather
+        // than accidentally accepting them as scalar declarations or
+        // returning an unrelated "expected fnc" syntax diagnostic.
+        if matches!(
+            self.current,
+            Token::Word("actor")
+                | Token::Word("isoactor")
+                | Token::Word("shared")
+                | Token::Word("untrusted")
+                | Token::Word("serial")
+                | Token::Word("http")
+                | Token::Word("tcp")
+                | Token::Word("websocket")
+                | Token::Word("unary")
+                | Token::Word("stream")
+                | Token::Word("abstract")
+                | Token::Word("transform")
+                | Token::Word("pipe")
+        ) {
+            return Err(
+                "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
+            );
+        }
         self.expect(Token::Word("fnc"))?;
+        if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
+            return Err(
+                "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
+            );
+        }
+
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
         if !self.take(Token::Punct(b')'))? {
