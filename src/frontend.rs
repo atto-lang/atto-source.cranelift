@@ -393,10 +393,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             index += 2;
             let mut depth = 1usize;
             while index < bytes.len() && depth != 0 {
-                if index + 1 < bytes.len()
-                    && bytes[index] == b'/'
-                    && bytes[index + 1] == b'*'
-                {
+                if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
                     depth += 1;
                     index += 2;
                 } else if index + 1 < bytes.len()
@@ -446,9 +443,11 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             // Fail closed on planned runtime-wide, capability and group syntax,
             // including forms not covered by the original ActorGroup fixtures.
             (_, Some(Tok::Id("runtime_pubsub")), Tok::Sym(b'.')) => true,
-            (_, Some(Tok::Id(
-                "ActorGroup" | "TopicPublisher" | "TopicSubscriber" | "PubSub"
-            )), Tok::Sym(b'<')) => true,
+            (
+                _,
+                Some(Tok::Id("ActorGroup" | "TopicPublisher" | "TopicSubscriber" | "PubSub")),
+                Tok::Sym(b'<'),
+            ) => true,
             (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
             (_, Some(Tok::Sym(b'.')), Tok::Id("pubsub")) => true,
             (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
@@ -461,16 +460,25 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         if detect_pipe {
             let static_dot = matches!(
                 (before_previous, previous, current),
-                (Some(Tok::Id("ActorUtils")), Some(Tok::Sym(b'.')), Tok::Id("pipe"))
+                (
+                    Some(Tok::Id("ActorUtils")),
+                    Some(Tok::Sym(b'.')),
+                    Tok::Id("pipe")
+                )
             );
             let static_colon = matches!(
                 (third_previous, before_previous, previous, current),
-                (Some(Tok::Id("ActorUtils")), Some(Tok::Sym(b':')),
-                 Some(Tok::Sym(b':')), Tok::Id("pipe"))
+                (
+                    Some(Tok::Id("ActorUtils")),
+                    Some(Tok::Sym(b':')),
+                    Some(Tok::Sym(b':')),
+                    Tok::Id("pipe")
+                )
             );
             let right_start = match current {
                 Tok::Id(word) => !matches!(
-                    word, "then" | "fi" | "end" | "else" | "as" | "case" | "over"
+                    word,
+                    "then" | "fi" | "end" | "else" | "as" | "case" | "over"
                 ),
                 Tok::Sym(b'(' | b'[') => true,
                 _ => false,
@@ -480,9 +488,22 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             }
             let left_end = match previous {
                 Some(Tok::Id(word)) => !matches!(
-                    word, "fnc" | "routine" | "method" | "define" | "pub"
-                        | "static" | "val" | "let" | "const" | "final"
-                        | "return" | "spawn" | "pipe" | "as" | "case"
+                    word,
+                    "fnc"
+                        | "routine"
+                        | "method"
+                        | "define"
+                        | "pub"
+                        | "static"
+                        | "val"
+                        | "let"
+                        | "const"
+                        | "final"
+                        | "return"
+                        | "spawn"
+                        | "pipe"
+                        | "as"
+                        | "case"
                 ),
                 Some(Tok::Sym(b')' | b']' | b'}')) => true,
                 _ => false,
@@ -533,32 +554,38 @@ mod tests {
     #[test]
     fn actor_pubsub_preflight_ignores_inert_text_and_accepts_spacing() {
         assert!(!has_actor_pubsub_surface(
-            "fnc main():int{return 42;} // actor.group(x) Topic<String>"));
+            "fnc main():int{return 42;} // actor.group(x) Topic<String>"
+        ));
         assert!(!has_actor_pubsub_surface(
-            "fnc main():int{return 42;} /* actor . group (x) .topic<String> */"));
+            "fnc main():int{return 42;} /* actor . group (x) .topic<String> */"
+        ));
         assert!(!has_actor_pubsub_surface(
-            r#"fnc main():int{return 42;} "actor.group(x) Topic<String>""#));
+            r#"fnc main():int{return 42;} "actor.group(x) Topic<String>""#
+        ));
         assert!(has_actor_pubsub_surface("actor . group ( x )"));
         assert!(has_actor_pubsub_surface("value . topic < String > (x)"));
         assert!(has_actor_pubsub_surface("Topic < String >"));
         assert!(has_actor_pubsub_surface("Subscription < String >"));
         assert!(has_actor_pubsub_surface(
-            "runtime_pubsub.define_topic<PriceTick>(#prices)"));
+            "runtime_pubsub.define_topic<PriceTick>(#prices)"
+        ));
         assert!(has_actor_pubsub_surface("TopicPublisher < PriceTick >"));
         assert!(has_actor_pubsub_surface("TopicSubscriber < PriceTick >"));
         assert!(has_actor_pubsub_surface("my_group . pubsub ( )"));
         assert!(!has_actor_pubsub_surface(
-            "fnc main():int{return 42;} /* TopicPublisher runtime_pubsub */"));
+            "fnc main():int{return 42;} /* TopicPublisher runtime_pubsub */"
+        ));
         assert!(!has_actor_pubsub_surface(
-            "fnc main():int{return 42;} // TopicSubscriber\\n"));
+            "fnc main():int{return 42;} // TopicSubscriber\\n"
+        ));
         assert!(!has_actor_pubsub_surface(
-            "fnc main(TopicPublisher:int):int{return TopicPublisher;}"));
+            "fnc main(TopicPublisher:int):int{return TopicPublisher;}"
+        ));
         assert!(!has_actor_pubsub_surface(
-            "fnc main(runtime_pubsub:int):int{return runtime_pubsub;}"));
+            "fnc main(runtime_pubsub:int):int{return runtime_pubsub;}"
+        ));
         assert!(parse("fnc main(TopicPublisher:int):int{return TopicPublisher;}").is_ok());
         assert!(parse("fnc main(runtime_pubsub:int):int{return runtime_pubsub;}").is_ok());
-
-
     }
 
     #[test]
@@ -570,8 +597,11 @@ mod tests {
             "return first pipe second;",
         ] {
             assert!(has_actor_pipe_surface(src), "must reject actor pipe: {src}");
-            assert!(parse(src).unwrap_err().contains(
-                "native actor pipe source lowering unsupported"));
+            assert!(
+                parse(src)
+                    .unwrap_err()
+                    .contains("native actor pipe source lowering unsupported")
+            );
         }
         for inert in [
             "fnc pipe(x:int):int{return x;}",
@@ -582,8 +612,10 @@ mod tests {
         ] {
             assert!(!has_actor_pipe_surface(inert), "must ignore inert: {inert}");
         }
-        assert!(parse("fnc pipe(x:int):int{return x;}").is_ok(),
-            "a contextual pipe operator must not ban functions named pipe");
+        assert!(
+            parse("fnc pipe(x:int):int{return x;}").is_ok(),
+            "a contextual pipe operator must not ban functions named pipe"
+        );
     }
 
     #[test]
