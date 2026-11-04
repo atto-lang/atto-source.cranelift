@@ -12,14 +12,18 @@ impl Fixture {
     fn new(source: &str) -> Self {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "orescranelift-continuation-denial-{}-{}.ores", std::process::id(), n
+            "orescranelift-continuation-denial-{}-{}.ores",
+            std::process::id(),
+            n
         ));
         std::fs::write(&path, source).expect("write isolated source fixture");
         Self(path)
     }
 }
 impl Drop for Fixture {
-    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 fn run(mode: &str, source: &str) -> std::process::Output {
     let file = Fixture::new(source);
@@ -52,11 +56,24 @@ fn unsupported_continuations_fail_closed_in_both_jit_and_ir_modes() {
     for (i, source) in UNSUPPORTED.iter().enumerate() {
         for mode in ["run", "ir"] {
             let out = run(mode, source);
-            assert_eq!(out.status.code(), Some(1), "case {i} {mode}: unsupported source admitted");
-            assert!(out.stdout.is_empty(), "case {i} {mode}: emitted CLIF IR or guest value");
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "case {i} {mode}: unsupported source admitted"
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "case {i} {mode}: emitted CLIF IR or guest value"
+            );
             let err = String::from_utf8_lossy(&out.stderr);
-            assert!(err.contains("orescranelift:"), "case {i} {mode}: missing diagnostic: {err}");
-            assert!(!err.contains("panicked at"), "case {i} {mode}: compiler panic: {err}");
+            assert!(
+                err.contains("orescranelift:"),
+                "case {i} {mode}: missing diagnostic: {err}"
+            );
+            assert!(
+                !err.contains("panicked at"),
+                "case {i} {mode}: compiler panic: {err}"
+            );
         }
     }
 }
@@ -65,6 +82,10 @@ fn unsupported_continuations_fail_closed_in_both_jit_and_ir_modes() {
 fn awaited_words_inside_comments_do_not_block_scalar_guest_execution() {
     let source = "fnc main():int{return 40+2;} // await spawn select actor rt borrow\n";
     let out = run("run", source);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(out.stdout, b"42\n");
 }
