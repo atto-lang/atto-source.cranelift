@@ -75,14 +75,14 @@ fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
     // Integer scalar derivative arithmetic; NOT autograd/tensor execution.
     let source = "fnc main(w:int,x:int,t:int,rate:int):int{return w-rate*(w*x-t)*x;}";
     for (args, expected) in [
-        (["5", "2", "6", "1"], " -3\n"),
+        (["5", "2", "6", "1"], "-3\n"),
         (["3", "1", "5", "1"], "5\n"),
         (["0", "3", "6", "1"], "18\n"),
         (["7", "0", "6", "1"], "7\n"),
     ] {
         let output = support::run_source("run", source.as_bytes(), &args);
         assert_eq!(output.status.code(), Some(0), "scalar native execution failed");
-        assert_eq!(output.stdout, expected.trim_start().as_bytes());
+        assert_eq!(output.stdout, expected.as_bytes());
         assert!(output.stderr.is_empty());
     }
     let overflow = support::run_source("run", source.as_bytes(),
