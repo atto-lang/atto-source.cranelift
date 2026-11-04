@@ -169,3 +169,13 @@ supervisor quiescence and deterministic object drop paths are unavailable.
 Comment-only annotation text remains inert. This is **not** evidence of full
 AOT, zero tracing GC or actor support. The negative gate verifies absence
 of generated IR, guest stdout and build artifacts.
+
+WebSocket, HTTP, TCP and LiveView actor declarations are an explicit
+**unsupported** capability and emit a fail-closed diagnostic before Cranelift
+IR or JIT execution. The CLI test matrix exercises eight declaration shapes
+in both `run` and `ir`, plus unsupported `websocket.listen` calls and
+comment-only positive controls. These tests execute through the native Rust/Cargo integration suite. This negative admission behavior is
+not RFC6455 protocol support, actor ownership, WebSocket guest compilation,
+or parity with Java, LLVM, WASM, Forge or .NET.
+
+
