@@ -160,10 +160,10 @@ fn native_integer_bitxor_source_execution() {
     fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
-        "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
+        "fnc main():int{return Integer.bitXor(7-3,Integer.bitXor(4,2));}",
         &[],
         true,
-        "7\n",
+        "2\n",
     );
     for expression in [
         "Integer.bitXor(9223372036854775807+1,0)",
@@ -181,51 +181,23 @@ fn native_integer_bitxor_source_execution() {
 }
 
 #[test]
-fn native_signed_remainder_literal_divisor() {
-    for (source, args, expected) in [
-        ("fnc main():int{return -7%3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 7%-3;}", &[][..], "1\n"),
-        ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
-        ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
-        (
-            "fnc main(x:int):int{return x%-1;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["9223372036854775807"][..],
-            "9223372036854775807\n",
-        ),
-        ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
+fn removed_remainder_operator_is_rejected_before_guest_execution() {
+    for source in [
+        "fnc main():int{return -7%3;}",
+        "fnc main():int{return 7%-3;}",
+        "fnc main():int{return -7%-3;}",
+        "fnc main():int{return 8%3*2;}",
+        "fnc main():int{return 20%6%3;}",
+        "fnc main():int{return -9223372036854775808%-1;}",
+        "fnc main():int{return 8-7%3*2;}",
+        "fnc main(x:int):int{return x%0;}",
+        "fnc main(x:int,y:int):int{return x%y;}",
+        "fnc main(x:int):int{return x%(1+1);}",
+        "fnc main(x:int):int{return x%-x;}",
+        "fnc main(x:int):int{return x%-9223372036854775809;}",
+        "fnc main():int{return Integer.bitXor(7%3,1);}",
     ] {
-        fixture(source, args, true, expected);
-    }
-    // A -1 divisor must not erase a checked overflow in its numerator.
-    fixture(
-        "fnc main(x:int):int{return (x+1)%-1;}",
-        &["9223372036854775807"],
-        false,
-        "",
-    );
-    for (source, args) in [
-        ("fnc main(x:int):int{return x%0;}", &["7"][..]),
-        ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
-        ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
-        ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775809;}",
-            &["7"][..],
-        ),
-        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
-    ] {
-        fixture(source, args, false, "");
+        fixture(source, &[], false, "");
     }
 }
 
@@ -655,4 +627,252 @@ fn snake_case_parameter_names_containing_reserved_words_still_execute() {
         let source = format!("fnc main({name}:int):int{{return {name};}}");
         fixture(&source, &["42"], true, "42\n");
     }
+}
+
+// Additional compiler-to-native-JIT tests: these check actual Oreslang guest
+// execution and fail-closed negative behavior, not just parser acceptance.
+#[test]
+fn native_integer_precision_matrix_without_f64_conversion() {
+    for (source, expected) in [
+        (
+            "fnc main():int{return 9007199254740993-9007199254740992;}",
+            "1\n",
+        ),
+        (
+            "fnc main():int{return -9007199254740993-(-9007199254740992);}",
+            "-1\n",
+        ),
+        (
+            "fnc main():int{return 9223372036854775807-9223372036854775806;}",
+            "1\n",
+        ),
+        (
+            "fnc main():int{return -9223372036854775808+1;}",
+            "-9223372036854775807\n",
+        ),
+        (
+            "fnc main():int{return 1_000_000_000_000_001-1_000_000_000_000_000;}",
+            "1\n",
+        ),
+        ("fnc main():int{return -(-42);}", "42\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+}
+
+#[test]
+fn native_integer_operator_precedence_matrix() {
+    for (source, expected) in [
+        ("fnc main():int{return 20-5-3;}", "12\n"),
+        ("fnc main():int{return 2+3*4;}", "14\n"),
+        ("fnc main():int{return (2+3)*4;}", "20\n"),
+        ("fnc main():int{return -7*6;}", "-42\n"),
+        ("fnc main():int{return 4*3-2*5;}", "2\n"),
+        ("fnc main():int{return (6-2)*(-7);}", "-28\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+}
+
+#[test]
+fn native_i64_checked_runtime_overflow_matrix() {
+    for (source, args) in [
+        (
+            "fnc main(x:int):int{return x+1;}",
+            &["9223372036854775807"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return -x;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x*2;}",
+            &["4611686018427387904"][..],
+        ),
+        ("fnc main(x:int):int{return x*x;}", &["3037000500"][..]),
+        (
+            "fnc main(x:int):int{return Integer.bitXor(x+1,0);}",
+            &["9223372036854775807"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn syntax_rejections_produce_no_guest_stdout() {
+    for source in [
+        "fnc main():int{return 4^1;}",
+        "fnc main():int{return 4^^1;}",
+        "fnc main():int{return 4/2;}",
+        "fnc main():int{return 4.0;}",
+        "fnc main():float{return 4;}",
+        "fnc main():int{return Integer.pow(3,4);}",
+        "fnc main():int{return Integer.bitXor(3);}",
+        "fnc main():int{return 4;} fnc another():int{return 6;}",
+        "fnc main():int{return 4;} // comment\nunsafe",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn native_entry_parameter_count_and_i64_arguments_fail_closed() {
+    fixture("fnc main(x:int):int{return x;}", &[], false, "");
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["9223372036854775808"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["-9223372036854775809"],
+        false,
+        "",
+    );
+    fixture("fnc main(x:int):int{return x;}", &["not-an-int"], false, "");
+    fixture("fnc main(x:int):int{return x;}", &["42", "43"], false, "");
+    fixture("fnc main(x:int):int{return x;}", &["42"], true, "42\n");
+}
+
+#[test]
+fn native_four_parameter_order_is_stable() {
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a*1000+b*100+c*10+d;}",
+        &["1", "2", "3", "4"],
+        true,
+        "1234\n",
+    );
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a-b-c-d;}",
+        &["100", "20", "10", "5"],
+        true,
+        "65\n",
+    );
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a+b+c+d;}",
+        &["1", "2", "3", "4"],
+        true,
+        "10\n",
+    );
+}
+
+#[test]
+fn native_signed_parameter_extremes_preserve_full_i64() {
+    for (arg, expected) in [
+        ("-9223372036854775808", "-9223372036854775808\n"),
+        ("9223372036854775807", "9223372036854775807\n"),
+        ("-9007199254740993", "-9007199254740993\n"),
+        ("9007199254740993", "9007199254740993\n"),
+        ("0", "0\n"),
+        ("-1", "-1\n"),
+    ] {
+        fixture("fnc main(x:int):int{return x;}", &[arg], true, expected);
+    }
+}
+
+#[test]
+fn malformed_numeric_digit_separators_reject_without_stdout() {
+    for expression in [
+        "1_",
+        "1__0",
+        "9_223__372",
+        "99___99",
+        "-1__0",
+        "-9_223_372_036__854_775_808",
+        "-9223372036854775808_",
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            false,
+            "",
+        );
+    }
+}
+
+#[test]
+fn checked_scalar_arithmetic_rejects_all_overflow_signs() {
+    for (source, args) in [
+        (
+            "fnc main(x:int):int{return x+1;}",
+            &["9223372036854775807"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return -x;}",
+            &["-9223372036854775808"][..],
+        ),
+        ("fnc main(x:int):int{return x*x;}", &["3037000500"][..]),
+        (
+            "fnc main(x:int):int{return 0-x;}",
+            &["-9223372036854775808"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn native_xor_intrinsic_handles_repeated_and_extreme_values() {
+    for (expression, expected) in [
+        ("Integer.bitXor(0,0)", "0\n"),
+        ("Integer.bitXor(-1,-1)", "0\n"),
+        ("Integer.bitXor(7,7)", "0\n"),
+        ("Integer.bitXor(7,0)", "7\n"),
+        ("Integer.bitXor(0,7)", "7\n"),
+        (
+            "Integer.bitXor(9223372036854775807,-1)",
+            "-9223372036854775808\n",
+        ),
+        ("Integer.bitXor(5,Integer.bitXor(3,6))", "0\n"),
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+}
+
+#[test]
+fn commented_out_unsupported_tokens_are_not_guest_source() {
+    fixture(
+        "// unsafe actor invalid % ^ \nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\n",
+    );
+    fixture(
+        "fnc main():int{return 42;} // ^ never parsed",
+        &[],
+        true,
+        "42\n",
+    );
+    fixture(
+        "fnc main():int{return 1;} // ignored \nunsafe",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn oversized_and_deeply_nested_sources_fail_closed() {
+    fixture(&" ".repeat(1024 * 1024 + 1), &[], false, "");
+    let deep = format!(
+        "fnc main():int{{return {}1{};}}",
+        "(".repeat(140),
+        ")".repeat(140)
+    );
+    fixture(&deep, &[], false, "");
 }
