@@ -4,6 +4,112 @@ const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_PARAMS: usize = 4;
 
+// Historical Java v1 Lexer.java keyword inventory (93 spellings), pinned to
+// Git blob bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a.
+// This only rejects reserved names in the narrow scalar parameter grammar.
+// It does not claim parity of native lexer tokens, parser, or guest runtime.
+const JAVA_V1_RESERVED_PARAMETER_NAMES: [&str; 93] = [
+    "abstract",
+    "actor",
+    "arr",
+    "as",
+    "async",
+    "await",
+    "block",
+    "break",
+    "catch",
+    "cb",
+    "class",
+    "conforms",
+    "const",
+    "continue",
+    "contract",
+    "cpu",
+    "def",
+    "default",
+    "defer",
+    "define",
+    "do",
+    "done",
+    "elif",
+    "else",
+    "elseif",
+    "end",
+    "eq",
+    "extends",
+    "false",
+    "fi",
+    "finally",
+    "fnc",
+    "for",
+    "from",
+    "generator",
+    "gpu",
+    "if",
+    "impl",
+    "implements",
+    "import",
+    "interface",
+    "is",
+    "isoactor",
+    "let",
+    "loop",
+    "match",
+    "matches",
+    "module",
+    "mut",
+    "namespace",
+    "nb",
+    "neq",
+    "new",
+    "nlex",
+    "null",
+    "obj",
+    "of",
+    "over",
+    "panic",
+    "private",
+    "pub",
+    "quantum",
+    "raise",
+    "readch",
+    "recover",
+    "return",
+    "routine",
+    "rt",
+    "select",
+    "self",
+    "shared",
+    "spawn",
+    "static",
+    "stop",
+    "struct",
+    "super",
+    "suspends",
+    "switch",
+    "then",
+    "throw",
+    "trait",
+    "trap",
+    "true",
+    "try",
+    "type",
+    "typeof",
+    "types",
+    "untrusted",
+    "val",
+    "void",
+    "while",
+    "writech",
+    "yield",
+];
+
+fn is_java_v1_reserved_parameter_name(name: &str) -> bool {
+    JAVA_V1_RESERVED_PARAMETER_NAMES
+        .binary_search(&name)
+        .is_ok()
+}
+
 fn integer_digits(token: &str) -> Result<String, String> {
     let bytes = token.as_bytes();
     for (i, byte) in bytes.iter().enumerate() {
@@ -28,8 +134,10 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
-    // The divisor is compiler-proven to be a nonzero signed i64 literal.
-    Rem(Box<Expr>, i64),
+    NamedRem(Box<Expr>, Box<Expr>),
+    NamedMod(Box<Expr>, Box<Expr>),
+    NamedPow(Box<Expr>, Box<Expr>),
+    ShiftRight8(Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -81,7 +189,9 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' {
+                // CR-only files are legal source input, so a line comment
+                // must not swallow the following model declaration.
+                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
                     self.pos += 1;
                 }
                 continue;
@@ -95,6 +205,27 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let first = b[self.pos];
         self.pos += 1;
+        // Stage-0 cannot bind injected state lifetimes or borrow authority.
+        // Surface a deliberate diagnostic before any source can be compiled.
+        // Inspect only lexed source, so comment text cannot trigger admission.
+        if first == b'@' {
+            let mut end = self.pos;
+            while end < b.len() && (b[end].is_ascii_alphanumeric() || b[end] == b'_') {
+                end += 1;
+            }
+            let name = &self.input[self.pos..end];
+            if matches!(
+                name,
+                "Inject" | "StateBacked" | "MutableStateContainer" | "StateContainer"
+            ) {
+                return Err(format!(
+                    "STATE_INJECTION_UNSUPPORTED: @{name} requires owned state, typed borrow checking and lifecycle lowering"
+                ));
+            }
+            return Err(format!(
+                "ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"
+            ));
+        }
         if first.is_ascii_alphabetic() || first == b'_' {
             while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
             {
@@ -104,12 +235,61 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Stage-0 has no actor runtime, supervisory CONTROL channel, or
+            // minted ActorRef capability. Reject reserved authority syntax
+            // lexically, including in unconsumed trailing source, before CLIF.
+            // Comments are already skipped above.
+            if matches!(
+                self.current,
+                Token::Word("proxy")
+                    | Token::Word("spawn")
+                    | Token::Word("stop")
+                    | Token::Word("ActorRef")
+                    | Token::Word("ActorId" | "Supervisor" | "SupervisorId" | "SupervisorRef")
+            ) {
+                return Err(
+                    "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
+                );
+            }
+            // Not a semantic type rejection or a successful sum-type compile:
+            // the scalar-only Cranelift backend cannot represent tagged
+            // Option/Result payloads or classify guest trap control effects.
+            // Refuse these reserved constructs before AST/native codegen.
+            if matches!(
+                self.current,
+                Token::Word("Option")
+                    | Token::Word("Result")
+                    | Token::Word("Some")
+                    | Token::Word("None")
+                    | Token::Word("Ok")
+                    | Token::Word("Err")
+                    | Token::Word("trap")
+            ) {
+                return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
+            }
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
-        } else if b"()+-*%{};:,>.".contains(&first) {
+        } else if first == b'@' {
+            // A recognized injection annotation is NOT source support.
+            // Explicitly fail closed before any native JIT emission rather than
+            // accidentally ignoring state-region ownership semantics.
+            let remainder = &b[self.pos..];
+            let intrinsic = b"Inject";
+            let exact = remainder.starts_with(intrinsic)
+                && remainder
+                    .get(intrinsic.len())
+                    .is_none_or(|next| !next.is_ascii_alphanumeric() && *next != b'_');
+            if exact {
+                return Err("@Inject state-container lowering requires verified private regions, scoped borrows and runtime admission; unsupported in Cranelift".into());
+            }
+            return Err(
+                "source annotations require checked compiler lowering; unsupported in Cranelift"
+                    .into(),
+            );
+        } else if b"()+-*{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -185,14 +365,29 @@ impl<'a> Parser<'a> {
                 // must reject before emitting native code.
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
-                self.expect(Token::Word("bitXor"))?;
+                let operation = self.name()?;
+                if !matches!(operation.as_str(), "bitXor" | "rem" | "mod" | "pow") {
+                    return Err(format!("unsupported Integer operation: {operation}"));
+                }
                 self.expect(Token::Punct(b'('))?;
                 let lhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b','))?;
                 let rhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b')'))?;
-                self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
+                let lhs = Box::new(lhs);
+                let rhs = Box::new(rhs);
+                self.node(match operation.as_str() {
+                    "bitXor" => Expr::BitXor(lhs, rhs),
+                    "rem" => Expr::NamedRem(lhs, rhs),
+                    "mod" => Expr::NamedMod(lhs, rhs),
+                    "pow" => Expr::NamedPow(lhs, rhs),
+                    _ => unreachable!(),
+                })
             }
+            Token::Word("critical") | Token::Word("await") | Token::Word("suspends") => Err(
+                "E_CRITICAL_UNSUPPORTED: stage-0 has no critical guard or suspension lowering"
+                    .into(),
+            ),
             Token::Word("rt") => {
                 // Stage-0 has no SharedMutex<T>, shared allocation domain, or
                 // synchronized guard lowering. Never reinterpret this as a
@@ -202,6 +397,15 @@ impl<'a> Parser<'a> {
                     return Err("native rt mut share requires verified SharedMutex<T> capability, guarded lowering and allocation-domain proof; refusing unsynchronized alias".into());
                 }
                 Err("rt ownership operation requires checked ownership lowering".into())
+            }
+            Token::Word("io") => {
+                Err("actor-local io.* requires native actor IR/ABI, generation-fenced ActorContext and bounded async stream lowering; Cranelift stage-0 refuses to emit native code".into())
+            }
+            Token::Word("stdio") => {
+                Err("process stdio is outside the Cranelift stage-0 scalar profile; no actor/process I/O alias is permitted".into())
+            }
+            Token::Word("print") => {
+                Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
                 let index = self
@@ -221,47 +425,43 @@ impl<'a> Parser<'a> {
         }
         let mut lhs = self.atom(depth + 1)?;
         loop {
+            // Checked identity cast on the *proven i64* scalar subset only.
+            // The stage-0 frontend has no runtime type tags: bool, string,
+            // dynamic, nominal, Option/as? and owner-changing casts must
+            // continue to reject before executable code is generated.
+            // Bind more tightly than multiplication, without changing the
+            // underlying i64 value or using an unchecked reinterpretation.
+            if self.current == Token::Word("as") && min_bp <= 5 {
+                self.next()?;
+                if !self.take(Token::Word("int"))? {
+                    return Err("unsupported checked cast target (only int is supported)".into());
+                }
+                continue;
+            }
             let (l_bp, r_bp, op) = match self.current {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
-                Token::Punct(b'%') => (3, 4, b'%'),
+                Token::Punct(b'>') => (0, 1, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
                 break;
             }
             self.next()?;
+            if op == b'>' {
+                self.expect(Token::Punct(b'>'))?;
+            }
             let rhs = self.expr(r_bp, depth + 1)?;
             lhs = self.node(match op {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
-                b'%' => {
-                    // Stage-0 parity with LLVM's literal-divisor remainder:
-                    // never lower dynamic or zero divisors into native JIT code.
-                    let divisor = match rhs {
-                        Expr::Literal(value) => value,
-                        Expr::Neg(inner) => match *inner {
-                            Expr::Literal(value) => value
-                                .checked_neg()
-                                .ok_or("remainder divisor out of range")?,
-                            _ => {
-                                return Err(
-                                    "remainder requires a signed integer literal divisor".into()
-                                );
-                            }
-                        },
-                        _ => {
-                            return Err(
-                                "remainder requires a signed integer literal divisor".into()
-                            );
-                        }
-                    };
-                    if divisor == 0 {
-                        return Err("remainder divisor cannot be zero".into());
+                b'>' => {
+                    if rhs != Expr::Literal(8) {
+                        return Err("stage-0 only supports signed >> 8 with literal count".into());
                     }
-                    Expr::Rem(Box::new(lhs), divisor)
+                    Expr::ShiftRight8(Box::new(lhs))
                 }
                 _ => unreachable!(),
             })?;
@@ -286,26 +486,149 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Stage-0 has no nominal type descriptors, sealed-state loans,
+        // actor identity or supervisor CONTROL lane. A declaration must never
+        // be reinterpreted as a scalar main() function.
+        let unsupported_kind = match self.current {
+            Token::Word("state") => Some("state container"),
+            Token::Word(
+                kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model" | "enum" | "class"
+                | "struct" | "record" | "interface" | "trait" | "protocol" | "service"),
+            ) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = unsupported_kind {
+            return Err(format!(
+                "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
+            ));
+        }
+        if matches!(self.current, Token::Word("pattern") | Token::Word("match")) {
+            return Err("native type-only ADT pattern lowering unsupported".into());
+        }
+        if self.current == Token::Word("virtual") {
+            return Err("state containers and actor declarations require typed ownership, actor memory and lifecycle lowering; unsupported in scalar Cranelift".into());
+        }
+        // Stage-0 only compiles synchronous scalar main. These precise
+        // modifier checks reject unsupported concurrency before native JIT
+        // emission; an arbitrary parser error must not prove effect parity.
+        if self.take(Token::Word("async"))? {
+            return Err("E_CALLABLE_MODIFIERS: async fnc removed; use suspends".into());
+        }
+        if self.take(Token::Word("critical"))? {
+            if self.current == Token::Word("suspends") {
+                return Err("E_CALLABLE_MODIFIERS: critical suspends fnc is forbidden".into());
+            }
+            return Err(
+                "E_CRITICAL_UNSUPPORTED: stage-0 lacks owned critical guard lowering".into(),
+            );
+        }
+        if self.take(Token::Word("suspends"))? {
+            if self.current == Token::Word("critical") {
+                return Err("E_CALLABLE_MODIFIERS: suspends critical fnc is forbidden".into());
+            }
+            return Err(
+                "E_SUSPENDS_UNSUPPORTED: stage-0 lacks continuation and effect lowering".into(),
+            );
+        }
+        if self.current == Token::Word("suspend") {
+            return Err("E_SUSPENDS_UNSUPPORTED: suspends requires continuation lowering".into());
+        }
+        // The Cranelift stage-0 JIT has no actor heap, mailbox,
+        // supervisor/control lane, nominal superclass layout or trait
+        // witness dispatch. Recognize actor prefixes explicitly rather
+        // than accidentally accepting them as scalar declarations or
+        // returning an unrelated "expected fnc" syntax diagnostic.
+        if matches!(
+            self.current,
+            Token::Word("actor")
+                | Token::Word("isoactor")
+                | Token::Word("shared")
+                | Token::Word("untrusted")
+                | Token::Word("serial")
+                | Token::Word("http")
+                | Token::Word("tcp")
+                | Token::Word("websocket")
+                | Token::Word("unary")
+                | Token::Word("stream")
+                | Token::Word("abstract")
+                | Token::Word("transform")
+                | Token::Word("pipe")
+        ) {
+            return Err(
+                "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
+            );
+        }
+        // Stage-0 is a scalar JIT, not a WebSocket/LiveView runtime.
+        // Never silently reinterpret a typed transport actor declaration
+        // as a scalar entrypoint or claim machine-code networking parity.
+        if matches!(self.current, Token::Word("liveview" | "ws")) {
+            return Err(concat!(
+                "WebSocket/HTTP/LiveView actors require verified transport, ",
+                "capability, ownership and async lowering; scalar Cranelift ",
+                "backend does not support network actor execution"
+            )
+            .into());
+        }
+        if self.current == Token::Word("isolated") {
+            return Err("actor runtime is unsupported by the Cranelift scalar profile".into());
+        }
+        if self.current == Token::Word("await") {
+            return Err("E_SUSPENDS_UNSUPPORTED: await requires continuation lowering".into());
+        }
         self.expect(Token::Word("fnc"))?;
+        if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
+            return Err(
+                "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
+            );
+        }
+
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
         if !self.take(Token::Punct(b')'))? {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
-                if matches!(
-                    name.as_str(),
-                    "Integer"
-                        | "int"
-                        | "return"
-                        | "pub"
-                        | "define"
-                        | "fnc"
-                        | "rt"
-                        | "async"
-                        | "await"
-                        | "actor"
-                ) || self.parameters.contains(&name)
+                if is_java_v1_reserved_parameter_name(&name)
+                    || matches!(
+                        name.as_str(),
+                        "Integer"
+                            | "int"
+                            | "return"
+                            | "pub"
+                            | "define"
+                            | "fnc"
+                            | "rt"
+                            | "async"
+                            | "await"
+                            | "actor"
+                            | "supervisor"
+                            | "isoactor"
+                            | "panic"
+                            | "raise"
+                            | "throw"
+                            | "recover"
+                            | "defer"
+                            | "spawn"
+                            | "stop"
+                            | "select"
+                            | "match"
+                            | "switch"
+                            | "suspend"
+                            | "let"
+                            | "val"
+                            | "const"
+                            | "final"
+                            | "share"
+                            | "borrow"
+                            | "take"
+                            | "copy"
+                            | "gpu"
+                            | "cpu"
+                            | "io"
+                            | "stdio"
+                            | "print"
+                    )
+                    || self.parameters.contains(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
                 }
@@ -329,10 +652,24 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("int"))?;
         self.expect(Token::Punct(b'{'))?;
+        if self.current == Token::Word("critical")
+            || self.current == Token::Word("try")
+            || self.current == Token::Word("await")
+        {
+            return Err(
+                "E_CRITICAL_UNSUPPORTED: no critical admission or suspension in scalar stage-0"
+                    .into(),
+            );
+        }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
+        if matches!(self.current, Token::Word("actor" | "supervisor")) {
+            return Err(
+                "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
+            );
+        }
         self.expect(Token::End)?;
         Ok(Program {
             parameters: self.parameters,
@@ -383,7 +720,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
 
         if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
             index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
+            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
                 index += 1;
             }
             continue;
@@ -520,6 +857,9 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {
+    if text.len() > MAX_SOURCE {
+        return Err("source exceeds 1 MiB limit".into());
+    }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -532,6 +872,86 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
+        assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
+        assert!(
+            JAVA_V1_RESERVED_PARAMETER_NAMES
+                .windows(2)
+                .all(|p| p[0] < p[1])
+        );
+        for name in JAVA_V1_RESERVED_PARAMETER_NAMES {
+            let source = format!("fnc main({name}:int):int{{return {name};}}");
+            assert!(
+                parse(&source).is_err(),
+                "reserved Java v1 name accepted: {name}"
+            );
+        }
+        for name in [
+            "owned",
+            "eqx",
+            "xneq",
+            "island",
+            "nullish",
+            "panic_mode",
+            "cpu_task",
+        ] {
+            let source = format!("fnc main({name}:int):int{{return {name};}}");
+            assert!(parse(&source).is_ok(), "ordinary name rejected: {name}");
+        }
+    }
+
+    #[test]
+    fn stage_zero_is_not_a_general_java_lexical_frontend() {
+        for expression in [
+            "#ready",
+            "#'with spaces'",
+            "critical-read",
+            "transform-pipe",
+            "nb-select",
+            "gpu",
+            "cpu",
+            "panic",
+            "1 ^ 2",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            assert!(
+                parse(&source).is_err(),
+                "unsupported source admitted: {expression}"
+            );
+        }
+        // Retired percent syntax remains rejected after mainline operator removal.
+        assert!(parse("fnc main():int{return 7%3;}").is_err());
+    }
+
+    fn signed_rem(a: i64, b: i64) -> Result<i64, &'static str> {
+        if b == 0 {
+            return Err("divisor_zero");
+        }
+        if a == i64::MIN && b == -1 {
+            return Ok(0);
+        }
+        Ok(a % b)
+    }
+
+    fn checked_pow(mut base: i64, exponent: i64) -> Result<i64, &'static str> {
+        if exponent < 0 {
+            return Err("negative_exponent");
+        }
+        let mut left = exponent as u64;
+        let mut result = 1_i64;
+        while left != 0 {
+            if left & 1 != 0 {
+                result = result.checked_mul(base).ok_or("overflow")?;
+            }
+            left >>= 1;
+            if left != 0 {
+                base = base.checked_mul(base).ok_or("overflow")?;
+            }
+        }
+        Ok(result)
+    }
+
     fn eval(e: &Expr, args: &[i64]) -> Result<i64, &'static str> {
         match e {
             Expr::Literal(x) => Ok(*x),
@@ -541,14 +961,395 @@ mod tests {
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
-            Expr::Rem(lhs, divisor) => {
-                let numerator = eval(lhs, args)?;
-                if *divisor == -1 {
-                    Ok(0) // Java signed remainder: even i64::MIN % -1 is zero.
+            Expr::NamedRem(a, b) => signed_rem(eval(a, args)?, eval(b, args)?),
+            Expr::NamedMod(a, b) => {
+                let left = eval(a, args)?;
+                let right = eval(b, args)?;
+                let r = signed_rem(left, right)?;
+                if r >= 0 {
+                    Ok(r)
+                } else if right > 0 {
+                    Ok(r + right)
                 } else {
-                    numerator.checked_rem(*divisor).ok_or("overflow")
+                    Ok(r - right)
                 }
             }
+            Expr::NamedPow(a, b) => checked_pow(eval(a, args)?, eval(b, args)?),
+            Expr::ShiftRight8(x) => Ok(eval(x, args)? >> 8),
+        }
+    }
+    #[test]
+    fn model_declarations_fail_closed_without_reserving_model_identifiers() {
+        for source in [
+            "define model x as Identity() end",
+            "define model PriceEstimate() as Identity() end",
+            "define pub model x as Identity() end",
+            "pub define model x as Identity() end",
+            "define // comment\nmodel x as Identity() end",
+            "define // comment\rmodel x as Identity() end",
+            "define // comment\r\nmodel x as Identity() end",
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(
+                error.contains("DECL_KIND_UNSUPPORTED: model"),
+                "wrong admission diagnostic for {source}: {error}"
+            );
+        }
+        let ordinary = parse("fnc main(model:int):int{return model+1;}").unwrap();
+        assert_eq!(eval(&ordinary.result, &[41]), Ok(42));
+        let commented = parse("fnc main():int{return 42;} // define model Fake").unwrap();
+        assert_eq!(eval(&commented.result, &[]), Ok(42));
+    }
+    #[test]
+    fn precedence_and_arguments() {
+        let p = parse("define pub fnc main(x:int,y:int):int{return (x+2)*y-1;}").unwrap();
+        assert_eq!(eval(&p.result, &[3, 4]), Ok(19));
+        assert_eq!(
+            parse("fnc main():int{return 2+3*4;}")
+                .map(|p| eval(&p.result, &[]).unwrap())
+                .unwrap(),
+            14
+        );
+    }
+    #[test]
+    fn integer_edges() {
+        let min = parse("fnc main():int{return -9223372036854775808;}").unwrap();
+        assert_eq!(eval(&min.result, &[]), Ok(i64::MIN));
+        assert!(parse("fnc main():int{return 9223372036854775808;}").is_err());
+        let under = parse("fnc main():int{return --9223372036854775808;}").unwrap();
+        assert!(eval(&under.result, &[]).is_err());
+    }
+    #[test]
+    fn guest_bitxor_parsing_and_eager_eval() {
+        let program = parse("fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}").unwrap();
+        assert_eq!(eval(&program.result, &[4, 3]), Ok(3));
+        let edge = parse(
+            "fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}",
+        )
+        .unwrap();
+        assert_eq!(eval(&edge.result, &[]), Ok(-1));
+    }
+    #[test]
+    fn removed_remainder_operator_is_rejected_before_lowering() {
+        // The language contract removed %, ^ and ^^. The tokenizer must
+        // reject all forms of % rather than accepting a restricted subset.
+        for source in [
+            "fnc main():int{return -7%3;}",
+            "fnc main():int{return 7%-3;}",
+            "fnc main():int{return -7%-3;}",
+            "fnc main():int{return 8%3*2;}",
+            "fnc main():int{return 20%6%3;}",
+            "fnc main():int{return -9223372036854775808%-1;}",
+            "fnc main(x:int):int{return x%0;}",
+            "fnc main(x:int,y:int):int{return x%y;}",
+            "fnc main(x:int):int{return x%(1+1);}",
+            "fnc main(x:int):int{return x%-x;}",
+        ] {
+            assert!(
+                parse(source).is_err(),
+                "removed operator unexpectedly parsed: {source}"
+            );
+        }
+        // Comments are non-executable text and can contain a percent sign.
+        assert!(parse("fnc main():int{return 42;} // 100% comment").is_ok());
+    }
+    #[test]
+    fn option_result_trap_fail_closed_until_native_tagged_lowering() {
+        // Only the scalar contract is executable; these are unsupported
+        // features, NOT passing semantic Option/Result/trap conformance cases.
+        for source in [
+            "fnc main():Option<int>{return Some(7);}",
+            "fnc main():Option<int>{return None;}",
+            "fnc main():Result<int,int>{return Ok(7);}",
+            "fnc main():Result<int,int>{return Err(7);}",
+            "trap fnc main():int{return 1;}",
+            "fnc main():int{return Some(7);}",
+            "fnc main():int{return Ok(7);}",
+            "fnc main():int{return Err(7);}",
+            "fnc main():int{return None;}",
+            "fnc main():int{return Option(7);}",
+            "fnc main():int{return Result(7);}",
+        ] {
+            let error = parse(source).expect_err("unsupported sum/trap must reject");
+            assert!(
+                error.contains("typed Option/Result/trap is unsupported"),
+                "unexpected fail-open or error category for {source}: {error}"
+            );
+        }
+        assert!(parse("fnc main():int{return 7;} // Option Result trap").is_ok());
+    }
+    #[test]
+    fn actor_control_ownership_keywords_are_not_scalar_parameters() {
+        for keyword in [
+            "rt", "panic", "raise", "throw", "recover", "defer", "spawn", "stop", "select",
+            "match", "switch", "suspend", "share", "borrow", "take", "copy", "gpu", "cpu",
+            "isoactor", "let", "val", "const", "final",
+        ] {
+            let source = format!("fnc main({keyword}:int):int{{return {keyword};}}");
+            assert!(
+                parse(&source).is_err(),
+                "{keyword} rebound into scalar parameter"
+            );
+        }
+        // Valid snake_case identifiers containing reserved substrings remain legal.
+        for name in ["rt_count", "panic_count", "spawn_count", "gpu_cycles"] {
+            let source = format!("fnc main({name}:int):int{{return {name};}}");
+            let parsed = parse(&source).unwrap();
+            assert_eq!(eval(&parsed.result, &[42]), Ok(42));
+        }
+        let ownership = parse("fnc main():int{return rt mut share;}").unwrap_err();
+        assert!(ownership.contains("SharedMutex"), "{ownership}");
+    }
+
+    #[test]
+    fn actor_io_namespace_is_explicitly_fail_closed() {
+        for source in [
+            "fnc main():int{return io;}",
+            "fnc main():int{return io.out;}",
+            "fnc main():int{return stdio;}",
+            "fnc main():int{return print;}",
+        ] {
+            let error = parse(source).expect_err(source);
+            assert!(
+                error.contains("actor-local io.*")
+                    || error.contains("process stdio")
+                    || error.contains("process print"),
+                "{source}: wrong actor-I/O diagnostic: {error}"
+            );
+        }
+        let actor = parse(
+            "define actor Worker as { receive(ActorMail<int> mail):void { return; } } fnc main():int{return 0;}"
+        ).expect_err("actor source must be rejected");
+        assert!(
+            !actor.trim().is_empty(),
+            "actor source rejection must carry a diagnostic"
+        );
+    }
+
+    #[test]
+    fn odb1_checked_arithmetic_right_shift_by_eight() {
+        let p = parse("fnc main(x:int):int{return x>>8;}").unwrap();
+        for (n, expected) in [
+            (0_i64, 0_i64),
+            (255, 0),
+            (256, 1),
+            (65535, 255),
+            (2147483647, 8388607),
+            (-1, -1),
+            (-256, -1),
+            (i64::MIN, -36028797018963968),
+        ] {
+            assert_eq!(eval(&p.result, &[n]), Ok(expected));
+        }
+        let add_before_shift = parse("fnc main(x:int):int{return x+1>>8;}").unwrap();
+        assert_eq!(eval(&add_before_shift.result, &[255]), Ok(1));
+        assert!(eval(&add_before_shift.result, &[i64::MAX]).is_err());
+        let chained = parse("fnc main(x:int):int{return x>>8>>8;}").unwrap();
+        assert_eq!(eval(&chained.result, &[65536]), Ok(1));
+        for invalid in [
+            "fnc main(x:int):int{return x>>7;}",
+            "fnc main(x:int,y:int):int{return x>>y;}",
+            "fnc main(x:int):int{return x>>8+1;}",
+            "fnc main(x:int):int{return x>>-8;}",
+            "fnc main(x:int):int{return x>>>8;}",
+            "fnc main(x:int):int{return x>8;}",
+            "fnc main(x:int):int{return x<<8;}",
+            "fnc main(x:int):int{return x/256;}",
+        ] {
+            assert!(parse(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn critical_suspend_modifiers_fail_closed_with_owned_diagnostics() {
+        for (source, expected) in [
+            ("async fnc main():int{return 1;}", "E_CALLABLE_MODIFIERS"),
+            (
+                "critical suspends fnc main():int{return 1;}",
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                "suspends critical fnc main():int{return 1;}",
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                "critical fnc main():int{return 1;}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "suspends fnc main():int{return 1;}",
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{critical {return 1;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{try critical {return 1;} else {return 2;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{return critical {1};}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            ("fnc main():int{return await 1;}", "E_CRITICAL_UNSUPPORTED"),
+        ] {
+            let error = parse(source).expect_err(source);
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        // Lexical comments are not language modifiers or critical regions.
+        assert!(parse("fnc main():int{return 42;} // critical suspends async").is_ok());
+        assert!(parse("fnc main():int{return 42;} // try critical await").is_ok());
+    }
+
+    #[test]
+    fn fail_closed() {
+        for source in [
+            "fnc main():int{return 1/0;}",
+            "fnc main():int{return 5 ^ 3;}",
+            "fnc main():int{return Integer.div(5,3);}",
+            "fnc main():int{return Integer.bitXor(5);}",
+            "fnc main():int{return Integer.bitXor(5,3,1);}",
+            "fnc main(Integer:int):int{return Integer;}",
+            "fnc main():float{return 1;}",
+            "fnc main():int{return x;}",
+            "fnc main():int{return 1;} fnc foo():int{return 2;}",
+            "fnc main():int{return 1;} /*no*/",
+            "fnc main():int{return 1.0;}",
+            "fnc main(x:int,x:int):int{return x;}",
+            "fnc main():int{return 1;} unsafe",
+            "fnc main():int{return 1;}\0",
+            "fnc main():int{return 1;}\u{00a0}",
+            "fnc main(io:int):int{return io;}",
+            "fnc main(stdio:int):int{return stdio;}",
+            "fnc main(print:int):int{return print;}",
+        ] {
+            assert!(parse(source).is_err(), "{source:?}");
+        }
+        assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
+        assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
+        assert!(parse("fnc main():int{return 42;} // café").is_ok());
+        assert!(
+            parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
+                .is_err()
+        );
+        assert!(parse("fnc main():int{return 42;} // comment\r").is_ok());
+    }
+    #[test]
+    fn critical_suspends_v1_fails_closed_without_runtime_lowering() {
+        for (source, expected) in [
+            ("async fnc main():int{return 1;}", "E_CALLABLE_MODIFIERS"),
+            (
+                "suspends fnc main():int{return 1;}",
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                "suspend fnc main():int{return 1;}",
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                "critical fnc main():int{return 1;}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "suspends critical fnc main():int{return 1;}",
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                "fnc main():int{critical{return 1;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{try critical{return 1;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert!(parse("// critical suspends async\nfnc main():int{return 7;}").is_ok());
+        let scalar = parse("fnc main(critical_count:int):int{return critical_count+1;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[41]), Ok(42));
+        let scalar = parse("fnc main(suspend_count:int):int{return suspend_count+1;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[41]), Ok(42));
+    }
+    #[test]
+    fn scalar_i64_identity_cast_is_not_inference_or_conversion() {
+        // Explicit int casts preserve the already checked scalar i64 value.
+        // No untyped local declarations or bool casts are implemented.
+        for (source, expected) in [
+            ("fnc main():int{return 7 as int + 35;}", 42),
+            ("fnc main():int{return (2+5) as int * 6;}", 42),
+            ("fnc main():int{return 7 as int as int + 35;}", 42),
+            ("fnc main():int{return (7 as int)+35;}", 42),
+            ("fnc main(x:int):int{return x as int + 35;}", 42),
+            (
+                "fnc main():int{return -9223372036854775808 as int;}",
+                i64::MIN,
+            ),
+            (
+                "fnc main():int{return (9223372036854775807 as int) - 9223372036854775765;}",
+                42,
+            ),
+        ] {
+            let parsed = parse(source).expect(source);
+            let args = if parsed.parameters.is_empty() {
+                vec![]
+            } else {
+                vec![7]
+            };
+            assert_eq!(eval(&parsed.result, &args), Ok(expected), "{source}");
+        }
+        for (source, expected_error) in [
+            (
+                "fnc main():int{return 7 as bool;}",
+                "unsupported checked cast target",
+            ),
+            (
+                "fnc main():int{return 7 as string;}",
+                "unsupported checked cast target",
+            ),
+            (
+                "fnc main():int{return 7 as Object;}",
+                "unsupported checked cast target",
+            ),
+            (
+                "fnc main():int{return 7 as int as bool;}",
+                "unsupported checked cast target",
+            ),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.contains(expected_error), "{source}: {error}");
+        }
+        for source in [
+            "fnc main():int{return 7 as? int;}",
+            "fnc main():int{return true as int;}",
+            "fnc main():int{return 7 as int as? int;}",
+            "fnc main():int{return 9223372036854775808 as int;}",
+            "fnc main():int{return 7 as int + 9223372036854775808;}",
+            "fnc main():int{return 7 as int;}\0",
+            "fnc main():int{return 7 as int; unsafe}",
+            "fnc main(as:int):int{return as;}",
+            "fnc main():int{return 7 as int",
+        ] {
+            assert!(parse(source).is_err(), "{source:?}");
+        }
+    }
+    #[test]
+    fn named_arithmetic_refuses_unsafe_values_without_panicking() {
+        for (expression, expected) in [
+            ("Integer.rem(-9223372036854775808,-1)", Ok(0)),
+            ("Integer.mod(-1,-9223372036854775808)", Ok(i64::MAX)),
+            ("Integer.pow(-2,63)", Ok(i64::MIN)),
+            ("Integer.pow(-1,9223372036854775807)", Ok(-1)),
+            ("Integer.pow(2,63)", Err("overflow")),
+            ("Integer.pow(3,-1)", Err("negative_exponent")),
+            ("Integer.rem(7,0)", Err("divisor_zero")),
+            ("Integer.mod(-7,0)", Err("divisor_zero")),
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let program = parse(&source).unwrap();
+            assert_eq!(eval(&program.result, &[]), expected, "{source}");
         }
     }
     #[test]
@@ -613,85 +1414,17 @@ mod tests {
             assert!(!has_actor_pipe_surface(inert), "must ignore inert: {inert}");
         }
         assert!(
-            parse("fnc pipe(x:int):int{return x;}").is_ok(),
-            "a contextual pipe operator must not ban functions named pipe"
+            parse("fnc main(pipe:int):int{return pipe+1;}").is_ok(),
+            "a contextual pipe operator must not ban scalar parameters named pipe"
         );
     }
 
     #[test]
-    fn precedence_and_arguments() {
-        let p = parse("define pub fnc main(x:int,y:int):int{return (x+2)*y-1;}").unwrap();
-        assert_eq!(eval(&p.result, &[3, 4]), Ok(19));
-        assert_eq!(
-            parse("fnc main():int{return 2+3*4;}")
-                .map(|p| eval(&p.result, &[]).unwrap())
-                .unwrap(),
-            14
-        );
-    }
-    #[test]
-    fn integer_edges() {
-        let min = parse("fnc main():int{return -9223372036854775808;}").unwrap();
-        assert_eq!(eval(&min.result, &[]), Ok(i64::MIN));
-        assert!(parse("fnc main():int{return 9223372036854775808;}").is_err());
-        let under = parse("fnc main():int{return --9223372036854775808;}").unwrap();
-        assert!(eval(&under.result, &[]).is_err());
-    }
-    #[test]
-    fn guest_bitxor_parsing_and_eager_eval() {
-        let program = parse("fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}").unwrap();
-        assert_eq!(eval(&program.result, &[4, 3]), Ok(3));
-        let edge = parse(
-            "fnc main():int{return Integer.bitXor(-9223372036854775808,9223372036854775807);}",
-        )
-        .unwrap();
-        assert_eq!(eval(&edge.result, &[]), Ok(-1));
-    }
-    #[test]
-    fn signed_literal_remainder() {
-        for (source, expected) in [
-            ("fnc main():int{return -7%3;}", -1),
-            ("fnc main():int{return 7%-3;}", 1),
-            ("fnc main():int{return -7%-3;}", -1),
-            ("fnc main():int{return 8%3*2;}", 4),
-            ("fnc main():int{return 20%6%3;}", 2),
-            ("fnc main():int{return -9223372036854775808%-1;}", 0),
-        ] {
-            let p = parse(source).unwrap();
-            assert_eq!(eval(&p.result, &[]), Ok(expected));
-        }
-        for source in [
-            "fnc main(x:int):int{return x%0;}",
-            "fnc main(x:int,y:int):int{return x%y;}",
-            "fnc main(x:int):int{return x%(1+1);}",
-            "fnc main(x:int):int{return x%-x;}",
-        ] {
-            assert!(parse(source).is_err(), "{source}");
-        }
-    }
-    #[test]
-    fn fail_closed() {
-        for source in [
-            "fnc main():int{return 1/0;}",
-            "fnc main():int{return 5 ^ 3;}",
-            "fnc main():int{return Integer.rem(5,3);}",
-            "fnc main():int{return Integer.bitXor(5);}",
-            "fnc main():int{return Integer.bitXor(5,3,1);}",
-            "fnc main(Integer:int):int{return Integer;}",
-            "fnc main():float{return 1;}",
-            "fnc main():int{return x;}",
-            "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/",
-            "fnc main():int{return 1.0;}",
-            "fnc main(x:int,x:int):int{return x;}",
-            "fnc main():int{return 1;} unsafe",
-            "fnc main():int{return 1;}\0",
-            "fnc main():int{return 1;}\u{00a0}",
-        ] {
-            assert!(parse(source).is_err(), "{source:?}");
-        }
-        assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
-        assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
-        assert!(parse("fnc main():int{return 42;} // café").is_ok());
+    fn actor_preflight_cr_comments_end_at_carriage_return() {
+        assert!(has_actor_pubsub_surface("// inert\rruntime_pubsub.publish"));
+        assert!(has_actor_pipe_surface("// inert\rfirst pipe second"));
+        assert!(!has_actor_pubsub_surface(
+            "// runtime_pubsub.publish\rfnc main():int{return 1;}"
+        ));
     }
 }
