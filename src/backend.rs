@@ -21,27 +21,20 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        ShiftRight8(x) => {
+            // Signed Cranelift arithmetic shift of i64, preserving sign.
+            // The parser admits only the constant 8, matching ODB1 byte
+            // extraction for 0..i31::MAX without float narrowing.
+            let input = emit(x, b, params, error);
+            let eight = b.ins().iconst(types::I64, 8);
+            b.ins().sshr(input, eight)
+        }
         BitXor(x, y) => {
             // Both operands are emitted in lexical order. bxor is an actual
             // native Cranelift instruction, not a host-side reference oracle.
             let lhs = emit(x, b, params, error);
             let rhs = emit(y, b, params, error);
             b.ins().bxor(lhs, rhs)
-        }
-        Rem(lhs, divisor) => {
-            // Evaluation of lhs (including checked overflow) is mandatory.
-            let numerator = emit(lhs, b, params, error);
-            // Signed remainder by -1 is always zero under Java semantics,
-            // but native srem(i64::MIN, -1) can trap/produce poison.
-            if *divisor == -1 {
-                b.ins().iconst(types::I64, 0)
-            } else {
-                // The parser proved this is a nonzero literal. Reject any
-                // untrusted AST that would introduce a zero divisor.
-                assert_ne!(*divisor, 0, "internal invalid remainder divisor");
-                let denominator = b.ins().iconst(types::I64, *divisor);
-                b.ins().srem(numerator, denominator)
-            }
         }
         _ => {
             let (value, overflow) = match e {
