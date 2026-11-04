@@ -1,47 +1,19 @@
-//! Actor and differentiable pipeline syntax is outside Cranelift stage-0.
-//! Execute the actual compiler in BOTH modes. A diagnostic-only denial is a
-//! successful safety test, never actor or ML implementation evidence.
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-// A predictable /tmp name must never overwrite an unrelated file or follow
-// an attacker-planted symlink. Fixture content belongs to the private source
-// checkout, so create each temporary file with restrictive permissions.
-fn write_new_source(path: &std::path::Path, source: &str) {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).expect("create exclusive source fixture");
-    file.write_all(source.as_bytes()).expect("write exact source fixture");
-}
+//! AttoLang actor/ML sources are explicitly unsupported in scalar Cranelift.
+//! Negative source admission is not actor or machine-learning parity evidence.
+#[path = "support/mod.rs"]
+mod support;
 
 fn reject_both_modes(label: &str, source: &str) {
-    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "orescranelift-actor-denial-{}-{}-{nonce}.ores",
-        std::process::id(),
-        label
-    ));
-    write_new_source(&path, source);
     for mode in ["run", "ir"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg(mode)
-            .arg(&path)
-            .output()
-            .expect("invoke native compiler");
-        assert!(!output.status.success(), "{label}/{mode} was silently admitted");
-        assert!(output.stdout.is_empty(), "{label}/{mode} emitted output or native IR");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!stderr.trim().is_empty(), "{label}/{mode} must diagnose rejection");
-        assert!(!stderr.contains("thread 'main' panicked"), "{label}/{mode} crashed: {stderr}");
+        let output = support::run_source(mode, source.as_bytes(), &[]);
+        assert_eq!(output.status.code(), Some(1), "{label}/{mode}: unsupported source admitted");
+        assert!(output.stdout.is_empty(), "{label}/{mode}: guest output or IR emitted");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.starts_with("orescranelift: "),
+            "{label}/{mode}: missing compiler diagnostic");
+        assert!(!diagnostic.contains("panicked at") && !diagnostic.contains("stack backtrace"),
+            "{label}/{mode}: compiler crashed: {diagnostic}");
     }
-    std::fs::remove_file(path).expect("remove test fixture");
 }
 
 #[test]
@@ -85,82 +57,61 @@ fn tensor_autograd_and_actor_pipeline_fail_closed() {
 
 #[test]
 fn words_inside_comments_do_not_disable_scalar_jit() {
-    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "orescranelift-actor-comment-{}-{nonce}.ores",
-        std::process::id()
-    ));
-    write_new_source(&path,
-        "fnc main():int{return 6*7;} // define actor, trait, Tensor, autograd, pipe\n"
-    );
+    let source = "fnc main():int{return 6*7;} // define actor, trait, Tensor, autograd, pipe\n";
     for mode in ["run", "ir"] {
-        let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg(mode).arg(&path).output().unwrap();
-        assert!(result.status.success(), "{mode}: {}", String::from_utf8_lossy(&result.stderr));
+        let result = support::run_source(mode, source.as_bytes(), &[]);
+        assert_eq!(result.status.code(), Some(0), "{mode}: native compiler rejected comments");
+        assert!(result.stderr.is_empty());
         if mode == "run" {
-            assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
+            assert_eq!(result.stdout, b"42\n");
         } else {
-            assert!(!result.stdout.is_empty(), "IR mode must produce output");
+            assert!(!result.stdout.is_empty(), "IR mode must produce CLIF");
         }
     }
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
 fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
-    // A shared i64 *arithmetic intersection*, not tensor allocation, autograd,
-    // an actor trainer or a float64 ML optimizer. d(0.5*(w*x-t)^2)/dw = (w*x-t)*x
-    // and learning rate is an integer. Other backends can reuse this exact
-    // source with their own actual native compiler/runtime.
+    // Integer scalar derivative arithmetic; NOT autograd/tensor execution.
     let source = "fnc main(w:int,x:int,t:int,rate:int):int{return w-rate*(w*x-t)*x;}";
-    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "orescranelift-scalar-gradient-{}-{nonce}.ores", std::process::id()
-    ));
-    write_new_source(&path, source);
-    for (args,expected) in [
-        (["5","2","6","1"], "-3\n"),
-        (["3","1","5","1"], "5\n"),
-        (["0","3","6","1"], "18\n"),
-        (["7","0","6","1"], "7\n"),
+    for (args, expected) in [
+        (["5", "2", "6", "1"], " -3\n"),
+        (["3", "1", "5", "1"], "5\n"),
+        (["0", "3", "6", "1"], "18\n"),
+        (["7", "0", "6", "1"], "7\n"),
     ] {
-        let result=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg("run").arg(&path).args(args).output().unwrap();
-        assert!(result.status.success(), "{}",String::from_utf8_lossy(&result.stderr));
-        assert_eq!(String::from_utf8_lossy(&result.stdout),expected);
+        let output = support::run_source("run", source.as_bytes(), &args);
+        assert_eq!(output.status.code(), Some(0), "scalar native execution failed");
+        assert_eq!(output.stdout, expected.trim_start().as_bytes());
+        assert!(output.stderr.is_empty());
     }
-    let overflow=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("run").arg(&path)
-        .args(["9223372036854775807","2","0","1"]).output().unwrap();
-    assert!(!overflow.status.success(),"checked numeric overflow must fail");
-    assert!(overflow.stdout.is_empty(),"overflow emitted a result");
-    let ir=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("ir").arg(&path).output().unwrap();
-    assert!(ir.status.success(), "{}",String::from_utf8_lossy(&ir.stderr));
-    assert!(!ir.stdout.is_empty(),"scalar native IR not emitted");
-    std::fs::remove_file(path).unwrap();
+    let overflow = support::run_source("run", source.as_bytes(),
+        &["9223372036854775807", "2", "0", "1"]);
+    assert_eq!(overflow.status.code(), Some(1), "checked overflow must reject");
+    assert!(overflow.stdout.is_empty());
+    assert_eq!(overflow.stderr, b"orescranelift: i64 arithmetic overflow\n");
+    let ir = support::run_source("ir", source.as_bytes(), &[]);
+    assert_eq!(ir.status.code(), Some(0), "valid scalar source must emit IR");
+    assert!(!ir.stdout.is_empty(), "expected native CLIF IR");
+    assert!(ir.stderr.is_empty());
 }
 
 #[test]
 fn identical_portable_scalar_step_executes_as_native_cranelift_guest() {
     const SOURCE: &str = include_str!("fixtures/actor-ml-scalar-step.ores");
-    assert_eq!(SOURCE, "pub fnc main(): int { return 2 - 1 * (2 * 1 - 42) * 1; }\n",
-        "exact shared source fixture bytes must not drift between toolchains");
-    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "orescranelift-shared-step-{}-{nonce}.ores", std::process::id()
-    ));
-    write_new_source(&path, SOURCE);
+    assert_eq!(
+        SOURCE,
+        "pub fnc main(): int { return 2 - 1 * (2 * 1 - 42) * 1; }\n",
+        "exact shared source bytes must not drift between toolchains"
+    );
     for mode in ["run", "ir"] {
-        let result=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg(mode).arg(&path).output().expect("execute real compiler");
-        assert!(result.status.success(), "{mode}: {}",
-            String::from_utf8_lossy(&result.stderr));
+        let output = support::run_source(mode, SOURCE.as_bytes(), &[]);
+        assert_eq!(output.status.code(), Some(0), "{mode}: native compiler failed");
+        assert!(output.stderr.is_empty());
         if mode == "run" {
-            assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
+            assert_eq!(output.stdout, b"42\n");
         } else {
-            assert!(!result.stdout.is_empty(), "real CLIF IR required");
+            assert!(!output.stdout.is_empty(), "IR requires actual CLIF");
         }
     }
-    std::fs::remove_file(path).expect("clean up source fixture");
 }
