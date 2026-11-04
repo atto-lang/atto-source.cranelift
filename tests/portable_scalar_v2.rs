@@ -28,7 +28,8 @@ fn native_case(id: &str, expression: &str, expected: Option<&str>) {
     }
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "orescranelift-parity-v2-{}-{nonce}", std::process::id()
+        "orescranelift-parity-v2-{}-{nonce}",
+        std::process::id()
     ));
     std::fs::create_dir(&dir).expect("private fixture dir must be new");
     let source_path = dir.join("case.ores");
@@ -83,16 +84,44 @@ fn native_case(id: &str, expression: &str, expected: Option<&str>) {
 #[test]
 fn portable_scalar_v2_native_signed_i64_values() {
     for (id, expression, expected) in [
-        ("max-plus-negative-one", "9223372036854775807 + (-1)", "9223372036854775806"),
-        ("min-minus-negative-one", "-9223372036854775808 - (-1)", "-9223372036854775807"),
-        ("large-roundtrip", "(9007199254740993 + 7) - 9007199254740993", "7"),
-        ("large-negative-roundtrip", "(-9007199254740993 - 7) - (-9007199254740993)", "-7"),
+        (
+            "max-plus-negative-one",
+            "9223372036854775807 + (-1)",
+            "9223372036854775806",
+        ),
+        (
+            "min-minus-negative-one",
+            "-9223372036854775808 - (-1)",
+            "-9223372036854775807",
+        ),
+        (
+            "large-roundtrip",
+            "(9007199254740993 + 7) - 9007199254740993",
+            "7",
+        ),
+        (
+            "large-negative-roundtrip",
+            "(-9007199254740993 - 7) - (-9007199254740993)",
+            "-7",
+        ),
         ("right-nested-subtraction", "100 - (50 - (20 - 7))", "63"),
         ("left-nested-subtraction", "((100 - 50) - 20) - 7", "23"),
-        ("mul-near-max", "3037000499 * 3037000499", "9223372030926249001"),
-        ("mul-near-min", "(-3037000499) * 3037000499", "-9223372030926249001"),
+        (
+            "mul-near-max",
+            "3037000499 * 3037000499",
+            "9223372030926249001",
+        ),
+        (
+            "mul-near-min",
+            "(-3037000499) * 3037000499",
+            "-9223372030926249001",
+        ),
         ("triple-negative", "-(-(-42))", "-42"),
-        ("signed-underscore", "-9_223_372_036_854_775_807 + 8", "-9223372036854775799"),
+        (
+            "signed-underscore",
+            "-9_223_372_036_854_775_807 + 8",
+            "-9223372036854775799",
+        ),
     ] {
         native_case(id, expression, Some(expected));
     }

@@ -61,16 +61,44 @@ fn scalar_v3_manifest_inventory_is_exact() {
 fn scalar_v3_real_jit_positive_values() {
     let fixture = Fixture::new();
     for (id, expression, expected) in [
-        ("near-max-sum", "9223372036854775805 + 2", "9223372036854775807"),
-        ("near-min-successor-two", "(-9223372036854775807 - 1) + 2", "-9223372036854775806"),
-        ("wide-precision-multiply", "(9007199254740993 - 9007199254740992) * 41", "41"),
-        ("signed-precision-three", "-9007199254740995 + 9007199254740992", "-3"),
-        ("trillion-zero-cancel", "1000000000000000 + (-1000000000000000)", "0"),
+        (
+            "near-max-sum",
+            "9223372036854775805 + 2",
+            "9223372036854775807",
+        ),
+        (
+            "near-min-successor-two",
+            "(-9223372036854775807 - 1) + 2",
+            "-9223372036854775806",
+        ),
+        (
+            "wide-precision-multiply",
+            "(9007199254740993 - 9007199254740992) * 41",
+            "41",
+        ),
+        (
+            "signed-precision-three",
+            "-9007199254740995 + 9007199254740992",
+            "-3",
+        ),
+        (
+            "trillion-zero-cancel",
+            "1000000000000000 + (-1000000000000000)",
+            "0",
+        ),
         ("mixed-precedence", "5 + 7 * 9 - 4 * 3", "56"),
         ("right-nested-subtraction-v3", "80 - (50 - (25 - 5))", "50"),
         ("left-nested-subtraction-v3", "((80 - 50) - 25) - 5", "0"),
-        ("wide-positive-product", "2147483647 * 2147483647", "4611686014132420609"),
-        ("wide-negative-product", "(-2147483647) * 2147483647", "-4611686014132420609"),
+        (
+            "wide-positive-product",
+            "2147483647 * 2147483647",
+            "4611686014132420609",
+        ),
+        (
+            "wide-negative-product",
+            "(-2147483647) * 2147483647",
+            "-4611686014132420609",
+        ),
         ("quadruple-negation", "-(-(-(-33)))", "33"),
         (
             "max-range-roundtrip",
@@ -78,9 +106,8 @@ fn scalar_v3_real_jit_positive_values() {
             "9223372036854775800",
         ),
     ] {
-        let expected_binding = format!(
-            "\"expression\": \"{expression}\",\n      \"expected\": \"{expected}\""
-        );
+        let expected_binding =
+            format!("\"expression\": \"{expression}\",\n      \"expected\": \"{expected}\"");
         assert!(
             MANIFEST.contains(&expected_binding),
             "manifest expression/expected value drift for {id}"
@@ -133,7 +160,10 @@ fn scalar_v3_rejection_phase_mutations_fail_closed() {
         "orescranelift: invalid character at byte 2\nextra",
         "signal: segmentation fault",
     ] {
-        assert!(!is_compiler_rejection("removed-percent-new", bad.as_bytes()));
+        assert!(!is_compiler_rejection(
+            "removed-percent-new",
+            bad.as_bytes()
+        ));
         assert!(!is_compiler_rejection(
             "positive-outside-signed-range",
             bad.as_bytes()
@@ -171,7 +201,11 @@ fn scalar_v3_compiler_rejects_invalid_sources() {
         ("negative-outside-signed-range", "-9223372036854775809"),
     ] {
         let output = run_one(&fixture, id, expression);
-        assert_eq!(output.status.code(), Some(1), "{id} must be compiler rejection exit 1");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{id} must be compiler rejection exit 1"
+        );
         assert!(output.stdout.is_empty(), "{id} emitted guest stdout");
         assert!(
             is_compiler_rejection(id, &output.stderr),

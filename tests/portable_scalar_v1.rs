@@ -36,7 +36,10 @@ fn run_source(dir: &Fixture, id: &str, expr: &str) -> Output {
         .expect("real compiled Cranelift CLI must execute")
 }
 fn assert_manifest_case(id: &str, expr: &str, expected: Option<&str>) {
-    assert!(MANIFEST.contains(&format!("\"id\": \"{id}\"")), "manifest case missing: {id}");
+    assert!(
+        MANIFEST.contains(&format!("\"id\": \"{id}\"")),
+        "manifest case missing: {id}"
+    );
     assert!(
         MANIFEST.contains(&format!("\"expression\": \"{expr}\"")),
         "expression drift for {id}"
@@ -68,10 +71,26 @@ fn portable_shared_scalar_matrix_executes_in_real_cranelift_jit() {
         ("negative-forty-two", "-7 * 6", "-42"),
         ("max-i64", "9223372036854775807", "9223372036854775807"),
         ("min-i64", "-9223372036854775808", "-9223372036854775808"),
-        ("max-minus-one", "9223372036854775807 - 1", "9223372036854775806"),
-        ("min-plus-one", "-9223372036854775808 + 1", "-9223372036854775807"),
-        ("over-binary64-mantissa", "9007199254740993 - 9007199254740992", "1"),
-        ("negative-over-binary64", "-9007199254740993 - (-9007199254740992)", "-1"),
+        (
+            "max-minus-one",
+            "9223372036854775807 - 1",
+            "9223372036854775806",
+        ),
+        (
+            "min-plus-one",
+            "-9223372036854775808 + 1",
+            "-9223372036854775807",
+        ),
+        (
+            "over-binary64-mantissa",
+            "9007199254740993 - 9007199254740992",
+            "1",
+        ),
+        (
+            "negative-over-binary64",
+            "-9007199254740993 - (-9007199254740992)",
+            "-1",
+        ),
         ("precedence", "2 + 3 * 4", "14"),
         ("parentheses", "(2 + 3) * 4", "20"),
         ("subtraction-left-assoc", "20 - 5 - 3", "12"),
@@ -113,7 +132,10 @@ fn portable_shared_scalar_negatives_fail_closed_without_guest_stdout() {
         assert_manifest_case(id, expr, None);
         let result = run_source(&fixture, id, expr);
         assert!(!result.status.success(), "{id} must never be accepted");
-        assert!(result.stdout.is_empty(), "{id} emitted stdout after rejection");
+        assert!(
+            result.stdout.is_empty(),
+            "{id} emitted stdout after rejection"
+        );
         assert!(
             String::from_utf8_lossy(&result.stderr).contains("orescranelift:"),
             "{id} did not produce a compiler-owned diagnostic"
