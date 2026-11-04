@@ -1,22 +1,22 @@
-# Oreslang Cranelift backend
+# AttoLang Cranelift backend
 
-An **independent Rust + Cranelift** experimental backend for Oreslang. It is
+**AttoLang** (formerly Oreslang) has an **independent Rust + Cranelift** experimental backend. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
 
-## Stage-0 executable scalar profile
+## Stage-0 executable scalar profile (`.atto`; legacy `.ores`)
 
-This backend compiles a deliberately narrow Oreslang source subset
-into **actual Cranelift native JIT machine code**, with a checked overflow
+This backend compiles a deliberately narrow AttoLang source subset from `.atto`
+(or legacy `.ores`) into **actual Cranelift native JIT machine code**, with checked overflow
 status rather than an unchecked wrap or process trap.
 
-```oreslang
+```atto
 fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
-cargo run --locked -- run example.ores 7 8 # 72
-cargo run --locked -- ir example.ores      # generated Cranelift IR
+cargo run --locked -- run example.atto 7 8 # 72
+cargo run --locked -- ir example.atto      # generated Cranelift IR
 cargo test --locked --all-targets
 ```
 
@@ -36,24 +36,30 @@ classes, actors, heaps, ownership, recursion, async, control flow, division, rem
 structural types, UTF-8 identifiers, and any trailing code.
 
 The source operators `%`, `^` and `^^` are all rejected, in line with
-Oreslang's revised operator policy. `Integer.bitXor(a,b)` remains a separate
+AttoLang's revised operator policy. `Integer.bitXor(a,b)` remains a separate
 named integer operation; it must not be parsed as a caret operator.
 The Cranelift scalar subset does not yet expose a portable named remainder
 operation. Other named `Integer.*` functions remain unsupported.
+
+Source suffix compatibility is verified by `tests/atto_extension.rs`: matching
+positive scalar execution and fail-closed unsupported-source rejection for
+`.atto` and `.ores`. This test is source code, **not** new executed evidence
+until the exact PR-head native runner starts and Cargo tests pass.
+
 
 ## Explicit security boundary
 
 Native JIT code executes inside this process. **It is not a sandbox** and
 there is no guest actor heap isolation or untrusted-source support.
 The entry ABI is internal (four i64 operands plus an output pointer returning
-an i32 status), not a published Oreslang or foreign-call ABI.
+an i32 status), not a published AttoLang or foreign-call ABI.
 
 Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
 This branch remains experimental. Passing its scalar JIT tests does **not**
-establish full Oreslang support, actor isolation or Forge self-hosting.
+establish full AttoLang support, actor isolation or Forge self-hosting.
 
 ## Acceptance
 
