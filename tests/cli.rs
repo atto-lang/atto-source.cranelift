@@ -1193,3 +1193,40 @@ fn readonly_shared_slab_lease_and_pin_fail_closed_in_run_and_ir() {
         "17\n",
     );
 }
+
+#[test]
+fn actor_io_never_emits_scalar_value_or_clif_before_actor_ir_exists() {
+    const IO_GATE: &str = "actor-local io.* requires native actor IR/ABI";
+    const STDIO_GATE: &str = "process stdio is outside the Cranelift stage-0 scalar profile";
+
+    for (index, (source, gate)) in [
+        ("fnc main():int{return io;}", IO_GATE),
+        ("fnc main():int{return io.out;}", IO_GATE),
+        ("fnc main():int{return stdio;}", STDIO_GATE),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let file = std::env::temp_dir().join(format!(
+            "orescranelift-actor-io-{}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&file, source).unwrap();
+        for command in ["run", "ir"] {
+            let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(command)
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1), "{command}: unexpected exit");
+            assert!(result.stdout.is_empty(), "{command}: emitted value or CLIF");
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                stderr.contains(gate),
+                "{command}: missing actor-I/O gate: {stderr}"
+            );
+            assert!(!stderr.contains("panic"), "{command}: compiler crashed");
+        }
+        std::fs::remove_file(file).unwrap();
+    }
+}

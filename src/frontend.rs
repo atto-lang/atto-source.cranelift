@@ -255,6 +255,15 @@ impl<'a> Parser<'a> {
                 }
                 Err("rt ownership operation requires checked ownership lowering".into())
             }
+            Token::Word("io") => {
+                Err("actor-local io.* requires native actor IR/ABI, generation-fenced ActorContext and bounded async stream lowering; Cranelift stage-0 refuses to emit native code".into())
+            }
+            Token::Word("stdio") => {
+                Err("process stdio is outside the Cranelift stage-0 scalar profile; no actor/process I/O alias is permitted".into())
+            }
+            Token::Word("print") => {
+                Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
+            }
             Token::Word(s) => {
                 let index = self
                     .parameters
@@ -371,6 +380,9 @@ impl<'a> Parser<'a> {
                         | "copy"
                         | "gpu"
                         | "cpu"
+                        | "io"
+                        | "stdio"
+                        | "print"
                 ) || self.parameters.contains(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
@@ -527,6 +539,31 @@ mod tests {
     }
 
     #[test]
+    fn actor_io_namespace_is_explicitly_fail_closed() {
+        for source in [
+            "fnc main():int{return io;}",
+            "fnc main():int{return io.out;}",
+            "fnc main():int{return stdio;}",
+            "fnc main():int{return print;}",
+        ] {
+            let error = parse(source).expect_err(source);
+            assert!(
+                error.contains("actor-local io.*")
+                    || error.contains("process stdio")
+                    || error.contains("process print"),
+                "{source}: wrong actor-I/O diagnostic: {error}"
+            );
+        }
+        let actor = parse(
+            "define actor Worker as { receive(ActorMail<int> mail):void { return; } } fnc main():int{return 0;}"
+        ).expect_err("actor source must be rejected");
+        assert!(
+            !actor.trim().is_empty(),
+            "actor source rejection must carry a diagnostic"
+        );
+    }
+
+    #[test]
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
@@ -544,6 +581,9 @@ mod tests {
             "fnc main():int{return 1;} unsafe",
             "fnc main():int{return 1;}\0",
             "fnc main():int{return 1;}\u{00a0}",
+            "fnc main(io:int):int{return io;}",
+            "fnc main(stdio:int):int{return stdio;}",
+            "fnc main(print:int):int{return print;}",
         ] {
             assert!(parse(source).is_err(), "{source:?}");
         }
