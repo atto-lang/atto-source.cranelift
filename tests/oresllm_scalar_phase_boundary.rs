@@ -9,41 +9,83 @@ static NEXT_CASE: AtomicU64 = AtomicU64::new(0);
 fn invoke(mode: &str, source: &str) -> std::process::Output {
     let nonce = NEXT_CASE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "oresllm-jit-phase-{}-{nonce}.ores", std::process::id()
+        "oresllm-jit-phase-{}-{nonce}.ores",
+        std::process::id()
     ));
     let mut f = std::fs::OpenOptions::new()
-        .write(true).create_new(true).open(&path).unwrap();
-    f.write_all(format!("pub fnc main(): int {{ return {source}; }}\n").as_bytes()).unwrap();
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    f.write_all(format!("pub fnc main(): int {{ return {source}; }}\n").as_bytes())
+        .unwrap();
     drop(f);
     let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg(mode).arg(&path).output().unwrap();
+        .arg(mode)
+        .arg(&path)
+        .output()
+        .unwrap();
     std::fs::remove_file(&path).unwrap();
     result
 }
 fn compiler_rejects(expression: &str) {
     let ir = invoke("ir", expression);
-    assert_eq!(ir.status.code(), Some(1), "{expression} must fail at compile time");
-    assert!(ir.stdout.is_empty(), "{expression} leaked generated native IR");
+    assert_eq!(
+        ir.status.code(),
+        Some(1),
+        "{expression} must fail at compile time"
+    );
+    assert!(
+        ir.stdout.is_empty(),
+        "{expression} leaked generated native IR"
+    );
     let err = String::from_utf8_lossy(&ir.stderr);
-    assert!(err.starts_with("orescranelift: "), "{expression}: no compiler diagnostic: {err}");
-    assert!(!err.contains("i64 arithmetic overflow"),
-        "{expression}: syntax rejection misreported as runtime overflow");
+    assert!(
+        err.starts_with("orescranelift: "),
+        "{expression}: no compiler diagnostic: {err}"
+    );
+    assert!(
+        !err.contains("i64 arithmetic overflow"),
+        "{expression}: syntax rejection misreported as runtime overflow"
+    );
     let guest = invoke("run", expression);
-    assert_eq!(guest.status.code(), Some(1), "{expression}: runtime-mode acceptance");
-    assert!(guest.stdout.is_empty(), "{expression}: invalid source executed");
+    assert_eq!(
+        guest.status.code(),
+        Some(1),
+        "{expression}: runtime-mode acceptance"
+    );
+    assert!(
+        guest.stdout.is_empty(),
+        "{expression}: invalid source executed"
+    );
 }
 fn runtime_overflows(expression: &str) {
     let ir = invoke("ir", expression);
-    assert!(ir.status.success(), "{expression}: never reached native JIT lowering: {}",
-        String::from_utf8_lossy(&ir.stderr));
+    assert!(
+        ir.status.success(),
+        "{expression}: never reached native JIT lowering: {}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
     assert!(!ir.stdout.is_empty(), "{expression}: empty Cranelift IR");
-    assert!(ir.stderr.is_empty(), "{expression}: compiler warnings/errors leaked");
+    assert!(
+        ir.stderr.is_empty(),
+        "{expression}: compiler warnings/errors leaked"
+    );
     let guest = invoke("run", expression);
-    assert_eq!(guest.status.code(), Some(1), "{expression}: overflow exited unexpectedly");
-    assert!(guest.stdout.is_empty(), "{expression}: overflow emitted guest stdout");
-    assert_eq!(String::from_utf8_lossy(&guest.stderr),
+    assert_eq!(
+        guest.status.code(),
+        Some(1),
+        "{expression}: overflow exited unexpectedly"
+    );
+    assert!(
+        guest.stdout.is_empty(),
+        "{expression}: overflow emitted guest stdout"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&guest.stderr),
         "orescranelift: i64 arithmetic overflow\n",
-        "{expression}: native overflow category differs");
+        "{expression}: native overflow category differs"
+    );
 }
 #[test]
 fn shared_scalar_compile_rejections_are_not_jit_overflow() {
