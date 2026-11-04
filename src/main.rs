@@ -20,6 +20,10 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    // AOT may never silently fall back to the in-process stage-0 JIT.
+    if mode == "aot" || mode == "full-aot" {
+        return Err("full AOT object/executable emission is not implemented by the Cranelift scalar backend; refusing JIT fallback".into());
+    }
     if mode != "run" && mode != "ir" {
         return Err("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }

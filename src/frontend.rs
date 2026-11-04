@@ -458,6 +458,9 @@ impl<'a> Parser<'a> {
         if matches!(self.current, Token::Word("pattern") | Token::Word("match")) {
             return Err("native type-only ADT pattern lowering unsupported".into());
         }
+        if self.current == Token::Word("virtual") {
+            return Err("state containers and actor declarations require typed ownership, actor memory and lifecycle lowering; unsupported in scalar Cranelift".into());
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;

@@ -135,3 +135,15 @@ when cargo/runners are available. Stage-0 **still cannot** import the
 DB's `wal_frame` module, allocate `List<int>`, construct `Frame`,
 implement `Result<T,E>`, or offer actor-owned async WAL.
 This is a *scalar prerequisite*, NOT five-backend ODB1 parity.
+
+## Explicit full-AOT and mutable-state admission gate
+
+`orescranelift aot` and `orescranelift full-aot` explicitly reject with nonzero
+status rather than executing or packaging the stage-0 scalar JIT. Both `run`
+and `ir` reject `@Inject`/`@StateBacked` state-provider annotations,
+`define state container`, `define actor` and `define virtual actor`.
+This is intentional: native heap provenance, scoped borrow lowering,
+supervisor quiescence and deterministic object drop paths are unavailable.
+Comment-only annotation text remains inert. This is **not** evidence of full
+AOT, zero tracing GC or actor support. The negative gate verifies absence
+of generated IR, guest stdout and build artifacts.
