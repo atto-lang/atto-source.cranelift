@@ -600,3 +600,37 @@ fn source_testkit_async_callback_task_and_actor_syntax_fails_closed() {
         "42\n",
     );
 }
+
+#[test]
+fn orie_portable_checked_scalar_native_jit() {
+    // Exact Oreslang source bytes from the ORIE portable scalar candidate.
+    // This test invokes the *real* Cranelift compiler/JIT CLI, not a Rust
+    // arithmetic oracle. An authored fixture is not a CI execution receipt.
+    let entry = include_str!("fixtures/orie/entry_42.ores");
+    fixture(entry, &[], true, "42\n");
+
+    let overflow = include_str!("fixtures/orie/checked_overflow.ores");
+    let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-orie-portable-{}-{nonce}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&path, overflow).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "overflow must reject with status 1"
+    );
+    assert!(result.stdout.is_empty(), "overflow emitted a normal result");
+    let diagnostic = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        diagnostic.contains("i64 arithmetic overflow"),
+        "expected a checked-overflow diagnosis, got: {diagnostic}"
+    );
+}
