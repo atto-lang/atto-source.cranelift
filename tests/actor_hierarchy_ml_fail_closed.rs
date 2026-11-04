@@ -57,6 +57,8 @@ fn reject_both_modes(label: &str, source: &str) {
         assert!(
             [
                 "orescranelift: DECL_KIND_UNSUPPORTED: ",
+                "orescranelift: native actor pipe source lowering unsupported",
+                "orescranelift: native ActorGroup/Topic source lowering unsupported",
                 "orescranelift: actor and supervisor capabilities are unsupported in Cranelift stage-0",
                 "orescranelift: Cranelift source actor hierarchy, traits and mailbox runtime unsupported",
                 "orescranelift: E_CRITICAL_UNSUPPORTED: ",

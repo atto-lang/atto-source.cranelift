@@ -2284,3 +2284,62 @@ fn named_integer_calls_enforce_eager_checked_effects_and_arity() {
         fixture(source, &[], false, "");
     }
 }
+
+#[test]
+fn actor_pubsub_shared_corpus_fails_closed_before_clif_emission() {
+    const DIAGNOSTIC: &str = "native ActorGroup/Topic source lowering unsupported";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixtures = [
+        "actor-pubsub-v1.ores",
+        "actor-pubsub-multigroup-v1.ores",
+        "actor-pubsub-reject-payload-type.ores",
+        "actor-pubsub-reject-actor-authority.ores",
+        "actor-pubsub-reject-private-subscribe.ores",
+        "actor-pubsub-reject-mailbox-capability.ores",
+        "actor-pubsub-reject-async-capability.ores",
+    ];
+
+    for fixture_name in fixtures {
+        let source = root
+            .join("contracts")
+            .join("v1")
+            .join("fixtures")
+            .join(fixture_name);
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&source)
+                .output()
+                .unwrap();
+
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} unexpectedly admitted {fixture_name}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest output or CLIF for unsupported pub/sub fixture {fixture_name}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(DIAGNOSTIC),
+                "{mode} returned wrong pub/sub rejection for {fixture_name}: {stderr}"
+            );
+            assert!(
+                !stderr.contains("panic"),
+                "{mode} crashed while rejecting {fixture_name}: {stderr}"
+            );
+        }
+    }
+}
+
+#[test]
+fn actor_pubsub_words_inside_comments_do_not_change_scalar_programs() {
+    fixture(
+        "fnc main():int{return 42;} // actor.group( Topic<String> Subscription<String>\n",
+        &[],
+        true,
+        "42\n",
+    );
+}

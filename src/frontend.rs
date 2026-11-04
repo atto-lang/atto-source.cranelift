@@ -678,7 +678,194 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn has_actor_pubsub_surface(text: &str) -> bool {
+    has_unsupported_actor_surface(text, false)
+}
+
+fn has_actor_pipe_surface(text: &str) -> bool {
+    has_unsupported_actor_surface(text, true)
+}
+
+fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
+    // Stage-0 stays scalar-only. Detect the pub/sub surface before ordinary
+    // parsing so it cannot accidentally reach CLIF emission as the frontend
+    // grows. Comments and quoted literals are inert.
+    #[derive(Clone, Copy)]
+    enum Tok<'a> {
+        Id(&'a str),
+        Sym(u8),
+    }
+
+    fn is_ident_start(byte: u8) -> bool {
+        byte.is_ascii_alphabetic() || byte == b'_'
+    }
+    fn is_ident_continue(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut previous: Option<Tok<'_>> = None;
+    let mut before_previous: Option<Tok<'_>> = None;
+    let mut third_previous: Option<Tok<'_>> = None;
+    let mut pending_pipe = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+
+        if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            index += 2;
+            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+                index += 1;
+            }
+            continue;
+        }
+
+        if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'*' {
+            index += 2;
+            let mut depth = 1usize;
+            while index < bytes.len() && depth != 0 {
+                if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                    depth += 1;
+                    index += 2;
+                } else if index + 1 < bytes.len()
+                    && bytes[index] == b'*'
+                    && bytes[index + 1] == b'/'
+                {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+
+        if matches!(byte, b'"' | b'\'' | b'`') {
+            let quote = byte;
+            index += 1;
+            let mut escaped = false;
+            while index < bytes.len() {
+                let current = bytes[index];
+                index += 1;
+                if escaped {
+                    escaped = false;
+                } else if current == b'\\' {
+                    escaped = true;
+                } else if current == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        let current = if is_ident_start(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_ident_continue(bytes[index]) {
+                index += 1;
+            }
+            Tok::Id(&text[start..index])
+        } else {
+            index += 1;
+            Tok::Sym(byte)
+        };
+
+        let found = match (before_previous, previous, current) {
+            // Fail closed on planned runtime-wide, capability and group syntax,
+            // including forms not covered by the original ActorGroup fixtures.
+            (_, Some(Tok::Id("runtime_pubsub")), Tok::Sym(b'.')) => true,
+            (
+                _,
+                Some(Tok::Id("ActorGroup" | "TopicPublisher" | "TopicSubscriber" | "PubSub")),
+                Tok::Sym(b'<'),
+            ) => true,
+            (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
+            (_, Some(Tok::Sym(b'.')), Tok::Id("pubsub")) => true,
+            (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
+            (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
+            _ => false,
+        };
+        if !detect_pipe && found {
+            return true;
+        }
+        if detect_pipe {
+            let static_dot = matches!(
+                (before_previous, previous, current),
+                (
+                    Some(Tok::Id("ActorUtils")),
+                    Some(Tok::Sym(b'.')),
+                    Tok::Id("pipe")
+                )
+            );
+            let static_colon = matches!(
+                (third_previous, before_previous, previous, current),
+                (
+                    Some(Tok::Id("ActorUtils")),
+                    Some(Tok::Sym(b':')),
+                    Some(Tok::Sym(b':')),
+                    Tok::Id("pipe")
+                )
+            );
+            let right_start = match current {
+                Tok::Id(word) => !matches!(
+                    word,
+                    "then" | "fi" | "end" | "else" | "as" | "case" | "over"
+                ),
+                Tok::Sym(b'(' | b'[') => true,
+                _ => false,
+            };
+            if static_dot || static_colon || (pending_pipe && right_start) {
+                return true;
+            }
+            let left_end = match previous {
+                Some(Tok::Id(word)) => !matches!(
+                    word,
+                    "fnc"
+                        | "routine"
+                        | "method"
+                        | "define"
+                        | "pub"
+                        | "static"
+                        | "val"
+                        | "let"
+                        | "const"
+                        | "final"
+                        | "return"
+                        | "spawn"
+                        | "pipe"
+                        | "as"
+                        | "case"
+                ),
+                Some(Tok::Sym(b')' | b']' | b'}')) => true,
+                _ => false,
+            };
+            pending_pipe = matches!(current, Tok::Id("pipe")) && left_end;
+        }
+
+        third_previous = before_previous;
+        before_previous = previous;
+        previous = Some(current);
+    }
+
+    false
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
+    if text.len() > MAX_SOURCE {
+        return Err("source exceeds 1 MiB limit".into());
+    }
+    if has_actor_pubsub_surface(text) {
+        return Err("native ActorGroup/Topic source lowering unsupported".into());
+    }
+    if has_actor_pipe_surface(text) {
+        return Err("native actor pipe source lowering unsupported".into());
+    }
     Parser::new(text)?.program()
 }
 
@@ -1164,5 +1351,80 @@ mod tests {
             let program = parse(&source).unwrap();
             assert_eq!(eval(&program.result, &[]), expected, "{source}");
         }
+    }
+    #[test]
+    fn actor_pubsub_preflight_ignores_inert_text_and_accepts_spacing() {
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} // actor.group(x) Topic<String>"
+        ));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} /* actor . group (x) .topic<String> */"
+        ));
+        assert!(!has_actor_pubsub_surface(
+            r#"fnc main():int{return 42;} "actor.group(x) Topic<String>""#
+        ));
+        assert!(has_actor_pubsub_surface("actor . group ( x )"));
+        assert!(has_actor_pubsub_surface("value . topic < String > (x)"));
+        assert!(has_actor_pubsub_surface("Topic < String >"));
+        assert!(has_actor_pubsub_surface("Subscription < String >"));
+        assert!(has_actor_pubsub_surface(
+            "runtime_pubsub.define_topic<PriceTick>(#prices)"
+        ));
+        assert!(has_actor_pubsub_surface("TopicPublisher < PriceTick >"));
+        assert!(has_actor_pubsub_surface("TopicSubscriber < PriceTick >"));
+        assert!(has_actor_pubsub_surface("my_group . pubsub ( )"));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} /* TopicPublisher runtime_pubsub */"
+        ));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main():int{return 42;} // TopicSubscriber\\n"
+        ));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main(TopicPublisher:int):int{return TopicPublisher;}"
+        ));
+        assert!(!has_actor_pubsub_surface(
+            "fnc main(runtime_pubsub:int):int{return runtime_pubsub;}"
+        ));
+        assert!(parse("fnc main(TopicPublisher:int):int{return TopicPublisher;}").is_ok());
+        assert!(parse("fnc main(runtime_pubsub:int):int{return runtime_pubsub;}").is_ok());
+    }
+
+    #[test]
+    fn actor_pipe_preflight_rejects_source_without_misreading_functional_forward() {
+        for src in [
+            "return spawn Source() pipe spawn Sink();",
+            "return ActorUtils::pipe(spawn Source(), spawn Sink());",
+            "return ActorUtils.pipe(spawn Source(), spawn Sink());",
+            "return first pipe second;",
+        ] {
+            assert!(has_actor_pipe_surface(src), "must reject actor pipe: {src}");
+            assert!(
+                parse(src)
+                    .unwrap_err()
+                    .contains("native actor pipe source lowering unsupported")
+            );
+        }
+        for inert in [
+            "fnc pipe(x:int):int{return x;}",
+            "fnc main(pipe:int):int{return pipe+1;}",
+            "fnc main():int{return 42;} // spawn A() pipe spawn B()",
+            r#"fnc main():int{return 42;} "ActorUtils::pipe(A,B)""#,
+            "fnc main(x:int):int{return x |> add_one;}",
+        ] {
+            assert!(!has_actor_pipe_surface(inert), "must ignore inert: {inert}");
+        }
+        assert!(
+            parse("fnc main(pipe:int):int{return pipe+1;}").is_ok(),
+            "a contextual pipe operator must not ban scalar parameters named pipe"
+        );
+    }
+
+    #[test]
+    fn actor_preflight_cr_comments_end_at_carriage_return() {
+        assert!(has_actor_pubsub_surface("// inert\rruntime_pubsub.publish"));
+        assert!(has_actor_pipe_surface("// inert\rfirst pipe second"));
+        assert!(!has_actor_pubsub_surface(
+            "// runtime_pubsub.publish\rfnc main():int{return 1;}"
+        ));
     }
 }
