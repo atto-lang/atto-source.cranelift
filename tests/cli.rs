@@ -76,6 +76,46 @@ fn native_execution_and_negative_controls() {
 }
 
 #[test]
+fn rate_limit_weighted_counter_scalar_native_execution() {
+    // Genuine CLIF-JIT guest computations for the shared *scalar*
+    // rate-limit arithmetic intersection. No quota authority is implemented.
+    const SOURCE: &str = "fnc main(limit:int,used:int,units:int):int{return limit-used-units;}";
+    for (args, expected) in [
+        (["100", "60", "15"], "25\n"),
+        (["100", "99", "1"], "0\n"),
+        (["100", "99", "2"], "-1\n"),
+        (["9007199254740991", "9007199254740990", "1"], "0\n"),
+    ] {
+        fixture(SOURCE, &args, true, expected);
+    }
+    fixture("fnc main():int{return 100-60-15;}", &[], true, "25\n");
+    fixture(
+        "fnc main():int{return 9007199254740991-9007199254740990;}",
+        &[],
+        true,
+        "1\n",
+    );
+    // Signed64 overflow and unsupported features MUST reject before emitting
+    // a value. This does not confer uint64 wire admission.
+    fixture(SOURCE, &["9223372036854775807", "-1", "0"], false, "");
+    fixture(SOURCE, &["-9223372036854775808", "1", "0"], false, "");
+    fixture(
+        "fnc main():int{return 9223372036854775807+1;}",
+        &[],
+        false,
+        "",
+    );
+    fixture("fnc main():int{return 100/60;}", &[], false, "");
+    fixture("fnc main():int{return 100>60;}", &[], false, "");
+    fixture(
+        "define module backpressure as pub fnc limit():int{return 42;} end",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
 fn native_integer_bitxor_source_execution() {
     // Real Oreslang-shaped source -> frontend -> CLIF native JIT -> result.
     // Signed64 edge vectors correspond to Java strict named arithmetic v1.
@@ -327,7 +367,11 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
                 "{mode} emitted stdout on rejection"
             );
             assert!(
-                String::from_utf8_lossy(&result.stderr).contains("source must be a regular file"),
+                String::from_utf8_lossy(&result.stderr).contains(if source == &link {
+                    "Too many levels of symbolic links"
+                } else {
+                    "source must be a regular file"
+                }),
                 "{mode} returned wrong diagnostic: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
@@ -409,6 +453,124 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         true,
         "42\n",
     );
+}
+
+#[test]
+fn injected_mutable_heap_state_denies_real_jit_before_output() {
+    for source in [
+        "@Inject(MutableStateContainer()) define class Counter as state { count: int = 0; } end",
+        "@Inject(MutableStateContainer(scope = #singleton)) define singleton Counter as state {} end",
+        "fnc main():int{return 1;} @Inject(MutableStateContainer())",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // A comment never changes the native scalar language's semantics.
+    fixture(
+        "// @Inject(MutableStateContainer()) is only documentation\nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn injected_state_diagnostic_is_specific_and_no_ir_is_emitted() {
+    let source = "@Inject(MutableStateContainer()) define class Counter as state {} end";
+    let suffix = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!(
+        "orescranelift-injection-denial-{}-{suffix}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&file, source).unwrap();
+    for mode in ["run", "ir"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{mode} unexpectedly accepted state injection"
+        );
+        assert!(output.stdout.is_empty(), "{mode} emitted native output");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains("STATE_INJECTION_UNSUPPORTED: @Inject"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic
+                .contains("requires owned state, typed borrow checking and lifecycle lowering"),
+            "{diagnostic}"
+        );
+    }
+    std::fs::remove_file(file).unwrap();
+}
+
+#[test]
+fn flags2env_client_abi_status_scalar_native_execution() {
+    const SOURCE: &str = include_str!("fixtures/flags2env-client-abi-status.ores");
+    const EXPECTED: &str = "// Shared scalar ABI smoke for every Oreslang backend, including Cranelift.\n// Encodes public host statuses 0..4 without imports, strings or control flow.\npub fnc main(): int {\n  return (0 * 10000) + (1 * 1000) + (2 * 100) + (3 * 10) + 4 - 1192;\n}\n";
+    assert_eq!(
+        SOURCE.as_bytes(),
+        EXPECTED.as_bytes(),
+        "flags2env fixture bytes drifted"
+    );
+    fixture(SOURCE, &[], true, "42\n");
+}
+
+#[test]
+fn heap_container_source_refuses_scalar_only_jit_fallback() {
+    // Execute the actual scalar CLI, rather than matching text in a contract.
+    // No Box, Arc, Weak, Vector, Array, borrowed heap or guarded mutation
+    // lowering exists in this stage-0 Cranelift frontend. Fail closed.
+    for (name, source) in [
+        (
+            "unique heap Box",
+            "pub fnc main(): int { val Box<int> owner = Box<int>(42); return 42; }",
+        ),
+        (
+            "atomic Arc",
+            "pub fnc main(): int { val Arc<int> owner = Arc<int>(42); return 42; }",
+        ),
+        (
+            "weak shared owner",
+            "pub fnc main(): int { val Weak<int> weak = null; return 42; }",
+        ),
+        (
+            "resizable Vector",
+            "pub fnc main(): int { val Vector[int] values = [42]; return 42; }",
+        ),
+        (
+            "resizable Array",
+            "pub fnc main(): int { val Array<int> a = new Array<int>(); a.add(42); return a.get(0); }",
+        ),
+        (
+            "unique move after take",
+            "pub fnc main(): int { let int value = 42; let moved = rt take value; return value; }",
+        ),
+        (
+            "borrow heap value",
+            "pub fnc main(): int { let int value = 42; let loan = rt borrow value; return loan; }",
+        ),
+        (
+            "exclusive heap borrow",
+            "pub fnc main(): int { let int value = 42; let loan = rt mut borrow value; return loan; }",
+        ),
+        (
+            "mut share without synchronized proof",
+            "pub fnc main(): int { let int value = 42; rt mut share value; return value; }",
+        ),
+        (
+            "shared guard state",
+            "pub fnc main(): int { val Mutex<int> cell = Mutex<int>(42); return 42; }",
+        ),
+    ] {
+        assert!(!source.is_empty(), "{name} fixture must be nonempty");
+        fixture(source, &[], false, "");
+    }
+    // Keep the already supported common scalar intersection executable.
+    fixture("pub fnc main(): int { return 21 + 21; }", &[], true, "42\n");
 }
 
 #[test]
