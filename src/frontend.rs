@@ -107,6 +107,19 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
+        } else if first == b'@' {
+            // A recognized injection annotation is NOT source support.
+            // Explicitly fail closed before any native JIT emission rather than
+            // accidentally ignoring state-region ownership semantics.
+            let remainder = &b[self.pos..];
+            let intrinsic = b"Inject";
+            let exact = remainder.starts_with(intrinsic)
+                && remainder.get(intrinsic.len()).is_none_or(|next|
+                    !next.is_ascii_alphanumeric() && *next != b'_');
+            if exact {
+                return Err("@Inject state-container lowering requires verified private regions, scoped borrows and runtime admission; unsupported in Cranelift".into());
+            }
+            return Err("source annotations require checked compiler lowering; unsupported in Cranelift".into());
         } else if b"()+-*{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -256,6 +269,21 @@ impl<'a> Parser<'a> {
             } else {
                 break;
             }
+        }
+        // Stage-0 has no nominal type descriptors, sealed-state loans,
+        // actor identity or supervisor CONTROL lane. A declaration must never
+        // be reinterpreted as a scalar main() function.
+        let unsupported_kind = match self.current {
+            Token::Word("state") => Some("state container"),
+            Token::Word(kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model"
+                | "enum" | "class" | "struct" | "record" | "interface"
+                | "trait" | "protocol" | "service")) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = unsupported_kind {
+            return Err(format!(
+                "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
+            ));
         }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
