@@ -26,8 +26,14 @@ fn invoke(mode: &str, source: &str) -> std::process::Output {
 #[test]
 fn actor_sync_guest_source_is_not_silently_accepted_as_scalar_jit() {
     let cases = [
-        ("isolated-actor", "define isolated actor Cart as state int count; end"),
-        ("actor-plus-main", "define isolated actor Cart as end fnc main():int{return 42;}"),
+        (
+            "isolated-actor",
+            "define isolated actor Cart as state int count; end",
+        ),
+        (
+            "actor-plus-main",
+            "define isolated actor Cart as end fnc main():int{return 42;}",
+        ),
         ("actor-state", "define actor Cart as state int count; end"),
         ("virtual-ref", "fnc main():int{return ActorRef<Cart>(0);}"),
         ("spawn", "fnc main():int{return spawn Cart();}"),
@@ -62,7 +68,10 @@ fn actor_sync_guest_source_is_not_silently_accepted_as_scalar_jit() {
 
 #[test]
 fn actor_sync_words_in_comments_do_not_break_supported_scalar_guest() {
-    let output=invoke("run", "fnc main():int{return 42;} // actor sync watch critical\n");
+    let output = invoke(
+        "run",
+        "fnc main():int{return 42;} // actor sync watch critical\n",
+    );
     assert!(output.status.success(), "{:?}", output.stderr);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
