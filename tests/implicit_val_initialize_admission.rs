@@ -1,10 +1,38 @@
-//! Nominal fields and initializers are unsupported by stage-0 Cranelift.
-//! Execute both compiler modes using an exclusive bounded .atto fixture.
-#[path = "support/mod.rs"]
-mod support;
+//! Stage-0 cannot compile nominal class fields or initializers. Keep every
+//! proposed backend-neutral construction form fail-closed in both JIT and IR
+//! modes until the actual checked class layout/ownership backend exists.
+//! These are real CLI admission tests; rejection is NOT feature parity.
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-fn invoke(mode: &str, source: &str) -> std::process::Output {
-    support::run_source(mode, source.as_bytes(), &[])
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+struct SourceFile(PathBuf);
+impl SourceFile {
+    fn new(source: &str) -> Self {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let file = std::env::temp_dir().join(format!(
+            "orescranelift-initialize-v1-{}-{id}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&file, source).expect("create isolated fixture");
+        Self(file)
+    }
+}
+impl Drop for SourceFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn invoke(mode: &str, source: &str) -> Output {
+    let file = SourceFile::new(source);
+    Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg(mode)
+        .arg(&file.0)
+        .output()
+        .expect("run actual stage-0 CLI")
 }
 
 #[test]

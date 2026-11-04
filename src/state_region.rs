@@ -10,10 +10,16 @@
 const MAX_JSON_SAFE_ID: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoanKind { Read, Write }
+pub enum LoanKind {
+    Read,
+    Write,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoanAction { Borrow, Release }
+pub enum LoanAction {
+    Borrow,
+    Release,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateRegionLoanRequirement<'a> {
@@ -34,27 +40,43 @@ impl<'a> StateRegionLoanRequirement<'a> {
         kind: LoanKind,
         action: LoanAction,
     ) -> Result<Self, &'static str> {
-        if region_binding.trim().is_empty() { return Err("region binding required"); }
-        if !generation_fence { return Err("state loan must be generation fenced"); }
+        if region_binding.trim().is_empty() {
+            return Err("region binding required");
+        }
+        if !generation_fence {
+            return Err("state loan must be generation fenced");
+        }
         if loan_id == 0 || loan_id > MAX_JSON_SAFE_ID {
             return Err("loan id must be an exact positive JSON/WASM integer");
         }
-        if place.trim().is_empty() { return Err("state loan place required"); }
-        Ok(Self { region_binding, generation_fence, loan_id, place, kind, action })
+        if place.trim().is_empty() {
+            return Err("state loan place required");
+        }
+        Ok(Self {
+            region_binding,
+            generation_fence,
+            loan_id,
+            place,
+            kind,
+            action,
+        })
     }
 
     pub fn authorizes_release(&self, release: &Self) -> bool {
-        self.valid() && release.valid()
+        self.valid()
+            && release.valid()
             && self.action == LoanAction::Borrow
             && release.action == LoanAction::Release
             && self.region_binding == release.region_binding
             && self.generation_fence == release.generation_fence
-            && self.loan_id == release.loan_id && self.place == release.place
+            && self.loan_id == release.loan_id
+            && self.place == release.place
             && self.kind == release.kind
     }
 
     fn valid(&self) -> bool {
-        !self.region_binding.trim().is_empty() && self.generation_fence
+        !self.region_binding.trim().is_empty()
+            && self.generation_fence
             && (1..=MAX_JSON_SAFE_ID).contains(&self.loan_id)
             && !self.place.trim().is_empty()
     }
@@ -91,11 +113,20 @@ impl<'a> StateRegionLoanProvenance<'a> {
         action: LoanAction,
     ) -> Result<Self, &'static str> {
         let candidate = Self {
-            region_id, region_generation, runtime_domain,
-            execution_id, execution_slot, execution_generation,
-            loan_id, place, kind, action,
+            region_id,
+            region_generation,
+            runtime_domain,
+            execution_id,
+            execution_slot,
+            execution_generation,
+            loan_id,
+            place,
+            kind,
+            action,
         };
-        if !candidate.valid() { return Err("invalid state-region provenance"); }
+        if !candidate.valid() {
+            return Err("invalid state-region provenance");
+        }
         Ok(candidate)
     }
 
@@ -111,7 +142,8 @@ impl<'a> StateRegionLoanProvenance<'a> {
     }
 
     pub fn authorizes_release(&self, release: &Self) -> bool {
-        self.valid() && release.valid()
+        self.valid()
+            && release.valid()
             && self.action == LoanAction::Borrow
             && release.action == LoanAction::Release
             && self.region_id == release.region_id
@@ -120,7 +152,8 @@ impl<'a> StateRegionLoanProvenance<'a> {
             && self.execution_id == release.execution_id
             && self.execution_slot == release.execution_slot
             && self.execution_generation == release.execution_generation
-            && self.loan_id == release.loan_id && self.place == release.place
+            && self.loan_id == release.loan_id
+            && self.place == release.place
             && self.kind == release.kind
     }
 
@@ -128,7 +161,10 @@ impl<'a> StateRegionLoanProvenance<'a> {
         if !self.valid() || self.action != LoanAction::Borrow {
             return Err("only valid borrow provenance can derive release");
         }
-        Ok(Self { action: LoanAction::Release, ..*self })
+        Ok(Self {
+            action: LoanAction::Release,
+            ..*self
+        })
     }
 }
 
@@ -138,9 +174,18 @@ mod tests {
 
     fn borrow() -> StateRegionLoanProvenance<'static> {
         StateRegionLoanProvenance::new(
-            9, 3, 7, 1001, 41, 6, 501, "inventory.stock",
-            LoanKind::Write, LoanAction::Borrow,
-        ).unwrap()
+            9,
+            3,
+            7,
+            1001,
+            41,
+            6,
+            501,
+            "inventory.stock",
+            LoanKind::Write,
+            LoanAction::Borrow,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -154,19 +199,49 @@ mod tests {
         assert!(good.release_record().is_err());
 
         let invalid = [
-            StateRegionLoanProvenance { execution_id: 1002, ..good },
-            StateRegionLoanProvenance { runtime_domain: 8, ..good },
-            StateRegionLoanProvenance { execution_generation: 5, ..good },
-            StateRegionLoanProvenance { execution_slot: 42, ..good },
-            StateRegionLoanProvenance { region_id: 10, ..good },
-            StateRegionLoanProvenance { region_generation: 2, ..good },
-            StateRegionLoanProvenance { loan_id: 502, ..good },
-            StateRegionLoanProvenance { place: "inventory.reserved", ..good },
-            StateRegionLoanProvenance { kind: LoanKind::Read, ..good },
+            StateRegionLoanProvenance {
+                execution_id: 1002,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                runtime_domain: 8,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                execution_generation: 5,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                execution_slot: 42,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                region_id: 10,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                region_generation: 2,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                loan_id: 502,
+                ..good
+            },
+            StateRegionLoanProvenance {
+                place: "inventory.reserved",
+                ..good
+            },
+            StateRegionLoanProvenance {
+                kind: LoanKind::Read,
+                ..good
+            },
         ];
         assert_eq!(invalid.len(), 9);
         for (index, forged) in invalid.iter().enumerate() {
-            assert!(!b.authorizes_release(forged), "forged release {index} accepted");
+            assert!(
+                !b.authorizes_release(forged),
+                "forged release {index} accepted"
+            );
         }
     }
 
@@ -187,50 +262,111 @@ mod tests {
             assert!(!invalid.authorizes_release(&b.release_record().unwrap()));
             assert!(invalid.release_record().is_err());
         }
-        assert!(StateRegionLoanProvenance::new(
-            9, 3, 7, 1001, 41, 6, 501, " ",
-            LoanKind::Read, LoanAction::Borrow,
-        ).is_err());
+        assert!(
+            StateRegionLoanProvenance::new(
+                9,
+                3,
+                7,
+                1001,
+                41,
+                6,
+                501,
+                " ",
+                LoanKind::Read,
+                LoanAction::Borrow,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn compiler_requirement_is_symbolic_and_fenced() {
         let b = StateRegionLoanRequirement::new(
-            "inventory.state", true, 501, "inventory.stock",
-            LoanKind::Write, LoanAction::Borrow,
-        ).unwrap();
+            "inventory.state",
+            true,
+            501,
+            "inventory.stock",
+            LoanKind::Write,
+            LoanAction::Borrow,
+        )
+        .unwrap();
         let release = StateRegionLoanRequirement {
-            action: LoanAction::Release, ..b
+            action: LoanAction::Release,
+            ..b
         };
         assert!(b.authorizes_release(&release));
         for bad in [
-            StateRegionLoanRequirement { region_binding: "other", ..release },
-            StateRegionLoanRequirement { generation_fence: false, ..release },
-            StateRegionLoanRequirement { loan_id: 502, ..release },
-            StateRegionLoanRequirement { place: "inventory.reserved", ..release },
-            StateRegionLoanRequirement { kind: LoanKind::Read, ..release },
-            StateRegionLoanRequirement { action: LoanAction::Borrow, ..release },
+            StateRegionLoanRequirement {
+                region_binding: "other",
+                ..release
+            },
+            StateRegionLoanRequirement {
+                generation_fence: false,
+                ..release
+            },
+            StateRegionLoanRequirement {
+                loan_id: 502,
+                ..release
+            },
+            StateRegionLoanRequirement {
+                place: "inventory.reserved",
+                ..release
+            },
+            StateRegionLoanRequirement {
+                kind: LoanKind::Read,
+                ..release
+            },
+            StateRegionLoanRequirement {
+                action: LoanAction::Borrow,
+                ..release
+            },
         ] {
             assert!(!b.authorizes_release(&bad));
         }
-        assert!(StateRegionLoanRequirement::new(
-            "", true, 1, "x", LoanKind::Read, LoanAction::Borrow
-        ).is_err());
-        assert!(StateRegionLoanRequirement::new(
-            "region", false, 1, "x", LoanKind::Read, LoanAction::Borrow
-        ).is_err());
-        assert!(StateRegionLoanRequirement::new(
-            "region", true, 0, "x", LoanKind::Read, LoanAction::Borrow
-        ).is_err());
+        assert!(
+            StateRegionLoanRequirement::new("", true, 1, "x", LoanKind::Read, LoanAction::Borrow)
+                .is_err()
+        );
+        assert!(
+            StateRegionLoanRequirement::new(
+                "region",
+                false,
+                1,
+                "x",
+                LoanKind::Read,
+                LoanAction::Borrow
+            )
+            .is_err()
+        );
+        assert!(
+            StateRegionLoanRequirement::new(
+                "region",
+                true,
+                0,
+                "x",
+                LoanKind::Read,
+                LoanAction::Borrow
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn wasm_json_identity_boundary_never_aliases_64_bit_values() {
         let max = MAX_JSON_SAFE_ID;
         let good = StateRegionLoanProvenance::new(
-            max, max, max, max, max, max, max, "inventory.stock",
-            LoanKind::Write, LoanAction::Borrow,
-        ).unwrap();
+            max,
+            max,
+            max,
+            max,
+            max,
+            max,
+            max,
+            "inventory.stock",
+            LoanKind::Write,
+            LoanAction::Borrow,
+        )
+        .unwrap();
         assert!(good.authorizes_release(&good.release_record().unwrap()));
         for component in 0..7 {
             let mut bad = good;
@@ -246,18 +382,41 @@ mod tests {
             assert!(!bad.authorizes_release(&good.release_record().unwrap()));
             assert!(bad.release_record().is_err());
         }
-        assert!(StateRegionLoanProvenance::new(
-            max + 1, 3, 7, 1001, 41, 6, 501, "inventory.stock",
-            LoanKind::Write, LoanAction::Borrow,
-        ).is_err());
+        assert!(
+            StateRegionLoanProvenance::new(
+                max + 1,
+                3,
+                7,
+                1001,
+                41,
+                6,
+                501,
+                "inventory.stock",
+                LoanKind::Write,
+                LoanAction::Borrow,
+            )
+            .is_err()
+        );
         let requirement = StateRegionLoanRequirement::new(
-            "inventory", true, max, "inventory.stock",
-            LoanKind::Read, LoanAction::Borrow,
-        ).unwrap();
-        assert!(StateRegionLoanRequirement::new(
-            "inventory", true, max + 1, "inventory.stock",
-            LoanKind::Read, LoanAction::Borrow,
-        ).is_err());
+            "inventory",
+            true,
+            max,
+            "inventory.stock",
+            LoanKind::Read,
+            LoanAction::Borrow,
+        )
+        .unwrap();
+        assert!(
+            StateRegionLoanRequirement::new(
+                "inventory",
+                true,
+                max + 1,
+                "inventory.stock",
+                LoanKind::Read,
+                LoanAction::Borrow,
+            )
+            .is_err()
+        );
         assert!(requirement.valid());
     }
 

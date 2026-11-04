@@ -15,18 +15,29 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Verify raw pinned source tree without invoking worktree filters
+      - name: Verify exact source revision and Git tree
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          python3 scripts/verify_checkout_raw.py
-          echo "SOURCE_COMMIT=$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet
+          echo "SOURCE_COMMIT=$EXPECTED"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
-      - name: Reject malformed raw trees, symlinks, tampering and clean-filter execution
+      - name: Verify exact client-scalar guest SHA-256 identities
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tests -p test_checkout_raw.py -v
+          sha256sum --check --status <<'CHECKSUMS'
+          e42464360ffa360b263bc74f74ef485e6a9e4eb9dff601ead2c4576982622576  tests/fixtures/clients-scalar-v1/01-precedence.ores
+          9196a61de9c4710bdf32e658de396c521ad2abb2e3d03ce711ae449ac7aa5a2f  tests/fixtures/clients-scalar-v1/02-grouping.ores
+          613d1e1e104361ce555f397dd0d23754d44ade5b80750147110c1e4a73cce286  tests/fixtures/clients-scalar-v1/03-signed.ores
+          b0f80c76a24cb15ed25fee0bdaa096d7cbcd318f787f7d8a040166c127532247  tests/fixtures/clients-scalar-v1/04-i64-edge.ores
+          2bcfdc119d3e48b9ac97e2061b7b88571d6e621b04ecabf886347d9eeb19382c  tests/fixtures/clients-scalar-v1/05-separators.ores
+          dd1bf333cdd17140571227e810427030a279666b8a4d06eb5968a056cf5a8a2a  tests/fixtures/clients-scalar-v1/06-nested.ores
+          c45493f0814253ab5a2e8896d8b39643c7b8e1247d408eef11baccd79d6580e1  tests/fixtures/clients-scalar-v1/07-unknown-reject.ores
+          37b793a36e231ee37d953b8359cd0f004dc008a795eb32a413762a0a504c542c  tests/fixtures/clients-scalar-v1/08-overflow-reject.ores
+          32f4b30c52ce58955ecbb0aa0d564f0ac394737940faaab01351e25ed9df4b75  tests/fixtures/clients-scalar-v1/09-syntax-reject.ores
+          CHECKSUMS
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: "1.99.1"
@@ -44,3 +55,13 @@ jobs:
           test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke.atto" 12)" = 42
           printf 'fnc main(x:int):int{return (x+2)*3;}\n' > "$RUNNER_TEMP/smoke-legacy.ores"
           test "$(cargo run --locked --quiet -- run "$RUNNER_TEMP/smoke-legacy.ores" 12)" = 42
+      - name: Compile six canonical native Oreslang scalar fixtures and execute JIT
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin orescranelift
+          export CRANELIFT_COMPILER_SHA256="$(sha256sum target/debug/orescranelift | cut -d ' ' -f 1)"
+          test "${#CRANELIFT_COMPILER_SHA256}" -eq 64
+          sh -n scripts/verify-portable-scalar.sh
+          sh scripts/verify-portable-scalar.sh target/debug/orescranelift

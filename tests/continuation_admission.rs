@@ -1,10 +1,37 @@
-//! Continuations remain unsupported by the stage-0 native scalar compiler.
-//! A rejection is not proof of async/actor implementation parity.
-#[path = "support/mod.rs"]
-mod support;
+//! Stage-0 Cranelift is scalar-only. Never compile unsupported async/actor
+//! syntax into a scalar JIT value or silently interpret `await` as a no-op.
+//! These are actual CLI source->parser->backend admission tests, not a
+//! continuation implementation or a proof of LLVM actor-runtime parity.
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+static NEXT: AtomicU64 = AtomicU64::new(0);
+struct Fixture(PathBuf);
+impl Fixture {
+    fn new(source: &str) -> Self {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-continuation-denial-{}-{}.ores",
+            std::process::id(),
+            n
+        ));
+        std::fs::write(&path, source).expect("write isolated source fixture");
+        Self(path)
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 fn run(mode: &str, source: &str) -> std::process::Output {
-    support::run_source(mode, source.as_bytes(), &[])
+    let file = Fixture::new(source);
+    Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg(mode)
+        .arg(&file.0)
+        .output()
+        .expect("invoke real Cranelift CLI")
 }
 
 #[test]

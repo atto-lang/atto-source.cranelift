@@ -1,10 +1,26 @@
-//! Actor Sync v1 is a negative-admission suite, not actor runtime parity.
-//! Run through the actual bounded native compiler without clobbering /tmp.
-#[path = "support/mod.rs"]
-mod support;
+//! Actor Sync v1 conformance *negative admission only*.
+//! This stage-0 Cranelift backend compiles scalar native JIT programs, not
+//! source actors, durable guest APIs or actor-owned heaps. These checks may
+//! NEVER be recorded as a positive AS01-AS24 native actor parity receipt.
+
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn invoke(mode: &str, source: &str) -> std::process::Output {
-    support::run_source(mode, source.as_bytes(), &[])
+    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-sync-negative-{}-{nonce}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).expect("write negative fixture");
+    let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg(mode)
+        .arg(&path)
+        .output()
+        .expect("invoke Cranelift executable");
+    std::fs::remove_file(path).expect("remove fixture");
+    output
 }
 
 #[test]

@@ -1,9 +1,22 @@
-//! Real source admission, not nominal class/actor runtime parity.
-#[path = "support/mod.rs"]
-mod support;
+//! Actual Cranelift frontend CLI gates, not a model of future nominal support.
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn run_source(source: &str, mode: &str) -> std::process::Output {
-    support::run_source(mode, source.as_bytes(), &[])
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "ores-declaration-kind-{}-{sequence}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg(mode)
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    output
 }
 
 #[test]
@@ -39,7 +52,10 @@ fn rejects_every_unsupported_nominal_declaration_without_output() {
         for mode in ["run", "ir"] {
             let output = run_source(source, mode);
             assert!(!output.status.success(), "{mode} accepted {source}");
-            assert!(output.stdout.is_empty(), "{mode} emitted output for {source}");
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted output for {source}"
+            );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 stderr.contains("DECL_KIND_UNSUPPORTED"),

@@ -1,22 +1,33 @@
 # AttoLang Cranelift backend
 
-**AttoLang** (formerly Oreslang) has an **independent Rust + Cranelift** experimental backend. It is
+**AttoLang** is the current public language name (formerly **Oreslang**).
+The independent Cranelift JIT compiles a deliberately limited signed-i64 scalar subset, not full AttoLang.
+This branding change does not imply full-language parity, AOT capabilities or
+zero-GC guarantees. This backend's checked signed-i64 scalar subset has passed
+real native execution tests using both `.atto` and legacy `.ores` files; new
+fixtures for this verified subset SHOULD use `.atto`.
+Do not rename repositories, dependencies, commands or fixed interfaces merely
+to make their names match the public brand.
+
+
+An **independent Rust + Cranelift** experimental backend for AttoLang. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
 
-## Stage-0 executable scalar profile (`.atto`; legacy `.ores`)
+## Stage-0 executable scalar profile (validated `.atto` and `.ores`)
 
-This backend compiles a deliberately narrow AttoLang source subset from `.atto`
-(or legacy `.ores`) into **actual Cranelift native JIT machine code**, with checked overflow
+This backend compiles a deliberately narrow Oreslang source subset
+into **actual Cranelift native JIT machine code** from `.atto` or `.ores` source, with a checked overflow
 status rather than an unchecked wrap or process trap.
 
-```atto
+```oreslang
 fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
 cargo run --locked -- run example.atto 7 8 # 72
 cargo run --locked -- ir example.atto      # generated Cranelift IR
+cargo test --locked --all-targets            # includes .atto/.ores execution parity
 cargo test --locked --all-targets
 ```
 
@@ -25,27 +36,18 @@ signed i64 literals (including MIN and digit separators such as `1_000`),
 grouping, unary +/-, binary + - *, and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected.
+native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
+named functions (including `rem`, `mod`, and `pow`) remain unsupported.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
-Rejected: **everything else**, including removed arithmetic operators (`%`, `^`, `^^`),
-imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, remainder syntax,
+Rejected: **everything else**, including imports, helper functions, user-defined calls,
+classes, actors, heaps, ownership, recursion, async, control flow, division, all remainder expressions,
 structural types, UTF-8 identifiers, and any trailing code.
 
-The source operators `%`, `^` and `^^` are all rejected, in line with
-AttoLang's revised operator policy. `Integer.bitXor(a,b)` remains a separate
-named integer operation; it must not be parsed as a caret operator.
-The Cranelift scalar subset does not yet expose a portable named remainder
-operation. Other named `Integer.*` functions remain unsupported.
-
-Source suffix compatibility is verified by `tests/atto_extension.rs`: matching
-positive scalar execution and fail-closed unsupported-source rejection for
-`.atto` and `.ores`. This test is source code, **not** new executed evidence
-until the exact PR-head native runner starts and Cargo tests pass.
-
+The `%`, `^`, and `^^` operators are rejected at lexer admission. Typed
+`Integer.bitXor` remains available.
 
 ## Explicit security boundary
 
@@ -59,7 +61,7 @@ are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
 This branch remains experimental. Passing its scalar JIT tests does **not**
-establish full AttoLang support, actor isolation or Forge self-hosting.
+establish full Oreslang support, actor isolation or Forge self-hosting.
 
 ## Acceptance
 
@@ -83,12 +85,9 @@ blob or provide executed cross-backend equivalence evidence.
 
 ## Unix source file admission
 
-On Unix the CLI opens source descriptors with `O_NONBLOCK` and
-`O_NOFOLLOW`, then validates that the opened descriptor is a regular file.
-This rejects FIFO inputs without waiting for a writer, and rejects
-symlinks to both regular files and FIFOs in `run` and `ir`. `O_NOFOLLOW`
-protects the final path component; it does not independently attest every
-ancestor directory or provide an isolation boundary.
+The CLI opens source descriptors nonblocking before validating that the
+*opened descriptor* is a regular file. This rejects FIFO inputs, including
+symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
