@@ -925,3 +925,46 @@ fn native_platform_portability_v1_rejects_fake_backend_features() {
         fixture(source, &[], false, "");
     }
 }
+
+#[test]
+fn actor_finalization_v1_is_fail_closed_until_native_actor_lowering_exists() {
+    // AF01–AF20: negative *admission* coverage only, never guest parity.
+    // Cranelift currently compiles a scalar i64 subset and must never turn
+    // actor lifecycle, ETS or supervisor CONTROL source into numeric output.
+    for source in [
+        "define actor Worker as end fnc main():int{return 42;}",
+        "define serial actor Worker as end fnc main():int{return 42;}",
+        "fnc main():int{spawn Worker();return 42;}",
+        "fnc main():int{return spawn Worker();}",
+        "fnc main():int{return actor.request_close();}",
+        "fnc main():int{return supervisor.finalize_stop(1);}",
+        "fnc main():int{return actor.restart();}",
+        "fnc main():int{return table.give_away(1,2);}",
+        "fnc main():int{return actor.handle_state(critical-read);}",
+        "fnc main():int{return rt mut share 42;}",
+        "fnc main():int{return panic(42);}",
+        "fnc main():int{return raise(42);}",
+        "fnc main():int{return await spawn Worker();}",
+        "fnc main():int{return ets.insert_new(1,2);}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn actor_finalization_words_inside_comments_do_not_change_scalar_result() {
+    // A safety gate must not reject unrelated source merely because a
+    // comment mentions unsupported runtime operations.
+    fixture(
+        "fnc main():int{return 40+2;} // actor request_close panic supervisor CONTROL\n",
+        &[],
+        true,
+        "42\n",
+    );
+    fixture(
+        "fnc main():int{return Integer.bitXor(5,3);} // ETS give_away\n",
+        &[],
+        true,
+        "6\n",
+    );
+}
