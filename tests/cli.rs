@@ -30,11 +30,26 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     if ok {
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     } else {
+        // The scalar CLI's owned compiler rejection is exit(1) with a
+        // structured diagnostic. A SIGABRT/panic/loader error is not a pass.
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "negative fixture must reject through the native compiler"
+        );
         assert!(
             output.stdout.is_empty(),
             "rejected compilation printed stdout"
         );
-        assert!(!output.stderr.is_empty(), "rejection requires a diagnostic");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.starts_with("orescranelift: "),
+            "rejection requires a compiler-owned diagnostic: {diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains("panicked at") && !diagnostic.contains("thread 'main' panicked"),
+            "compiler crash is not an admitted negative fixture"
+        );
     }
 }
 #[test]
@@ -365,6 +380,11 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
         "Integer.bitXor(rt mut share 1, 2)",
         "rt mut share (rt mut share 1)",
         "rt mut share (1 + 2)",
+        // Shared six-vector checked-denial intersection with LLVM->Wasm.
+        "1 + (rt mut share 2)",
+        "rt mut share (rt borrow 3)",
+        "rt mut share (rt mut borrow 4)",
+        "rt mut share (rt mut share 5)",
     ]
     .iter()
     .enumerate()
@@ -391,10 +411,17 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
             );
             let stderr = String::from_utf8_lossy(&result.stderr);
             assert!(
+                stderr.starts_with("orescranelift: "),
+                "{command}: no native compiler-owned diagnostic: {stderr}"
+            );
+            assert!(
                 stderr.contains(GATE),
                 "{command}: missing ownership diagnostic: {stderr}"
             );
-            assert!(!stderr.contains("panic"), "{command}: compiler crashed");
+            assert!(
+                !stderr.contains("panicked at") && !stderr.contains("thread 'main' panicked"),
+                "{command}: compiler crashed"
+            );
         }
         std::fs::remove_file(file).unwrap();
     }
@@ -992,5 +1019,177 @@ fn unsupported_suspension_and_critical_syntax_fail_closed_before_jit() {
         &[],
         true,
         "7\n",
+    );
+}
+
+#[test]
+fn tcp_connection_pool_and_actor_ownership_fail_closed_before_native_jit() {
+    // Stage-0 Cranelift compiles scalar expressions only. These are not
+    // silently desugared into a blocking socket, raw pointer or shared heap.
+    // A rejected CLI must not write successful guest output to stdout.
+    for source in [
+        "define actor TcpPool as end fnc main():int{return 0;}",
+        "fnc main():int{return TcpConnection.open();}",
+        "fnc main():int{return TcpPool.acquire();}",
+        "fnc main():int{return rt share socket;}",
+        "fnc main():int{return rt mut share socket;}",
+        "fnc main():int{return rt borrow connection;}",
+        "fnc main():int{return rt ref socket;}",
+        "fnc main():int{return rt deref socket;}",
+        "fnc main():int{return Pointer<int>.from_raw(42);}",
+        "fnc main():int{return await pool.acquire();}",
+        "fnc main():int{return spawn TcpOwner();}",
+        "fnc main():int{return socket.send(42);}",
+        "fnc main():int{return unsafe;}",
+        "fnc main():int{return 42;} pool",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // Only lexical comments mention the future TCP capability: the
+    // actual compiled guest remains a source-only scalar expression.
+    fixture(
+        "fnc main():int{return 42;} // tcp pool rt share",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn heap_ownership_requires_real_lowering_in_run_and_ir() {
+    // A scalar-only JIT must not silently produce native machine code for
+    // references into relocatable Array<T> or shared heap handles. A parser
+    // failure is a supported-feature denial, NOT a borrow-safety proof.
+    let unsupported = [
+        "fnc main():int{return Array<int>.new();}",
+        "fnc main():int{return Box<int>.new(42);}",
+        "fnc main():int{return Arc<int>.new(42);}",
+        "fnc main():int{return Rc<int>.new(42);}",
+        "fnc main():int{return SharedMutex.new(42);}",
+        "fnc main():int{return values[0];}",
+        "fnc main():int{return values.add(42);}",
+        "fnc main():int{return rt borrow values[0];}",
+        "fnc main():int{return rt mut borrow values;}",
+        "fnc main():int{return rt take values[0];}",
+        "fnc main():int{return rt share shared_handle;}",
+        "fnc main():int{return rt mut share shared_handle;}",
+        "fnc main():int{return state.handle_state(42);}",
+        "define class HeapBox as pub let int value=42; end fnc main():int{return 42;}",
+    ];
+    for (index, source) in unsupported.iter().enumerate() {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-heap-admission-{}-{}-{}.ores",
+            std::process::id(),
+            sequence,
+            index
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} admitted unsupported heap syntax or crashed in case {index}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest output/CLIF for unsupported heap case {index}"
+            );
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.starts_with("orescranelift: "),
+                "{mode} lacked a frontend diagnostic for case {index}: {diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains("panicked at")
+                    && !diagnostic.contains("thread 'main' panicked"),
+                "{mode} crashed instead of rejecting heap case {index}"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+    fixture(
+        "fnc main():int{return 42;} // Arc<int> Array<int> rt borrow",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn readonly_shared_slab_lease_and_pin_fail_closed_in_run_and_ir() {
+    // This backend has no trusted shared slab region, reactor, actor identity
+    // authority, physical close attestation, or capability lease lowering.
+    // Reject both execution AND emitted native IR to prevent false parity.
+    let cases = [
+        "fnc main():int{return tcp.pool(3);}",
+        "fnc main():int{return pool.acquire_async();}",
+        "fnc main():int{return lease.exchange_async(3);}",
+        "fnc main():int{return lease.release_async();}",
+        "fnc main():int{return FrozenBytes.from([1,2,3]);}",
+        "fnc main():int{return FrozenBytes.pin();}",
+        "fnc main():int{return FrozenBytes.read_at(0);}",
+        "fnc main():int{return FrozenTcpSlab.release_pin(0);}",
+        "fnc main():int{return FrozenTcpSlab.retire();}",
+        "fnc main():int{return slab.read_byte(0);}",
+        "fnc main():int{return slab.pin_count();}",
+        "fnc main():int{return pool.try_confirm_physical_close(0);}",
+        "fnc main():int{return SharedBuffer.pin();}",
+        "fnc main():int{return shared_buffer.read_at(0);}",
+        "fnc main():int{return rt share frozen_request;}",
+        "fnc main():int{return rt mut share frozen_request;}",
+        "fnc main():int{return await pool.open_stream_async();}",
+        "define actor PoolOwner as end fnc main():int{return 1;}",
+        "fnc main():int{return Pointer<int>.from_raw(1);}",
+    ];
+    for (index, source) in cases.iter().enumerate() {
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-slab-{}-{}-{}.ores",
+            std::process::id(),
+            sequence,
+            index
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            // A signal, missing launcher, or infrastructure exit code is not
+            // evidence that the native frontend rejected the feature.
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} must return the compiler's explicit rejection status for case {index}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest output/IR for unsupported source case {index}"
+            );
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.starts_with("orescranelift: "),
+                "{mode} must emit the native compiler's owned diagnostic for case {index}: {diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains("panicked at")
+                    && !diagnostic.contains("thread 'main' panicked"),
+                "{mode} crashed instead of rejecting unsupported source case {index}"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+    fixture(
+        "fnc main():int{return 17;} // shared readonly tcp slab pin",
+        &[],
+        true,
+        "17\n",
     );
 }
