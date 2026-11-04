@@ -39,6 +39,12 @@ fn reject_both_modes(label: &str, source: &str) {
         assert!(output.stdout.is_empty(), "{label}/{mode} emitted output or native IR");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!stderr.trim().is_empty(), "{label}/{mode} must diagnose rejection");
+        // Rejecting for missing files, CLI usage errors or runner/toolchain faults
+        // is not proof that unsupported guest syntax was denied by the parser.
+        assert!(
+            stderr.starts_with("orescranelift: unexpected token at byte "),
+            "{label}/{mode} rejected for an unrelated reason: {stderr}"
+        );
         assert!(!stderr.contains("thread 'main' panicked"), "{label}/{mode} crashed: {stderr}");
     }
     std::fs::remove_file(path).expect("remove test fixture");
@@ -134,10 +140,15 @@ fn hand_derived_scalar_backprop_update_runs_as_real_native_jit() {
         .args(["9223372036854775807","2","0","1"]).output().unwrap();
     assert!(!overflow.status.success(),"checked numeric overflow must fail");
     assert!(overflow.stdout.is_empty(),"overflow emitted a result");
+    assert_eq!(String::from_utf8_lossy(&overflow.stderr).trim(),
+        "orescranelift: i64 arithmetic overflow",
+        "nonzero exit from an unrelated CLI or runner failure cannot prove checked overflow");
     let ir=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("ir").arg(&path).output().unwrap();
     assert!(ir.status.success(), "{}",String::from_utf8_lossy(&ir.stderr));
     assert!(!ir.stdout.is_empty(),"scalar native IR not emitted");
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("function "),
+        "IR mode must emit actual Cranelift function text");
     std::fs::remove_file(path).unwrap();
 }
 
@@ -160,6 +171,8 @@ fn identical_portable_scalar_step_executes_as_native_cranelift_guest() {
             assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
         } else {
             assert!(!result.stdout.is_empty(), "real CLIF IR required");
+            assert!(String::from_utf8_lossy(&result.stdout).contains("function "),
+                "real CLIF function definition required");
         }
     }
     std::fs::remove_file(path).expect("clean up source fixture");
