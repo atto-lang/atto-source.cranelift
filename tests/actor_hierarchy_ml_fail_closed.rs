@@ -57,6 +57,7 @@ fn reject_both_modes(label: &str, source: &str) {
         assert!(
             [
                 "orescranelift: DECL_KIND_UNSUPPORTED: ",
+                "orescranelift: E_CRITICAL_UNSUPPORTED: ",
                 "orescranelift: unexpected token at byte ",
                 "orescranelift: unbound or unsupported identifier: ",
                 "orescranelift: invalid character at byte ",
