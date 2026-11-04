@@ -450,3 +450,42 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         "42\n",
     );
 }
+
+
+#[test]
+fn injected_mutable_heap_state_denies_real_jit_before_output() {
+    for source in [
+        "@Inject(MutableStateContainer()) define class Counter as state { count: int = 0; } end",
+        "@Inject(MutableStateContainer(scope = #singleton)) define singleton Counter as state {} end",
+        "fnc main():int{return 1;} @Inject(MutableStateContainer())",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // A comment never changes the native scalar language's semantics.
+    fixture(
+        "// @Inject(MutableStateContainer()) is only documentation\nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn injected_state_diagnostic_is_specific_and_no_ir_is_emitted() {
+    let source = "@Inject(MutableStateContainer()) define class Counter as state {} end";
+    let suffix = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!(
+        "orescranelift-injection-denial-{}-{suffix}.ores", std::process::id()
+    ));
+    std::fs::write(&file, source).unwrap();
+    for mode in ["run", "ir"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode).arg(&file).output().unwrap();
+        assert!(!output.status.success(), "{mode} unexpectedly accepted state injection");
+        assert!(output.stdout.is_empty(), "{mode} emitted native output");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains("@Inject state-container lowering"), "{diagnostic}");
+        assert!(diagnostic.contains("unsupported in Cranelift"), "{diagnostic}");
+    }
+    std::fs::remove_file(file).unwrap();
+}
