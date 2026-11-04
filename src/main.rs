@@ -1,7 +1,10 @@
+// Host-only STOP ledger; no guest supervisor lowering.
 mod backend;
 pub mod critical_gate;
 mod frontend;
 mod state_region;
+#[allow(dead_code)]
+mod supervisor_stop;
 pub mod uhl1;
 use std::io::Read;
 

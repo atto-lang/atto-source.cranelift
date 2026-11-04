@@ -242,6 +242,7 @@ impl<'a> Parser<'a> {
                     | Token::Word("spawn")
                     | Token::Word("stop")
                     | Token::Word("ActorRef")
+                    | Token::Word("ActorId" | "Supervisor" | "SupervisorId" | "SupervisorRef")
             ) {
                 return Err(
                     "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
