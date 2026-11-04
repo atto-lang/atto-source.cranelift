@@ -88,7 +88,12 @@ fn model_graph_source_cannot_reach_cranelift_native_jit() {
         fixture(source, &[], false, "");
     }
     // The contextual identifier remains valid in the scalar profile.
-    fixture("fnc main(model:int):int{return model+1;}", &["41"], true, "42\n");
+    fixture(
+        "fnc main(model:int):int{return model+1;}",
+        &["41"],
+        true,
+        "42\n",
+    );
 }
 
 #[test]
