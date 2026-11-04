@@ -20,9 +20,17 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        // O_NOFOLLOW prevents a symlink to a regular file from silently
+        // choosing different source bytes than the caller intended.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
     }
-    let file = options.open(&path).map_err(|e| e.to_string())?;
+    let file = options.open(&path).map_err(|e| {
+        #[cfg(unix)]
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            return "source must be a regular file".to_owned();
+        }
+        e.to_string()
+    })?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("source must be a regular file".into());
     }

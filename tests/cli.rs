@@ -469,6 +469,38 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(fifo).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn symlink_to_regular_atto_source_is_rejected_before_compilation_in_both_modes() {
+    use std::os::unix::fs::symlink;
+    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!(
+        "cranelift-regular-target-{}-{id}.atto",
+        std::process::id()
+    ));
+    let alias = file.with_extension("link");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600);
+    let mut opened = options.open(&file).unwrap();
+    let owned = GuestFixture(file);
+    opened.write_all(b"fnc main():int{return 42;}").unwrap();
+    opened.sync_all().unwrap();
+    drop(opened);
+    symlink(&owned.0, &alias).unwrap();
+    for mode in ["run", "ir"] {
+        let output = execute_native_mode(mode, &alias, &[]);
+        assert_eq!(output.status.code(), Some(1), "{mode}: symlink admitted");
+        assert!(output.stdout.is_empty(), "{mode}: emitted guest output or CLIF");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("source must be a regular file"),
+            "{mode}: incorrect source admission diagnostic"
+        );
+    }
+    std::fs::remove_file(alias).unwrap();
+}
+
 #[test]
 fn rt_mut_share_is_never_lowered_to_scalar_clif() {
     // Every context must reject before machine-code emission. No ordinary
