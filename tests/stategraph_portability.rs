@@ -18,7 +18,9 @@ fn execute(source: &str, arguments: &[&str]) -> Output {
         .create_new(true)
         .open(&file)
         .expect("create fresh Oreslang fixture without following a symlink");
-    source_file.write_all(source.as_bytes()).expect("write Oreslang fixture");
+    source_file
+        .write_all(source.as_bytes())
+        .expect("write Oreslang fixture");
     drop(source_file);
     let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
@@ -47,7 +49,10 @@ fn unsupported(source: &str) {
         Some(1),
         "unsupported source must be rejected by the compiler with exit code 1"
     );
-    assert!(out.stdout.is_empty(), "rejected source emitted guest output");
+    assert!(
+        out.stdout.is_empty(),
+        "rejected source emitted guest output"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).starts_with("orescranelift: "),
         "rejection must originate from the Oreslang compiler"
@@ -79,7 +84,10 @@ fn stategraph_common_checked_scalar_native_jit() {
         &["0", "9223372036854775807"],
     );
     assert!(!overflow.status.success(), "overflow silently wrapped");
-    assert!(overflow.stdout.is_empty(), "overflow printed a false result");
+    assert!(
+        overflow.stdout.is_empty(),
+        "overflow printed a false result"
+    );
     assert!(!overflow.stderr.is_empty(), "overflow needs a diagnostic");
 }
 
@@ -90,19 +98,22 @@ fn stategraph_unimplemented_features_are_explicitly_rejected() {
     // The exact canonical GraphState<T> userland source is a required
     // compatibility blocker until generic class lowering actually exists.
     let generic = include_str!("../contracts/stategraph-portability/shared-generic-state.ores");
-    assert_eq!(generic, concat!(
-        "// Nominal generic graph state, owned immutable value.\n",
-        "define pub class GraphState<T> as\n",
-        "  pub val T value;\n",
-        "  pub constructor(T value) {\n",
-        "    self.value = value;\n",
-        "  }\n",
-        "end\n\n",
-        "pub fnc main(): int {\n",
-        "  val GraphState<int> initial = new GraphState<int>(42);\n",
-        "  return initial.value;\n",
-        "}\n"
-    ));
+    assert_eq!(
+        generic,
+        concat!(
+            "// Nominal generic graph state, owned immutable value.\n",
+            "define pub class GraphState<T> as\n",
+            "  pub val T value;\n",
+            "  pub constructor(T value) {\n",
+            "    self.value = value;\n",
+            "  }\n",
+            "end\n\n",
+            "pub fnc main(): int {\n",
+            "  val GraphState<int> initial = new GraphState<int>(42);\n",
+            "  return initial.value;\n",
+            "}\n"
+        )
+    );
     unsupported(generic);
 
     let blockers = [
