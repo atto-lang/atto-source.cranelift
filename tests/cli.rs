@@ -451,7 +451,6 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
     );
 }
 
-
 #[test]
 fn heap_container_source_refuses_scalar_only_jit_fallback() {
     // Execute the actual scalar CLI, rather than matching text in a contract.
