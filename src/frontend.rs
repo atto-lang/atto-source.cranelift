@@ -555,6 +555,12 @@ impl<'a> Parser<'a> {
             )
             .into());
         }
+        if self.current == Token::Word("isolated") {
+            return Err("actor runtime is unsupported by the Cranelift scalar profile".into());
+        }
+        if self.current == Token::Word("await") {
+            return Err("E_SUSPENDS_UNSUPPORTED: await requires continuation lowering".into());
+        }
         self.expect(Token::Word("fnc"))?;
         if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
             return Err(

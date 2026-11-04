@@ -1946,3 +1946,163 @@ fn byte_identical_v2_checked_cast_guests_execute_or_reject() {
     // Unsupported int-to-bool cast must not generate a successful guest.
     fixture(negative, &[], false, "");
 }
+
+#[test]
+fn native_scalar_and_unsupported_actor_guest_parity() {
+    // Each fixture is actual native Oreslang source, compiled and executed by
+    // the Cranelift JIT through its real CLI. Rust is only the test launcher.
+    for (source, expected) in [
+        (include_str!("parity/checked_precedence.ores"), "28\n"),
+        (
+            include_str!("parity/checked_i64_min.ores"),
+            "-9223372036854775808\n",
+        ),
+        (
+            include_str!("parity/checked_i64_max_minus_one.ores"),
+            "9223372036854775806\n",
+        ),
+        (
+            include_str!("parity/bitxor_named_intrinsic.ores"),
+            "-9223372036854775808\n",
+        ),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+
+    // The scalar JIT is NOT allowed to silently accept or reinterpret actor,
+    // isolated-actor, async, critical, channel or removed XOR operator syntax.
+    for source in [
+        include_str!("parity/reject_critical.ores"),
+        include_str!("parity/reject_channel_select.ores"),
+        include_str!("parity/reject_xor_operator.ores"),
+    ] {
+        fixture(source, &[], false, "");
+    }
+    fixture_requires_diagnostic(
+        include_str!("parity/checked_overflow.ores"),
+        "i64 arithmetic overflow",
+    );
+    fixture_requires_diagnostic(
+        include_str!("parity/reject_actor.ores"),
+        "DECL_KIND_UNSUPPORTED: actor",
+    );
+    fixture_requires_diagnostic(
+        include_str!("parity/reject_isoactor.ores"),
+        "Cranelift source actor hierarchy, traits and mailbox runtime unsupported",
+    );
+    fixture_requires_diagnostic(
+        include_str!("parity/reject_async.ores"),
+        "E_CALLABLE_MODIFIERS",
+    );
+}
+
+#[test]
+fn actor_mutable_state_container_must_not_lower_as_an_unsafe_scalar() {
+    // Cranelift stage-0 has no actor runtime, sealed mutable state, protected
+    // read/write loans or actor scheduler. This is an intentional negative:
+    // never count a scalar JIT result as execution of the shared .ores guest.
+    let source = r#"define actor MutableState as
+      state { revision: int = 0; }
+      receive(ActorMail<int> mail): void {
+        self.handle_state(critical[write] |s| -> {
+          s.revision = s.revision + 1;
+        });
+        self.handle_state(critical[read] |s| -> {
+          stdio.stdout.write(s.revision);
+        });
+      }
+    end
+    pub async routine main(): void {
+      val actor = spawn MutableState();
+      await actor.get_ready();
+    }
+    "#;
+    fixture_requires_diagnostic(source, "DECL_KIND_UNSUPPORTED: actor");
+}
+
+#[test]
+fn isolated_actor_heap_admission_fails_closed_in_run_and_ir() {
+    // This scalar JIT has no per-actor native heap, ownership lowering,
+    // actor scheduler, or compiled .ores state. Refuse canonical forms before
+    // emitting IR or running code; a generic parse error is not sufficient.
+    let sources = [
+        "define isolated actor Worker as state { value: int = 0; } end\n",
+        "define pub isolated actor Worker as state { value: int = 0; } end\n",
+        "pub define isolated actor Worker as state { value: int = 0; } end\n",
+        "define actor Worker as state { value: int = 0; } end\n",
+        "pub define actor Worker as state { value: int = 0; } end\n",
+        "isoactor Worker { pub fnc get(): int { return 1; } }\n",
+        "// a comment preceding an actor is not a scalar escape\ndefine isolated actor Worker as state { x: int = 0; } end\n",
+    ];
+    for (index, source) in sources.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-heap-admission-{}-{index}.ores",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} accepted actor heap source index {index}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted guest output or IR for actor source index {index}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(if source.contains("isolated actor") {
+                    "actor runtime is unsupported by the Cranelift scalar profile"
+                } else if source.starts_with("isoactor") {
+                    "Cranelift source actor hierarchy, traits and mailbox runtime unsupported"
+                } else {
+                    "DECL_KIND_UNSUPPORTED: actor"
+                }),
+                "{mode} produced wrong semantic diagnostic for index {index}: {stderr}"
+            );
+            assert!(!stderr.contains("panic"), "{mode} crashed: {stderr}");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    fixture(
+        "fnc main():int{return 7;} // define isolated actor not live source\n",
+        &[],
+        true,
+        "7\n",
+    );
+}
+
+fn fixture_requires_diagnostic(source: &str, diagnostic: &str) {
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-parity-{}-{sequence}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(output.status.code(), Some(1), "negative fixture must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "negative fixture cannot emit success stdout"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(diagnostic),
+        "wrong negative diagnostic: expected {diagnostic:?}, got {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("panic"),
+        "compiler crashed instead of rejecting source"
+    );
+}
