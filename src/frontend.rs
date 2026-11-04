@@ -195,9 +195,10 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Punct(b')'))?;
                 self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
             }
-            Token::Word("critical") | Token::Word("await") | Token::Word("suspends") => {
-                Err("E_CRITICAL_UNSUPPORTED: stage-0 has no critical guard or suspension lowering".into())
-            }
+            Token::Word("critical") | Token::Word("await") | Token::Word("suspends") => Err(
+                "E_CRITICAL_UNSUPPORTED: stage-0 has no critical guard or suspension lowering"
+                    .into(),
+            ),
             Token::Word("rt") => {
                 // Stage-0 has no SharedMutex<T>, shared allocation domain, or
                 // synchronized guard lowering. Never reinterpret this as a
@@ -301,13 +302,17 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("suspends") {
                 return Err("E_CALLABLE_MODIFIERS: critical suspends fnc is forbidden".into());
             }
-            return Err("E_CRITICAL_UNSUPPORTED: stage-0 lacks owned critical guard lowering".into());
+            return Err(
+                "E_CRITICAL_UNSUPPORTED: stage-0 lacks owned critical guard lowering".into(),
+            );
         }
         if self.take(Token::Word("suspends"))? {
             if self.current == Token::Word("critical") {
                 return Err("E_CALLABLE_MODIFIERS: suspends critical fnc is forbidden".into());
             }
-            return Err("E_SUSPENDS_UNSUPPORTED: stage-0 lacks continuation and effect lowering".into());
+            return Err(
+                "E_SUSPENDS_UNSUPPORTED: stage-0 lacks continuation and effect lowering".into(),
+            );
         }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
@@ -352,10 +357,14 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("int"))?;
         self.expect(Token::Punct(b'{'))?;
-        if self.current == Token::Word("critical") ||
-           self.current == Token::Word("try") ||
-           self.current == Token::Word("await") {
-            return Err("E_CRITICAL_UNSUPPORTED: no critical admission or suspension in scalar stage-0".into());
+        if self.current == Token::Word("critical")
+            || self.current == Token::Word("try")
+            || self.current == Token::Word("await")
+        {
+            return Err(
+                "E_CRITICAL_UNSUPPORTED: no critical admission or suspension in scalar stage-0"
+                    .into(),
+            );
         }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
@@ -450,13 +459,34 @@ mod tests {
     fn critical_suspend_modifiers_fail_closed_with_owned_diagnostics() {
         for (source, expected) in [
             ("async fnc main():int{return 1;}", "E_CALLABLE_MODIFIERS"),
-            ("critical suspends fnc main():int{return 1;}", "E_CALLABLE_MODIFIERS"),
-            ("suspends critical fnc main():int{return 1;}", "E_CALLABLE_MODIFIERS"),
-            ("critical fnc main():int{return 1;}", "E_CRITICAL_UNSUPPORTED"),
-            ("suspends fnc main():int{return 1;}", "E_SUSPENDS_UNSUPPORTED"),
-            ("fnc main():int{critical {return 1;}}", "E_CRITICAL_UNSUPPORTED"),
-            ("fnc main():int{try critical {return 1;} else {return 2;}}", "E_CRITICAL_UNSUPPORTED"),
-            ("fnc main():int{return critical {1};}", "E_CRITICAL_UNSUPPORTED"),
+            (
+                "critical suspends fnc main():int{return 1;}",
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                "suspends critical fnc main():int{return 1;}",
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                "critical fnc main():int{return 1;}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "suspends fnc main():int{return 1;}",
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{critical {return 1;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{try critical {return 1;} else {return 2;}}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
+            (
+                "fnc main():int{return critical {1};}",
+                "E_CRITICAL_UNSUPPORTED",
+            ),
             ("fnc main():int{return await 1;}", "E_CRITICAL_UNSUPPORTED"),
         ] {
             let error = parse(source).expect_err(source);
@@ -491,7 +521,10 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
-        assert!(parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}").is_err());
+        assert!(
+            parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
+                .is_err()
+        );
         assert!(parse("fnc main():int{return 42;} // comment\r").is_ok());
     }
 }
