@@ -1,5 +1,5 @@
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -8,6 +8,24 @@ use std::time::{Duration, Instant};
 // delete a pre-existing path, including a symlink placed by another process.
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 const NATIVE_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_CAPTURE: usize = 65536;
+
+// Drain both compiler output streams while the child is running. Otherwise
+// an oversized diagnostic can fill the pipe and prevent process exit.
+fn drain_bounded(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    let mut overflow = false;
+    let mut buf = [0_u8; 8192];
+    loop {
+        let len = pipe.read(&mut buf)?;
+        if len == 0 {
+            return Ok((bytes, overflow));
+        }
+        let available = MAX_CAPTURE.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&buf[..len.min(available)]);
+        overflow |= len > available;
+    }
+}
 
 struct GuestFixture(PathBuf);
 
@@ -15,6 +33,51 @@ impl Drop for GuestFixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+fn execute_native_mode(mode: &str, path: &Path, args: &[&str]) -> std::process::Output {
+    assert!(matches!(mode, "run" | "ir"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg(mode)
+        .arg(path)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout_pipe = child.stdout.take().expect("captured child stdout");
+    let stderr_pipe = child.stderr.take().expect("captured child stderr");
+    let stdout_reader = std::thread::spawn(move || drain_bounded(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || drain_bounded(stderr_pipe));
+    let deadline = Instant::now() + NATIVE_DEADLINE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Cranelift guest compiler exceeded five-second deadline");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Cranelift guest child status failed: {error}");
+            }
+        }
+    }
+    let status = child.wait().expect("compiler termination status");
+    let (stdout, stdout_overflow) = stdout_reader
+        .join().expect("stdout reader panicked").expect("stdout read failed");
+    let (stderr, stderr_overflow) = stderr_reader
+        .join().expect("stderr reader panicked").expect("stderr read failed");
+    assert!(
+        !stdout_overflow && !stderr_overflow,
+        "Cranelift guest exceeded bounded output capture"
+    );
+    std::process::Output { status, stdout, stderr }
 }
 
 fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
@@ -39,38 +102,7 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
     file.sync_all().unwrap();
     drop(file);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("run")
-        .arg(&source_file.0)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + NATIVE_DEADLINE;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("Cranelift guest compiler exceeded five-second deadline");
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("Cranelift guest child status failed: {error}");
-            }
-        }
-    }
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.stdout.len() <= 65536 && output.stderr.len() <= 65536,
-        "Cranelift guest emitted excessive output"
-    );
+    let output = execute_native_mode("run", &source_file.0, args);
     assert_eq!(
         output.status.code(),
         Some(if ok { 0 } else { 1 }),
@@ -91,6 +123,17 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
             "compiler panic must not masquerade as source rejection"
         );
     }
+}
+
+#[test]
+fn bounded_native_capture_detects_oversized_diagnostics_without_blocking() {
+    let data = vec![b'X'; MAX_CAPTURE + 2048];
+    let (captured, overflow) = drain_bounded(&data[..]).unwrap();
+    assert_eq!(captured.len(), MAX_CAPTURE);
+    assert!(overflow, "oversized diagnostic cannot pass as truncated success");
+    let (at_limit, overflow) = drain_bounded(&data[..MAX_CAPTURE]).unwrap();
+    assert_eq!(at_limit.len(), MAX_CAPTURE);
+    assert!(!overflow, "exact-size diagnostic remains admissible");
 }
 
 #[test]
@@ -498,6 +541,54 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         true,
         "42\n",
     );
+}
+
+#[test]
+fn injected_mutable_heap_state_denies_real_jit_before_output() {
+    for source in [
+        "@Inject(MutableStateContainer()) define class Counter as state { count: int = 0; } end",
+        "@Inject(MutableStateContainer(scope = #singleton)) define singleton Counter as state {} end",
+        "fnc main():int{return 1;} @Inject(MutableStateContainer())",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // A comment never changes the native scalar language's semantics.
+    fixture(
+        "// @Inject(MutableStateContainer()) is only documentation\nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn injected_state_diagnostic_is_specific_and_no_ir_is_emitted() {
+    let source = "@Inject(MutableStateContainer()) define class Counter as state {} end";
+    let suffix = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!(
+        "orescranelift-injection-denial-{}-{suffix}.ores", std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut opened = options.open(&file).unwrap();
+    let source_file = GuestFixture(file);
+    opened.write_all(source.as_bytes()).unwrap();
+    opened.sync_all().unwrap();
+    drop(opened);
+    for mode in ["run", "ir"] {
+        let output = execute_native_mode(mode, &source_file.0, &[]);
+        assert!(!output.status.success(), "{mode} unexpectedly accepted state injection");
+        assert!(output.stdout.is_empty(), "{mode} emitted native output");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains("@Inject state-container lowering"), "{diagnostic}");
+        assert!(diagnostic.contains("unsupported in Cranelift"), "{diagnostic}");
+    }
+
 }
 
 #[test]
