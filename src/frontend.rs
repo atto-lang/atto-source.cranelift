@@ -356,6 +356,9 @@ impl<'a> Parser<'a> {
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
         }
+        if matches!(self.current, Token::Word("pattern") | Token::Word("match")) {
+            return Err("native type-only ADT pattern lowering unsupported".into());
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
