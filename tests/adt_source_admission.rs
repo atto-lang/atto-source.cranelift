@@ -85,7 +85,7 @@ fn canonical_adt_guest_sources_refuse_before_cranelift_ir_or_jit() {
             );
             if declares_enum {
                 assert!(
-                    stderr.contains("native nominal ADT source lowering unsupported"),
+                    stderr.contains("DECL_KIND_UNSUPPORTED: enum"),
                     "{name}/{mode}: wrong unsupported capability gate: {stderr}"
                 );
             }
@@ -114,4 +114,22 @@ fn scalar_control_still_executes_and_emits_clif() {
         clif.contains("function") && clif.contains("42"),
         "expected real Cranelift function body, not a skipped check"
     );
+}
+
+#[test]
+fn type_only_patterns_refuse_before_ir_or_jit() {
+    for source in [
+        b"define pattern P as end".as_slice(),
+        b"match value over end".as_slice(),
+    ] {
+        for mode in ["run", "ir"] {
+            let output = invoke(mode, source);
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("native type-only ADT pattern lowering unsupported")
+            );
+        }
+    }
 }

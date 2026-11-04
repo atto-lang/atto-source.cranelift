@@ -4,8 +4,7 @@
 cases), with the additive six-backend v2 inventory being developed.
 
 Cranelift stage-0 compiles **scalar i64 source only**. Its nominal ADT
-capability fence returns an explicit `native nominal ADT source lowering
-unsupported` error on `define enum`, rather than attempting a scalar
+capability fence returns an explicit `DECL_KIND_UNSUPPORTED: enum` error on `define enum`, rather than attempting a scalar
 JIT or emitting partial CLIF. Type-only `define pattern` remains unsupported.
 Real `Option`/`Result` constructor pattern matching requires typed
 lowering and should not be mistaken for a generic parser refusal.
