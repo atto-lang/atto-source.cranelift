@@ -1,6 +1,7 @@
 # Scalar inference and checked casting — cross-backend conformance v1
 
-Status: **authored contract and tests only; execution receipts not yet verified**.
+Status: **Cranelift #22 identity-i64 cast tests executed locally during integration; other backend receipts remain unverified.**
+Readonly locals from #21 are not included. No combined or cross-backend parity is claimed.
 Canonical source is Oreslang, not Java/C#/C++/JS host arithmetic.
 
 ## Semantics
@@ -25,10 +26,10 @@ These four declarations produce fixed, readonly bindings of static type `int`, v
 
 | Scenario | Java/GraalVM | LLVM | .NET NativeAOT track | wasm32 | Cranelift JIT stage-0 |
 | --- | --- | --- | --- | --- | --- |
-| `int` typed, inferred or identity cast | PR #2405 authored compiler tests | PR #1256 authored native compiler slice | PR #282 authored structured parser/CFG/CIL slice | PR #219 pinned LLVM-to-wasm32 path | **Separate draft branches:** #21 typed readonly local slice; #22 checked-i64 identity cast slice. Neither single tree combines both yet. |
+| `int` typed, inferred or identity cast | PR #2405 authored compiler tests | PR #1256 authored native compiler slice | PR #282 authored structured parser/CFG/CIL slice | PR #219 pinned LLVM-to-wasm32 path | **#22 integrated and locally tested:** checked-i64 identity casts. #21 typed readonly locals remain separate and unsupported on this tree. |
 | `bool` typed, inferred or identity cast | Implemented; tests | PR #1256 compiler slice | PR #282 structured parser/CFG/CIL slice | PR #219 exercises pinned LLVM compiler | Unsupported/reject; no bool type/ABI |
 | `string` inference/checked scalar cast | Java supported | Native String ABI; new tests need executed proof | Not implemented in structured scalar subset | Not admitted without proven import-free runtime | Unsupported/reject |
-| Expression/branch/call inference | Java typechecker | Constrained native scalar slice | Constrained typed scalar subset | LLVM compiler delegated | #21 admits bounded local i64 references; branches, helper calls and generalized inference remain unsupported |
+| Expression/branch/call inference | Java typechecker | Constrained native scalar slice | Constrained typed scalar subset | LLVM compiler delegated | The separate #21 proposal admits bounded local i64 references; this tree does not. branches, helper calls and generalized inference remain unsupported |
 | `as?` / `Option<T>` | Java checked Option result | Not lowered; reject | Not lowered; reject | Not lowered; reject | Unsupported/reject |
 | Dynamic/nominal/ADT/generic checked casts | Java feature-specific checks | Not generally lowered | Not lowered | Not independently lowered | Unsupported/reject before CLIF generation |
 
@@ -46,7 +47,7 @@ A **source file that merely compiles** is not runtime guest evidence; a **host a
 
 **This document does not certify full five-backend parity.** It records exactly what is supported, what is being implemented, and which independent executed gates must pass before making such a claim.
 
-## Smallest five-backend source intersection (new; all execution unverified)
+## Smallest five-backend source intersection (Cranelift locally executed; other execution unverified)
 
 The *identical* guest source must be checked by independent backend
 compilers and executed on each backend before any 5/5 result can be published:
@@ -106,5 +107,5 @@ negative cases or change declaration kinds to manufacture a green result.
 currently include runtime-initialized standalone `const` positives. Reconcile
 the implementation and assertions with the Java language reference and common
 source PR #203 **before merge**, and preserve any red cases as evidence of gaps.
-All tests and source statements in this document are authored candidates, not
-executed end-to-end five-backend evidence.
+The cross-backend statements remain authored candidates, not executed end-to-end
+five-backend evidence. Cranelift-only execution is recorded above.
