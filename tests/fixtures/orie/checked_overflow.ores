@@ -1,0 +1,2 @@
+// A checked-i64 backend must not silently wrap this addition.
+pub fnc main(): int { return 9223372036854775807 + 1; }

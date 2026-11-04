@@ -85,7 +85,9 @@ impl SupervisorStopLedger {
             return Err("invalid supervisor/group or capacity");
         }
         let domain = NEXT_LEDGER_DOMAIN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
             .map_err(|_| "supervisor ledger domain exhausted")?;
         Ok(Self {
             domain,
