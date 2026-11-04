@@ -108,14 +108,15 @@ impl<'a> Parser<'a> {
             // the scalar-only Cranelift backend cannot represent tagged
             // Option/Result payloads or classify guest trap control effects.
             // Refuse these reserved constructs before AST/native codegen.
-            if matches!(self.current,
+            if matches!(
+                self.current,
                 Token::Word("Option")
-                | Token::Word("Result")
-                | Token::Word("Some")
-                | Token::Word("None")
-                | Token::Word("Ok")
-                | Token::Word("Err")
-                | Token::Word("trap")
+                    | Token::Word("Result")
+                    | Token::Word("Some")
+                    | Token::Word("None")
+                    | Token::Word("Ok")
+                    | Token::Word("Err")
+                    | Token::Word("trap")
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
             }
