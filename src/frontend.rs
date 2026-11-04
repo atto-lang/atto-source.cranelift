@@ -104,11 +104,40 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Not a semantic type rejection or a successful sum-type compile:
+            // the scalar-only Cranelift backend cannot represent tagged
+            // Option/Result payloads or classify guest trap control effects.
+            // Refuse these reserved constructs before AST/native codegen.
+            if matches!(
+                self.current,
+                Token::Word("Option")
+                    | Token::Word("Result")
+                    | Token::Word("Some")
+                    | Token::Word("None")
+                    | Token::Word("Ok")
+                    | Token::Word("Err")
+                    | Token::Word("trap")
+            ) {
+                return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
+            }
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
             }
             self.current = Token::Number(&self.input[start..self.pos]);
+        } else if first == b'@' {
+            // A recognized injection annotation is NOT source support.
+            // Explicitly fail closed before any native JIT emission rather than
+            // accidentally ignoring state-region ownership semantics.
+            let remainder = &b[self.pos..];
+            let intrinsic = b"Inject";
+            let exact = remainder.starts_with(intrinsic)
+                && remainder.get(intrinsic.len()).is_none_or(|next|
+                    !next.is_ascii_alphanumeric() && *next != b'_');
+            if exact {
+                return Err("@Inject state-container lowering requires verified private regions, scoped borrows and runtime admission; unsupported in Cranelift".into());
+            }
+            return Err("source annotations require checked compiler lowering; unsupported in Cranelift".into());
         } else if b"()+-*%{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -286,6 +315,21 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // Stage-0 has no nominal type descriptors, sealed-state loans,
+        // actor identity or supervisor CONTROL lane. A declaration must never
+        // be reinterpreted as a scalar main() function.
+        let unsupported_kind = match self.current {
+            Token::Word("state") => Some("state container"),
+            Token::Word(kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model"
+                | "enum" | "class" | "struct" | "record" | "interface"
+                | "trait" | "protocol" | "service")) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = unsupported_kind {
+            return Err(format!(
+                "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
+            ));
+        }
         self.expect(Token::Word("fnc"))?;
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
@@ -417,6 +461,31 @@ mod tests {
         ] {
             assert!(parse(source).is_err(), "{source}");
         }
+    }
+    #[test]
+    fn option_result_trap_fail_closed_until_native_tagged_lowering() {
+        // Only the scalar contract is executable; these are unsupported
+        // features, NOT passing semantic Option/Result/trap conformance cases.
+        for source in [
+            "fnc main():Option<int>{return Some(7);}",
+            "fnc main():Option<int>{return None;}",
+            "fnc main():Result<int,int>{return Ok(7);}",
+            "fnc main():Result<int,int>{return Err(7);}",
+            "trap fnc main():int{return 1;}",
+            "fnc main():int{return Some(7);}",
+            "fnc main():int{return Ok(7);}",
+            "fnc main():int{return Err(7);}",
+            "fnc main():int{return None;}",
+            "fnc main():int{return Option(7);}",
+            "fnc main():int{return Result(7);}",
+        ] {
+            let error = parse(source).expect_err("unsupported sum/trap must reject");
+            assert!(
+                error.contains("typed Option/Result/trap is unsupported"),
+                "unexpected fail-open or error category for {source}: {error}"
+            );
+        }
+        assert!(parse("fnc main():int{return 7;} // Option Result trap").is_ok());
     }
     #[test]
     fn fail_closed() {
