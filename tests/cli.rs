@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -35,31 +35,11 @@ impl Drop for GuestFixture {
     }
 }
 
-fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
-    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "orescranelift-{}-{}-{}.ores",
-        std::process::id(),
-        sequence,
-        source.len()
-    ));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&path).unwrap();
-    // Create the removal guard only AFTER the exclusive open succeeds.
-    let source_file = GuestFixture(path);
-    file.write_all(source.as_bytes()).unwrap();
-    file.sync_all().unwrap();
-    drop(file);
-
+fn execute_native_mode(mode: &str, path: &Path, args: &[&str]) -> std::process::Output {
+    assert!(matches!(mode, "run" | "ir"));
     let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("run")
-        .arg(&source_file.0)
+        .arg(mode)
+        .arg(path)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -97,7 +77,32 @@ fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
         !stdout_overflow && !stderr_overflow,
         "Cranelift guest exceeded bounded output capture"
     );
-    let output = std::process::Output { status, stdout, stderr };
+    std::process::Output { status, stdout, stderr }
+}
+
+fn fixture(source: &str, args: &[&str], ok: bool, expected: &str) {
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-{}-{}-{}.ores",
+        std::process::id(),
+        sequence,
+        source.len()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).unwrap();
+    // Create the removal guard only AFTER the exclusive open succeeds.
+    let source_file = GuestFixture(path);
+    file.write_all(source.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+
+    let output = execute_native_mode("run", &source_file.0, args);
     assert_eq!(
         output.status.code(),
         Some(if ok { 0 } else { 1 }),
