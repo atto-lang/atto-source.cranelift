@@ -134,6 +134,7 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
+    ShiftRight8(Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -394,17 +395,27 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
+                Token::Punct(b'>') => (0, 1, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
                 break;
             }
             self.next()?;
+            if op == b'>' {
+                self.expect(Token::Punct(b'>'))?;
+            }
             let rhs = self.expr(r_bp, depth + 1)?;
             lhs = self.node(match op {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'>' => {
+                    if rhs != Expr::Literal(8) {
+                        return Err("stage-0 only supports signed >> 8 with literal count".into());
+                    }
+                    Expr::ShiftRight8(Box::new(lhs))
+                }
                 _ => unreachable!(),
             })?;
         }
@@ -597,6 +608,7 @@ mod tests {
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
+            Expr::ShiftRight8(x) => Ok(eval(x, args)? >> 8),
         }
     }
     #[test]
@@ -745,6 +757,40 @@ mod tests {
             !actor.trim().is_empty(),
             "actor source rejection must carry a diagnostic"
         );
+    }
+
+    #[test]
+    fn odb1_checked_arithmetic_right_shift_by_eight() {
+        let p = parse("fnc main(x:int):int{return x>>8;}").unwrap();
+        for (n, expected) in [
+            (0_i64, 0_i64),
+            (255, 0),
+            (256, 1),
+            (65535, 255),
+            (2147483647, 8388607),
+            (-1, -1),
+            (-256, -1),
+            (i64::MIN, -36028797018963968),
+        ] {
+            assert_eq!(eval(&p.result, &[n]), Ok(expected));
+        }
+        let add_before_shift = parse("fnc main(x:int):int{return x+1>>8;}").unwrap();
+        assert_eq!(eval(&add_before_shift.result, &[255]), Ok(1));
+        assert!(eval(&add_before_shift.result, &[i64::MAX]).is_err());
+        let chained = parse("fnc main(x:int):int{return x>>8>>8;}").unwrap();
+        assert_eq!(eval(&chained.result, &[65536]), Ok(1));
+        for invalid in [
+            "fnc main(x:int):int{return x>>7;}",
+            "fnc main(x:int,y:int):int{return x>>y;}",
+            "fnc main(x:int):int{return x>>8+1;}",
+            "fnc main(x:int):int{return x>>-8;}",
+            "fnc main(x:int):int{return x>>>8;}",
+            "fnc main(x:int):int{return x>8;}",
+            "fnc main(x:int):int{return x<<8;}",
+            "fnc main(x:int):int{return x/256;}",
+        ] {
+            assert!(parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
