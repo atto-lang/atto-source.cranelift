@@ -134,6 +134,9 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
+    NamedRem(Box<Expr>, Box<Expr>),
+    NamedMod(Box<Expr>, Box<Expr>),
+    NamedPow(Box<Expr>, Box<Expr>),
     ShiftRight8(Box<Expr>),
 }
 
@@ -362,13 +365,24 @@ impl<'a> Parser<'a> {
                 // must reject before emitting native code.
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
-                self.expect(Token::Word("bitXor"))?;
+                let operation = self.name()?;
+                if !matches!(operation.as_str(), "bitXor" | "rem" | "mod" | "pow") {
+                    return Err(format!("unsupported Integer operation: {operation}"));
+                }
                 self.expect(Token::Punct(b'('))?;
                 let lhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b','))?;
                 let rhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b')'))?;
-                self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
+                let lhs = Box::new(lhs);
+                let rhs = Box::new(rhs);
+                self.node(match operation.as_str() {
+                    "bitXor" => Expr::BitXor(lhs, rhs),
+                    "rem" => Expr::NamedRem(lhs, rhs),
+                    "mod" => Expr::NamedMod(lhs, rhs),
+                    "pow" => Expr::NamedPow(lhs, rhs),
+                    _ => unreachable!(),
+                })
             }
             Token::Word("critical") | Token::Word("await") | Token::Word("suspends") => Err(
                 "E_CRITICAL_UNSUPPORTED: stage-0 has no critical guard or suspension lowering"
@@ -723,6 +737,34 @@ mod tests {
         assert!(parse("fnc main():int{return 7%3;}").is_err());
     }
 
+    fn signed_rem(a: i64, b: i64) -> Result<i64, &'static str> {
+        if b == 0 {
+            return Err("divisor_zero");
+        }
+        if a == i64::MIN && b == -1 {
+            return Ok(0);
+        }
+        Ok(a % b)
+    }
+
+    fn checked_pow(mut base: i64, exponent: i64) -> Result<i64, &'static str> {
+        if exponent < 0 {
+            return Err("negative_exponent");
+        }
+        let mut left = exponent as u64;
+        let mut result = 1_i64;
+        while left != 0 {
+            if left & 1 != 0 {
+                result = result.checked_mul(base).ok_or("overflow")?;
+            }
+            left >>= 1;
+            if left != 0 {
+                base = base.checked_mul(base).ok_or("overflow")?;
+            }
+        }
+        Ok(result)
+    }
+
     fn eval(e: &Expr, args: &[i64]) -> Result<i64, &'static str> {
         match e {
             Expr::Literal(x) => Ok(*x),
@@ -732,6 +774,20 @@ mod tests {
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
+            Expr::NamedRem(a, b) => signed_rem(eval(a, args)?, eval(b, args)?),
+            Expr::NamedMod(a, b) => {
+                let left = eval(a, args)?;
+                let right = eval(b, args)?;
+                let r = signed_rem(left, right)?;
+                if r >= 0 {
+                    Ok(r)
+                } else if right > 0 {
+                    Ok(r + right)
+                } else {
+                    Ok(r - right)
+                }
+            }
+            Expr::NamedPow(a, b) => checked_pow(eval(a, args)?, eval(b, args)?),
             Expr::ShiftRight8(x) => Ok(eval(x, args)? >> 8),
         }
     }
@@ -964,7 +1020,7 @@ mod tests {
         for source in [
             "fnc main():int{return 1/0;}",
             "fnc main():int{return 5 ^ 3;}",
-            "fnc main():int{return Integer.rem(5,3);}",
+            "fnc main():int{return Integer.div(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",
             "fnc main():int{return Integer.bitXor(5,3,1);}",
             "fnc main(Integer:int):int{return Integer;}",
@@ -1090,6 +1146,23 @@ mod tests {
             "fnc main():int{return 7 as int",
         ] {
             assert!(parse(source).is_err(), "{source:?}");
+        }
+    }
+    #[test]
+    fn named_arithmetic_refuses_unsafe_values_without_panicking() {
+        for (expression, expected) in [
+            ("Integer.rem(-9223372036854775808,-1)", Ok(0)),
+            ("Integer.mod(-1,-9223372036854775808)", Ok(i64::MAX)),
+            ("Integer.pow(-2,63)", Ok(i64::MIN)),
+            ("Integer.pow(-1,9223372036854775807)", Ok(-1)),
+            ("Integer.pow(2,63)", Err("overflow")),
+            ("Integer.pow(3,-1)", Err("negative_exponent")),
+            ("Integer.rem(7,0)", Err("divisor_zero")),
+            ("Integer.mod(-7,0)", Err("divisor_zero")),
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let program = parse(&source).unwrap();
+            assert_eq!(eval(&program.result, &[]), expected, "{source}");
         }
     }
 }

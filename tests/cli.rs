@@ -176,7 +176,7 @@ fn native_integer_bitxor_source_execution() {
         false,
         "",
     );
-    fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
+    fixture("fnc main():int{return Integer.rem(9,4);}", &[], true, "1\n");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
         "fnc main():int{return Integer.bitXor(7-3,Integer.bitXor(4,2));}",
@@ -742,7 +742,7 @@ fn syntax_rejections_produce_no_guest_stdout() {
         "fnc main():int{return 4/2;}",
         "fnc main():int{return 4.0;}",
         "fnc main():float{return 4;}",
-        "fnc main():int{return Integer.pow(3,4);}",
+        "fnc main():int{return Integer.pow(3);}",
         "fnc main():int{return Integer.bitXor(3);}",
         "fnc main():int{return 4;} fnc another():int{return 6;}",
         "fnc main():int{return 4;} // comment\nunsafe",
@@ -2105,4 +2105,182 @@ fn fixture_requires_diagnostic(source: &str, diagnostic: &str) {
         !stderr.contains("panic"),
         "compiler crashed instead of rejecting source"
     );
+}
+
+#[test]
+fn java_strict_signed64_all_26_runtime_vectors() {
+    for (id, op, a, b, value, error) in [
+        ("rem_pos_pos", "rem", "9", "4", "1", ""),
+        ("rem_neg_pos", "rem", "-9", "4", "-1", ""),
+        ("rem_pos_neg", "rem", "9", "-4", "1", ""),
+        ("rem_neg_neg", "rem", "-9", "-4", "-1", ""),
+        (
+            "rem_min_minus_one",
+            "rem",
+            "-9223372036854775808",
+            "-1",
+            "0",
+            "",
+        ),
+        (
+            "rem_min_max",
+            "rem",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "-1",
+            "",
+        ),
+        ("rem_zero", "rem", "9", "0", "", "integer divisor zero"),
+        ("mod_pos_pos", "mod", "9", "4", "1", ""),
+        ("mod_neg_pos", "mod", "-9", "4", "3", ""),
+        ("mod_pos_neg", "mod", "9", "-4", "1", ""),
+        ("mod_neg_neg", "mod", "-9", "-4", "3", ""),
+        (
+            "mod_min_minus_one",
+            "mod",
+            "-9223372036854775808",
+            "-1",
+            "0",
+            "",
+        ),
+        (
+            "mod_neg_one_min",
+            "mod",
+            "-1",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "",
+        ),
+        (
+            "mod_min_max",
+            "mod",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "9223372036854775806",
+            "",
+        ),
+        ("mod_zero", "mod", "-1", "0", "", "integer divisor zero"),
+        ("pow_zero_zero", "pow", "0", "0", "1", ""),
+        ("pow_negative_odd", "pow", "-2", "3", "-8", ""),
+        (
+            "pow_min_exact",
+            "pow",
+            "-2",
+            "63",
+            "-9223372036854775808",
+            "",
+        ),
+        (
+            "pow_long_max_exponent_neg_one",
+            "pow",
+            "-1",
+            "9223372036854775807",
+            "-1",
+            "",
+        ),
+        (
+            "pow_zero_very_large",
+            "pow",
+            "0",
+            "9223372036854775807",
+            "0",
+            "",
+        ),
+        (
+            "pow_overflow",
+            "pow",
+            "2",
+            "63",
+            "",
+            "i64 arithmetic overflow",
+        ),
+        (
+            "pow_negative_exponent",
+            "pow",
+            "2",
+            "-1",
+            "",
+            "negative integer exponent",
+        ),
+        ("xor_zero", "bitXor", "0", "0", "0", ""),
+        ("xor_small", "bitXor", "5", "3", "6", ""),
+        ("xor_negative", "bitXor", "-1", "0", "-1", ""),
+        (
+            "xor_min_max",
+            "bitXor",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "-1",
+            "",
+        ),
+    ] {
+        let source = format!("fnc main(a:int,b:int):int{{return Integer.{op}(a,b);}}");
+        if error.is_empty() {
+            fixture(&source, &[a, b], true, &format!("{value}\n"));
+        } else {
+            fixture_diagnostic(&source, &[a, b], error);
+        }
+        assert!(!id.is_empty());
+    }
+}
+
+fn fixture_diagnostic(source: &str, args: &[&str], expected_fragment: &str) {
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-error-{}-{}-{}.ores",
+        std::process::id(),
+        sequence,
+        source.len()
+    ));
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run")
+        .arg(&path)
+        .args(args)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected compiler error for {source}"
+    );
+    assert!(output.stdout.is_empty(), "failed program emitted stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked at")
+            && stderr.starts_with("orescranelift: ")
+            && stderr.contains(expected_fragment),
+        "wrong error category for {source}; expected {expected_fragment}, observed {stderr}"
+    );
+}
+
+#[test]
+fn named_integer_calls_enforce_eager_checked_effects_and_arity() {
+    // A failure in the left expression preempts evaluation of the right.
+    fixture_diagnostic(
+        "fnc main(a:int):int{return Integer.rem(a+1,0);}",
+        &["9223372036854775807"],
+        "i64 arithmetic overflow",
+    );
+    fixture_diagnostic(
+        "fnc main(b:int):int{return Integer.rem(9,b+1);}",
+        &["-1"],
+        "integer divisor zero",
+    );
+    fixture_diagnostic(
+        "fnc main(a:int):int{return Integer.pow(a+1,-1);}",
+        &["9223372036854775807"],
+        "i64 arithmetic overflow",
+    );
+    for source in [
+        "fnc main():int{return Integer.rem(1);}",
+        "fnc main():int{return Integer.mod(1,2,3);}",
+        "fnc main():int{return Integer.pow(2);}",
+        "fnc main():int{return Integer.div(4,2);}",
+        "fnc main():int{return Integer.rem(1.5,2);}",
+        "fnc main():int{return 5^3;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
 }

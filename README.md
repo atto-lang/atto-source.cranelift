@@ -36,14 +36,13 @@ signed i64 literals (including MIN and digit separators such as `1_000`),
 grouping, unary +/-, binary + - *, and line comments.
 The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
 values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
-named functions (including `rem`, `mod`, and `pow`) remain unsupported.
+native `bxor` instruction; caret operators remain rejected. Named `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` also lower to native checked i64 code. Remainder follows truncation toward zero; modulus is nonnegative for either divisor sign. Zero divisors and negative exponents reject at execution. Power uses checked exponentiation by squaring.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow, division, all remainder expressions,
+classes, actors, heaps, ownership, recursion, async, control flow, division, operator remainder expressions,
 structural types, UTF-8 identifiers, and any trailing code.
 
 The `%`, `^`, and `^^` operators are rejected at lexer admission. Typed
