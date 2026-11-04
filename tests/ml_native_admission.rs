@@ -5,8 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -30,7 +30,9 @@ fn exclusive_file(path: &Path, guard: &mut ScratchFiles) -> File {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let file = opts.open(path).expect("exclusive temporary fixture/output creation");
+    let file = opts
+        .open(path)
+        .expect("exclusive temporary fixture/output creation");
     guard.0.push(path.to_path_buf());
     file
 }
@@ -103,20 +105,46 @@ fn integer_training_primitives_compile_to_ir_and_execute() {
     // Portable integer-only subset of the OresLLM scalar fixture; these are
     // source-to-real-JIT assertions, NOT FP64 or autograd evidence.
     let cases = [
-        ("gradient", "fnc main():int{return 2*((5*3+1)-9)*3;}", "42\n"),
+        (
+            "gradient",
+            "fnc main():int{return 2*((5*3+1)-9)*3;}",
+            "42\n",
+        ),
         ("associativity", "fnc main():int{return (7*8)-14;}", "42\n"),
-        ("signed_subtraction", "fnc main():int{return 13-(-29);}", "42\n"),
-        ("zero_cancellation", "fnc main():int{return (3*14)+(0*7);}", "42\n"),
+        (
+            "signed_subtraction",
+            "fnc main():int{return 13-(-29);}",
+            "42\n",
+        ),
+        (
+            "zero_cancellation",
+            "fnc main():int{return (3*14)+(0*7);}",
+            "42\n",
+        ),
     ];
     for (name, source, expected) in cases {
         let ir = execute(source, "ir");
-        assert_eq!(ir.status.code(), Some(0), "{name}: compiler IR phase rejected source");
+        assert_eq!(
+            ir.status.code(),
+            Some(0),
+            "{name}: compiler IR phase rejected source"
+        );
         assert!(!ir.stdout.is_empty(), "{name}: empty compiler/JIT IR");
-        assert!(ir.stderr.is_empty(), "{name}: unexpected compiler IR diagnostics");
+        assert!(
+            ir.stderr.is_empty(),
+            "{name}: unexpected compiler IR diagnostics"
+        );
         let run = execute(source, "run");
         assert_eq!(run.status.code(), Some(0), "{name}: native JIT failed");
-        assert_eq!(run.stdout, expected.as_bytes(), "{name}: wrong real native value");
-        assert!(run.stderr.is_empty(), "{name}: unexpected native diagnostics");
+        assert_eq!(
+            run.stdout,
+            expected.as_bytes(),
+            "{name}: wrong real native value"
+        );
+        assert!(
+            run.stderr.is_empty(),
+            "{name}: unexpected native diagnostics"
+        );
     }
 }
 
@@ -126,11 +154,23 @@ fn unsupported_ml_features_fail_before_native_ir_or_execution() {
         ("float literal", "fnc main():int{return 1.5;}"),
         ("float result", "fnc main():float{return 1.0;}"),
         ("tensor constructor", "fnc main():int{return TensorF64(1);}"),
-        ("tensor import", "import fnc add from './tensor'; fnc main():int{return 42;}"),
-        ("ML class", "define class TensorF64 as end fnc main():int{return 42;}"),
-        ("autograd helper", "fnc gradient(x:int):int{return x;} fnc main():int{return gradient(2);}"),
+        (
+            "tensor import",
+            "import fnc add from './tensor'; fnc main():int{return 42;}",
+        ),
+        (
+            "ML class",
+            "define class TensorF64 as end fnc main():int{return 42;}",
+        ),
+        (
+            "autograd helper",
+            "fnc gradient(x:int):int{return x;} fnc main():int{return gradient(2);}",
+        ),
         ("ownership", "fnc main():int{return rt borrow 42;}"),
-        ("actor source", "define actor Trainer as end fnc main():int{return 42;}"),
+        (
+            "actor source",
+            "define actor Trainer as end fnc main():int{return 42;}",
+        ),
         ("async source", "pub async fnc main():int{return 42;}"),
     ];
     for (name, source) in rejected {
@@ -172,8 +212,17 @@ fn checked_overflow_occurs_in_native_execution_not_ir_acceptance() {
         "IR emission must produce real Cranelift IR, not silently skip"
     );
     let runtime = execute(source, "run");
-    assert_eq!(runtime.status.code(), Some(1), "checked overflow must be a native runtime error, not crash/signal");
-    assert!(runtime.stdout.is_empty(), "overflow published a native result");
-    assert_eq!(runtime.stderr, b"orescranelift: i64 arithmetic overflow\n",
-        "exact native checked-overflow diagnostic must not be confused with infrastructure failure");
+    assert_eq!(
+        runtime.status.code(),
+        Some(1),
+        "checked overflow must be a native runtime error, not crash/signal"
+    );
+    assert!(
+        runtime.stdout.is_empty(),
+        "overflow published a native result"
+    );
+    assert_eq!(
+        runtime.stderr, b"orescranelift: i64 arithmetic overflow\n",
+        "exact native checked-overflow diagnostic must not be confused with infrastructure failure"
+    );
 }
