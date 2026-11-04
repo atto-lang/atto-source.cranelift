@@ -69,6 +69,14 @@ fn emit(
     }
 }
 
+fn validate_ir(
+    func: &cranelift_codegen::ir::Function,
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+) -> Result<(), String> {
+    cranelift_codegen::verify_function(func, isa)
+        .map_err(|e| format!("CLIF verification failed: {e}"))
+}
+
 pub fn compile(source: &Program) -> Result<Compiled, String> {
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
@@ -103,6 +111,9 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     b.ins().return_(&[fail]);
     b.seal_all_blocks();
     b.finalize(module.target_config());
+    // Unconditional SSA, CFG, type and ABI verification before native emission.
+    // This must not depend on Cranelift's optional enable_verifier setting.
+    validate_ir(&ctx.func, module.isa())?;
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -135,5 +146,30 @@ impl Compiled {
         } else {
             Err("invalid generated native status".into())
         }
+    }
+}
+
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_clif_is_rejected_before_native_codegen() {
+        let builder = JITBuilder::new(default_libcall_names()).unwrap();
+        let module = JITModule::new(builder);
+        let mut func = cranelift_codegen::ir::Function::new();
+        // A signature requiring an i64 return cannot legally return zero values.
+        func.signature.returns.push(AbiParam::new(types::I64));
+        let mut fbctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut func, &mut fbctx);
+        let entry = b.create_block();
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        b.ins().return_(&[]);
+        b.finalize(module.target_config());
+
+        let error = validate_ir(&func, module.isa())
+            .expect_err("malformed CLIF must fail independently of codegen settings");
+        assert!(error.starts_with("CLIF verification failed:"), "{error}");
     }
 }

@@ -60,21 +60,43 @@ Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
-This branch remains experimental. Passing its scalar JIT tests does **not**
+The backend remains experimental. Passing scalar JIT tests does **not**
 establish full Oreslang support, actor isolation or Forge self-hosting.
+
+### Verification and dependency gates
+
+- Generated Cranelift IR is verified **unconditionally** with
+  `cranelift_codegen::verify_function` before defining or finalizing JIT
+  native code. A deliberately malformed return-signature fixture must be
+  rejected by the verifier; successful compilation alone does not demonstrate
+  that the verifier ran.
+- `scripts/check_lock_policy.py` fails on missing/bad SHA-256 registry checksums,
+  git/path/alternate dependency sources, duplicate packages, drift from
+  exactly pinned direct dependencies, and Cranelift release mismatches. The
+  independent Python rejection tests must also execute in CI.
+- Structural lockfile validation and `cargo test --locked` do **not** establish
+  dependency vulnerability clearance or publisher provenance. Review applicable
+  RustSec advisories and sign off separately before release.
+- CI prints the actual checkout commit and root tree using Git objects, not
+  handwritten source labels. A private external carrier must compare its
+  **actual checked-out subtree** to the specified original source tree, prove
+  that it ran test steps, and document its independent carrier identity; a
+  matching printed label is insufficient.
 
 ## Acceptance
 
 - Run native positive and negative cases, including overflow at runtime.
-- Verify the four signed64 `bit_xor` vectors against the normative Java #2193
+- Verify the signed64 `bit_xor` vectors against the normative Java #2193
   fixture through **actual Cranelift native guest execution**, not a host oracle.
-  The tests have been authored on a draft branch; no exact-head executed CI
-  result has yet been confirmed for this change.
+  Do not reuse evidence from a different commit or tree. PR #1's Linux x64
+  [successful exact-tree carrier run](https://github.com/honeypot-r-us-test/hnpt-e2e/actions/runs/40757732781)
+  proves its *own* source tree (`1a5bcf7b94505144bbffbed8cb2aad09182ee203`),
+  not later backend revisions.
 - Require malformed/unsupported syntax to fail without stdout.
 - Record exact source commit/tree, compiler versions, and executed CI steps.
 - Cross-check source results against LLVM and Forge on their **actual** common
   scalar subset, never assume parity from shared fixture names.
-- Keep the branch draft until CI actually allocates a runner and executes tests.
+- Do not mark any later PR as verified until its exact tree has admitted runner jobs with executed tests.
 
 ## Forge scalar/v1 intersection tests
 

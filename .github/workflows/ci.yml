@@ -21,9 +21,16 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED"
-          git diff --quiet
-          echo "SOURCE_COMMIT=$EXPECTED"
-          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain)"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          test "$SOURCE_COMMIT" = "$EXPECTED"
+          echo "SOURCE_COMMIT=$SOURCE_COMMIT"
+          echo "SOURCE_TREE=$SOURCE_TREE"
+          {
+            echo "Source commit: \`$SOURCE_COMMIT\`"
+            echo "Source tree: \`$SOURCE_TREE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify exact client-scalar guest SHA-256 identities
         run: |
           set -euo pipefail
@@ -44,6 +51,12 @@ jobs:
           components: rustfmt, clippy
       - name: Enforce canonical formatting
         run: cargo fmt --all -- --check
+      - name: Verify dependency lock policy and rejection controls
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts -p 'test_*.py' -v
+          python3 scripts/check_lock_policy.py
+          cargo metadata --locked --format-version 1 > /dev/null
       - name: Compile and execute locked native JIT tests
         run: cargo test --locked --all-targets --verbose
       - name: Enforce Clippy diagnostics
