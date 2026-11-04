@@ -14,8 +14,7 @@ The source contract is `oreslang-common-source` draft PR #201,
   and admit positive boundaries such as `eqx`, `island`, `nullish`.
 - Native CLI tests actually enter the compile/JIT path for representative
   rejects and allowed scalar controls.
-- Cranelift **supports** signed scalar `%` with a proven nonzero literal
-  divisor but **rejects** `^`, Symbols, actors, concurrency, ownership,
+- Cranelift **rejects** retired `%`, `^`, and `^^` operators, Symbols, actors, concurrency, ownership,
   `nb-select`, and execution-domain source forms.
 - Cranelift currently has an ASCII-only native scanner, no Java-compatible
   Symbol NFC/Unicode handling, and no lexical-v1 JSON probe interface.
