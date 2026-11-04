@@ -1,5 +1,6 @@
 mod backend;
 mod frontend;
+mod state_region;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
@@ -7,9 +8,9 @@ fn run() -> Result<(), String> {
     let _ = argv.next();
     let mode = argv
         .next()
-        .ok_or("usage: orescranelift run|ir <file.ores> [i64 args...]")?;
+        .ok_or("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...]")?;
     if mode != "run" && mode != "ir" {
-        return Err("usage: orescranelift run|ir <file.ores> [i64 args...]".into());
+        return Err("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...]".into());
     }
     let path = argv.next().ok_or("missing source file")?;
     // Nonblocking admission is essential before descriptor-level validation:
@@ -19,7 +20,9 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        // Reject a symlink leaf to prevent a caller-controlled source path from
+        // resolving to a different file (or a special device) at open time.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
     }
     let file = options.open(&path).map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
