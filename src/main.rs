@@ -1,24 +1,27 @@
 mod backend;
 mod frontend;
-mod uhl1;
+mod state_region;
+pub mod uhl1;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
     let mut argv = std::env::args();
     let _ = argv.next();
-    let mode = argv
-        .next()
-        .ok_or("usage: orescranelift run|ir <file.ores> [i64 args...] or hotload-capabilities")?;
+    let mode = argv.next().ok_or(
+        "usage: orescranelift run|ir <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+    )?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
             return Err("hotload-capabilities accepts no source or guest arguments".into());
         }
-        println!("{}", uhl1::query(uhl1::ABI_VERSION)
-            .map_err(|_| "unsupported UHL-1 interface version")?);
+        println!(
+            "{}",
+            uhl1::query(uhl1::ABI_VERSION).map_err(|_| "unsupported UHL-1 interface version")?
+        );
         return Ok(());
     }
     if mode != "run" && mode != "ir" {
-        return Err("usage: orescranelift run|ir <file.ores> [i64 args...] or hotload-capabilities".into());
+        return Err("usage: orescranelift run|ir <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = argv.next().ok_or("missing source file")?;
     // Nonblocking admission is essential before descriptor-level validation:
@@ -28,7 +31,9 @@ fn run() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+        // Reject a symlink leaf to prevent a caller-controlled source path from
+        // resolving to a different file (or a special device) at open time.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
     }
     let file = options.open(&path).map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {

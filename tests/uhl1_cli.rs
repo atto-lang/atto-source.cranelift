@@ -36,9 +36,10 @@ fn uhl1_cannot_take_source_arguments_or_fake_hotload_subcommands() {
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty(), "denied operation emitted stdout");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("hotload-capabilities") ||
-                stderr.contains("usage: orescranelift"),
-                "unexpected failure diagnostic: {stderr}");
+        assert!(
+            stderr.contains("hotload-capabilities") || stderr.contains("usage: orescranelift"),
+            "unexpected failure diagnostic: {stderr}"
+        );
         assert!(!stderr.contains("panic"), "bad hot load request panicked");
     }
 }
