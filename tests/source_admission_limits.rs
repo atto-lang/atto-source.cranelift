@@ -1,27 +1,19 @@
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
+//! Source size, UTF-8 and argument admission in the real CLI.
+#[path = "support/mod.rs"]
+mod support;
 
 fn case(bytes: &[u8], mode: &str, args: &[&str], diagnostic: &str) {
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "orescranelift-admission-{}-{id}.ores", std::process::id()
-    ));
-    std::fs::write(&path, bytes).expect("write isolated source fixture");
-    let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg(mode)
-        .arg(&path)
-        .args(args)
-        .output()
-        .expect("execute source admission check");
-    std::fs::remove_file(path).expect("clean isolated source fixture");
-    assert!(!result.status.success(), "invalid case was admitted");
+    let result = support::run_source(mode, bytes, args);
+    assert_eq!(result.status.code(), Some(1), "invalid case was admitted or crashed");
     assert!(result.stdout.is_empty(), "rejection emitted success output");
+    let error = String::from_utf8_lossy(&result.stderr);
     assert!(
-        String::from_utf8_lossy(&result.stderr).contains(diagnostic),
-        "wrong rejection diagnostic: {}",
-        String::from_utf8_lossy(&result.stderr)
+        error.starts_with("orescranelift: ") && error.contains(diagnostic),
+        "wrong compiler-owned rejection: {error}"
+    );
+    assert!(
+        !error.contains("panicked at") && !error.contains("stack backtrace"),
+        "compiler panic is not a source-admission rejection"
     );
 }
 

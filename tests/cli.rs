@@ -624,6 +624,18 @@ fn injected_state_diagnostic_is_specific_and_no_ir_is_emitted() {
 }
 
 #[test]
+fn flags2env_client_abi_status_scalar_native_execution() {
+    const SOURCE: &str = include_str!("fixtures/flags2env-client-abi-status.ores");
+    const EXPECTED: &str = "// Shared scalar ABI smoke for every Oreslang backend, including Cranelift.\n// Encodes public host statuses 0..4 without imports, strings or control flow.\npub fnc main(): int {\n  return (0 * 10000) + (1 * 1000) + (2 * 100) + (3 * 10) + 4 - 1192;\n}\n";
+    assert_eq!(
+        SOURCE.as_bytes(),
+        EXPECTED.as_bytes(),
+        "flags2env fixture bytes drifted"
+    );
+    fixture(SOURCE, &[], true, "42\n");
+}
+
+#[test]
 fn native_platform_portability_v1_checked_i64_source_matrix() {
     // Exact source text is shared with conformance PR #299, rather than
     // rewriting the arithmetic in a Rust host oracle. Compilation and the
