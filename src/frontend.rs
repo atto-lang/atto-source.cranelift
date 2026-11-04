@@ -101,11 +101,13 @@ const JAVA_V1_RESERVED_PARAMETER_NAMES: [&str; 93] = [
     "void",
     "while",
     "writech",
-    "yield"
+    "yield",
 ];
 
 fn is_java_v1_reserved_parameter_name(name: &str) -> bool {
-    JAVA_V1_RESERVED_PARAMETER_NAMES.binary_search(&name).is_ok()
+    JAVA_V1_RESERVED_PARAMETER_NAMES
+        .binary_search(&name)
+        .is_ok()
 }
 
 fn integer_digits(token: &str) -> Result<String, String> {
@@ -397,19 +399,21 @@ impl<'a> Parser<'a> {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
-                if is_java_v1_reserved_parameter_name(&name) || matches!(
-                    name.as_str(),
-                    "Integer"
-                        | "int"
-                        | "return"
-                        | "pub"
-                        | "define"
-                        | "fnc"
-                        | "rt"
-                        | "async"
-                        | "await"
-                        | "actor"
-                ) || self.parameters.contains(&name)
+                if is_java_v1_reserved_parameter_name(&name)
+                    || matches!(
+                        name.as_str(),
+                        "Integer"
+                            | "int"
+                            | "return"
+                            | "pub"
+                            | "define"
+                            | "fnc"
+                            | "rt"
+                            | "async"
+                            | "await"
+                            | "actor"
+                    )
+                    || self.parameters.contains(&name)
                 {
                     return Err("invalid or duplicate parameter".into());
                 }
@@ -455,12 +459,27 @@ mod tests {
     #[test]
     fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
         assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
-        assert!(JAVA_V1_RESERVED_PARAMETER_NAMES.windows(2).all(|p| p[0] < p[1]));
+        assert!(
+            JAVA_V1_RESERVED_PARAMETER_NAMES
+                .windows(2)
+                .all(|p| p[0] < p[1])
+        );
         for name in JAVA_V1_RESERVED_PARAMETER_NAMES {
             let source = format!("fnc main({name}:int):int{{return {name};}}");
-            assert!(parse(&source).is_err(), "reserved Java v1 name accepted: {name}");
+            assert!(
+                parse(&source).is_err(),
+                "reserved Java v1 name accepted: {name}"
+            );
         }
-        for name in ["owned", "eqx", "xneq", "island", "nullish", "panic_mode", "cpu_task"] {
+        for name in [
+            "owned",
+            "eqx",
+            "xneq",
+            "island",
+            "nullish",
+            "panic_mode",
+            "cpu_task",
+        ] {
             let source = format!("fnc main({name}:int):int{{return {name};}}");
             assert!(parse(&source).is_ok(), "ordinary name rejected: {name}");
         }
@@ -469,11 +488,21 @@ mod tests {
     #[test]
     fn stage_zero_is_not_a_general_java_lexical_frontend() {
         for expression in [
-            "#ready", "#'with spaces'", "critical-read", "transform-pipe",
-            "nb-select", "gpu", "cpu", "panic", "1 ^ 2",
+            "#ready",
+            "#'with spaces'",
+            "critical-read",
+            "transform-pipe",
+            "nb-select",
+            "gpu",
+            "cpu",
+            "panic",
+            "1 ^ 2",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
-            assert!(parse(&source).is_err(), "unsupported source admitted: {expression}");
+            assert!(
+                parse(&source).is_err(),
+                "unsupported source admitted: {expression}"
+            );
         }
         // The restricted Cranelift scalar profile explicitly supports remainder.
         assert!(parse("fnc main():int{return 7%3;}").is_ok());
