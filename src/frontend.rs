@@ -298,7 +298,8 @@ impl<'a> Parser<'a> {
             }
             Token::Word("critical") => {
                 return Err(
-                    "critical-section runtime is unsupported by the Cranelift scalar profile".into(),
+                    "critical-section runtime is unsupported by the Cranelift scalar profile"
+                        .into(),
                 );
             }
             _ => {}

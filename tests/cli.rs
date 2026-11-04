@@ -337,7 +337,6 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(fifo).unwrap();
 }
 
-
 #[test]
 fn rt_mut_share_is_never_lowered_to_scalar_clif() {
     // Every context must reject before machine-code emission. No ordinary
@@ -350,9 +349,13 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
         "Integer.bitXor(rt mut share 1, 2)",
         "rt mut share (rt mut share 1)",
         "rt mut share (1 + 2)",
-    ].iter().enumerate() {
+    ]
+    .iter()
+    .enumerate()
+    {
         let file = std::env::temp_dir().join(format!(
-            "orescranelift-mutshare-{}-{index}.ores", std::process::id()
+            "orescranelift-mutshare-{}-{index}.ores",
+            std::process::id()
         ));
         std::fs::write(&file, format!("fnc main():int{{return {expression};}}\n")).unwrap();
         for command in ["run", "ir"] {
@@ -361,32 +364,50 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
                 .arg(&file)
                 .output()
                 .unwrap();
-            assert_eq!(result.status.code(), Some(1), "{command}: unexpected compiler exit");
-            assert!(result.stdout.is_empty(), "{command}: emitted executable value or CLIF IR");
+            assert_eq!(
+                result.status.code(),
+                Some(1),
+                "{command}: unexpected compiler exit"
+            );
+            assert!(
+                result.stdout.is_empty(),
+                "{command}: emitted executable value or CLIF IR"
+            );
             let stderr = String::from_utf8_lossy(&result.stderr);
-            assert!(stderr.contains(GATE), "{command}: missing ownership diagnostic: {stderr}");
+            assert!(
+                stderr.contains(GATE),
+                "{command}: missing ownership diagnostic: {stderr}"
+            );
             assert!(!stderr.contains("panic"), "{command}: compiler crashed");
         }
         std::fs::remove_file(file).unwrap();
     }
 }
 
-
 #[test]
 fn ownership_rt_keyword_cannot_be_redeclared_as_scalar_parameter() {
     fixture("fnc main(rt:int):int{return rt;}", &["42"], false, "");
-    fixture("fnc main(rt:int):int{return rt mut share 1;}", &["42"], false, "");
+    fixture(
+        "fnc main(rt:int):int{return rt mut share 1;}",
+        &["42"],
+        false,
+        "",
+    );
 }
 
 #[test]
 fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
     fixture(
         "fnc main():int{return 42;} // rt mut share owned\n",
-        &[], true, "42\n"
+        &[],
+        true,
+        "42\n",
     );
     fixture(
         "fnc main():int{return 40+2;} // a second rt mut share\n",
-        &[], true, "42\n"
+        &[],
+        true,
+        "42\n",
     );
 }
 
@@ -396,9 +417,18 @@ fn native_scalar_and_unsupported_actor_guest_parity() {
     // the Cranelift JIT through its real CLI. Rust is only the test launcher.
     for (source, expected) in [
         (include_str!("parity/checked_precedence.ores"), "28\n"),
-        (include_str!("parity/checked_i64_min.ores"), "-9223372036854775808\n"),
-        (include_str!("parity/checked_i64_max_minus_one.ores"), "9223372036854775806\n"),
-        (include_str!("parity/bitxor_named_intrinsic.ores"), "-9223372036854775808\n"),
+        (
+            include_str!("parity/checked_i64_min.ores"),
+            "-9223372036854775808\n",
+        ),
+        (
+            include_str!("parity/checked_i64_max_minus_one.ores"),
+            "9223372036854775806\n",
+        ),
+        (
+            include_str!("parity/bitxor_named_intrinsic.ores"),
+            "-9223372036854775808\n",
+        ),
     ] {
         fixture(source, &[], true, expected);
     }
@@ -523,11 +553,17 @@ fn fixture_requires_diagnostic(source: &str, diagnostic: &str) {
         .unwrap();
     std::fs::remove_file(path).unwrap();
     assert_eq!(output.status.code(), Some(1), "negative fixture must fail");
-    assert!(output.stdout.is_empty(), "negative fixture cannot emit success stdout");
+    assert!(
+        output.stdout.is_empty(),
+        "negative fixture cannot emit success stdout"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(diagnostic),
         "wrong negative diagnostic: expected {diagnostic:?}, got {stderr:?}"
     );
-    assert!(!stderr.contains("panic"), "compiler crashed instead of rejecting source");
+    assert!(
+        !stderr.contains("panic"),
+        "compiler crashed instead of rejecting source"
+    );
 }
