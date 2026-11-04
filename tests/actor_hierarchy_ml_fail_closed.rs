@@ -9,6 +9,10 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 // an attacker-planted symlink. Fixture content belongs to the private source
 // checkout, so create each temporary file with restrictive permissions.
 fn write_new_source(path: &std::path::Path, source: &str) {
+    write_new_bytes(path, source.as_bytes());
+}
+
+fn write_new_bytes(path: &std::path::Path, source: &[u8]) {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -18,7 +22,7 @@ fn write_new_source(path: &std::path::Path, source: &str) {
         options.mode(0o600);
     }
     let mut file = options.open(path).expect("create exclusive source fixture");
-    file.write_all(source.as_bytes()).expect("write exact source fixture");
+    file.write_all(source).expect("write exact source fixture");
 }
 
 fn reject_both_modes(label: &str, source: &str) {
@@ -250,4 +254,32 @@ fn cli_refuses_symlinked_source_even_when_target_is_regular() {
     }
     std::fs::remove_file(link).expect("remove symlink");
     std::fs::remove_file(original).expect("remove original source");
+}
+
+#[test]
+fn input_rejection_is_specific_and_emits_no_guest_output() {
+    let cases = [
+        ("invalid-utf8", vec![0xff_u8], "source is not valid UTF-8"),
+        ("over-budget", vec![b' '; 1024 * 1024 + 1], "source exceeds 1 MiB limit"),
+        ("nul-source", b"fnc main():int{return 42;}\\0".to_vec(), "source contains NUL byte"),
+    ];
+    for (label, bytes, diagnostic) in cases {
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-input-denial-{}-{}-{nonce}.ores", std::process::id(), label
+        ));
+        write_new_bytes(&path, &bytes);
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode).arg(&path).output().expect("invoke native scalar CLI");
+            assert!(!output.status.success(), "{label}/{mode}: unsupported input was accepted");
+            assert!(output.stdout.is_empty(), "{label}/{mode}: emitted guest output or IR");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr).trim(),
+                format!("orescranelift: {diagnostic}"),
+                "{label}/{mode}: unrelated failure cannot count as source denial"
+            );
+        }
+        std::fs::remove_file(path).expect("remove test input");
+    }
 }
