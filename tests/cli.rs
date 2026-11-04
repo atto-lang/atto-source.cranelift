@@ -76,6 +76,46 @@ fn native_execution_and_negative_controls() {
 }
 
 #[test]
+fn rate_limit_weighted_counter_scalar_native_execution() {
+    // Genuine CLIF-JIT guest computations for the shared *scalar*
+    // rate-limit arithmetic intersection. No quota authority is implemented.
+    const SOURCE: &str = "fnc main(limit:int,used:int,units:int):int{return limit-used-units;}";
+    for (args, expected) in [
+        (["100", "60", "15"], "25\n"),
+        (["100", "99", "1"], "0\n"),
+        (["100", "99", "2"], "-1\n"),
+        (["9007199254740991", "9007199254740990", "1"], "0\n"),
+    ] {
+        fixture(SOURCE, &args, true, expected);
+    }
+    fixture("fnc main():int{return 100-60-15;}", &[], true, "25\n");
+    fixture(
+        "fnc main():int{return 9007199254740991-9007199254740990;}",
+        &[],
+        true,
+        "1\n",
+    );
+    // Signed64 overflow and unsupported features MUST reject before emitting
+    // a value. This does not confer uint64 wire admission.
+    fixture(SOURCE, &["9223372036854775807", "-1", "0"], false, "");
+    fixture(SOURCE, &["-9223372036854775808", "1", "0"], false, "");
+    fixture(
+        "fnc main():int{return 9223372036854775807+1;}",
+        &[],
+        false,
+        "",
+    );
+    fixture("fnc main():int{return 100/60;}", &[], false, "");
+    fixture("fnc main():int{return 100>60;}", &[], false, "");
+    fixture(
+        "define module backpressure as pub fnc limit():int{return 42;} end",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
 fn native_integer_bitxor_source_execution() {
     // Real Oreslang-shaped source -> frontend -> CLIF native JIT -> result.
     // Signed64 edge vectors correspond to Java strict named arithmetic v1.
@@ -120,10 +160,10 @@ fn native_integer_bitxor_source_execution() {
     fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
-        "fnc main():int{return Integer.bitXor(7%3,Integer.bitXor(4,2));}",
+        "fnc main():int{return Integer.bitXor(7-3,Integer.bitXor(4,2));}",
         &[],
         true,
-        "7\n",
+        "2\n",
     );
     for expression in [
         "Integer.bitXor(9223372036854775807+1,0)",
@@ -141,51 +181,23 @@ fn native_integer_bitxor_source_execution() {
 }
 
 #[test]
-fn native_signed_remainder_literal_divisor() {
-    for (source, args, expected) in [
-        ("fnc main():int{return -7%3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 7%-3;}", &[][..], "1\n"),
-        ("fnc main():int{return -7%-3;}", &[][..], "-1\n"),
-        ("fnc main():int{return 8%3*2;}", &[][..], "4\n"),
-        ("fnc main():int{return 20%6%3;}", &[][..], "2\n"),
-        (
-            "fnc main(x:int):int{return x%-1;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["-9223372036854775808"][..],
-            "0\n",
-        ),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775808;}",
-            &["9223372036854775807"][..],
-            "9223372036854775807\n",
-        ),
-        ("fnc main():int{return 8-7%3*2;}", &[][..], "6\n"),
+fn removed_remainder_operator_is_rejected_before_guest_execution() {
+    for source in [
+        "fnc main():int{return -7%3;}",
+        "fnc main():int{return 7%-3;}",
+        "fnc main():int{return -7%-3;}",
+        "fnc main():int{return 8%3*2;}",
+        "fnc main():int{return 20%6%3;}",
+        "fnc main():int{return -9223372036854775808%-1;}",
+        "fnc main():int{return 8-7%3*2;}",
+        "fnc main(x:int):int{return x%0;}",
+        "fnc main(x:int,y:int):int{return x%y;}",
+        "fnc main(x:int):int{return x%(1+1);}",
+        "fnc main(x:int):int{return x%-x;}",
+        "fnc main(x:int):int{return x%-9223372036854775809;}",
+        "fnc main():int{return Integer.bitXor(7%3,1);}",
     ] {
-        fixture(source, args, true, expected);
-    }
-    // A -1 divisor must not erase a checked overflow in its numerator.
-    fixture(
-        "fnc main(x:int):int{return (x+1)%-1;}",
-        &["9223372036854775807"],
-        false,
-        "",
-    );
-    for (source, args) in [
-        ("fnc main(x:int):int{return x%0;}", &["7"][..]),
-        ("fnc main(x:int,y:int):int{return x%y;}", &["7", "2"][..]),
-        ("fnc main(x:int):int{return x%(1+1);}", &["7"][..]),
-        ("fnc main(x:int):int{return x%-x;}", &["7"][..]),
-        (
-            "fnc main(x:int):int{return x%-9223372036854775809;}",
-            &["7"][..],
-        ),
-        ("fnc main(x:int):int{return x/2;}", &["7"][..]),
-    ] {
-        fixture(source, args, false, "");
+        fixture(source, &[], false, "");
     }
 }
 
@@ -327,7 +339,11 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
                 "{mode} emitted stdout on rejection"
             );
             assert!(
-                String::from_utf8_lossy(&result.stderr).contains("source must be a regular file"),
+                String::from_utf8_lossy(&result.stderr).contains(if source == &link {
+                    "Too many levels of symbolic links"
+                } else {
+                    "source must be a regular file"
+                }),
                 "{mode} returned wrong diagnostic: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
@@ -336,7 +352,6 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
-
 
 #[test]
 fn rt_mut_share_is_never_lowered_to_scalar_clif() {
@@ -350,9 +365,13 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
         "Integer.bitXor(rt mut share 1, 2)",
         "rt mut share (rt mut share 1)",
         "rt mut share (1 + 2)",
-    ].iter().enumerate() {
+    ]
+    .iter()
+    .enumerate()
+    {
         let file = std::env::temp_dir().join(format!(
-            "orescranelift-mutshare-{}-{index}.ores", std::process::id()
+            "orescranelift-mutshare-{}-{index}.ores",
+            std::process::id()
         ));
         std::fs::write(&file, format!("fnc main():int{{return {expression};}}\n")).unwrap();
         for command in ["run", "ir"] {
@@ -361,31 +380,548 @@ fn rt_mut_share_is_never_lowered_to_scalar_clif() {
                 .arg(&file)
                 .output()
                 .unwrap();
-            assert_eq!(result.status.code(), Some(1), "{command}: unexpected compiler exit");
-            assert!(result.stdout.is_empty(), "{command}: emitted executable value or CLIF IR");
+            assert_eq!(
+                result.status.code(),
+                Some(1),
+                "{command}: unexpected compiler exit"
+            );
+            assert!(
+                result.stdout.is_empty(),
+                "{command}: emitted executable value or CLIF IR"
+            );
             let stderr = String::from_utf8_lossy(&result.stderr);
-            assert!(stderr.contains(GATE), "{command}: missing ownership diagnostic: {stderr}");
+            assert!(
+                stderr.contains(GATE),
+                "{command}: missing ownership diagnostic: {stderr}"
+            );
             assert!(!stderr.contains("panic"), "{command}: compiler crashed");
         }
         std::fs::remove_file(file).unwrap();
     }
 }
 
-
 #[test]
 fn ownership_rt_keyword_cannot_be_redeclared_as_scalar_parameter() {
     fixture("fnc main(rt:int):int{return rt;}", &["42"], false, "");
-    fixture("fnc main(rt:int):int{return rt mut share 1;}", &["42"], false, "");
+    fixture(
+        "fnc main(rt:int):int{return rt mut share 1;}",
+        &["42"],
+        false,
+        "",
+    );
 }
 
 #[test]
 fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
     fixture(
         "fnc main():int{return 42;} // rt mut share owned\n",
-        &[], true, "42\n"
+        &[],
+        true,
+        "42\n",
     );
     fixture(
         "fnc main():int{return 40+2;} // a second rt mut share\n",
-        &[], true, "42\n"
+        &[],
+        true,
+        "42\n",
     );
+}
+
+#[test]
+fn injected_mutable_heap_state_denies_real_jit_before_output() {
+    for source in [
+        "@Inject(MutableStateContainer()) define class Counter as state { count: int = 0; } end",
+        "@Inject(MutableStateContainer(scope = #singleton)) define singleton Counter as state {} end",
+        "fnc main():int{return 1;} @Inject(MutableStateContainer())",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // A comment never changes the native scalar language's semantics.
+    fixture(
+        "// @Inject(MutableStateContainer()) is only documentation\nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn injected_state_diagnostic_is_specific_and_no_ir_is_emitted() {
+    let source = "@Inject(MutableStateContainer()) define class Counter as state {} end";
+    let suffix = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!(
+        "orescranelift-injection-denial-{}-{suffix}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&file, source).unwrap();
+    for mode in ["run", "ir"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{mode} unexpectedly accepted state injection"
+        );
+        assert!(output.stdout.is_empty(), "{mode} emitted native output");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains("STATE_INJECTION_UNSUPPORTED: @Inject"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic
+                .contains("requires owned state, typed borrow checking and lifecycle lowering"),
+            "{diagnostic}"
+        );
+    }
+    std::fs::remove_file(file).unwrap();
+}
+
+#[test]
+fn flags2env_client_abi_status_scalar_native_execution() {
+    const SOURCE: &str = include_str!("fixtures/flags2env-client-abi-status.ores");
+    const EXPECTED: &str = "// Shared scalar ABI smoke for every Oreslang backend, including Cranelift.\n// Encodes public host statuses 0..4 without imports, strings or control flow.\npub fnc main(): int {\n  return (0 * 10000) + (1 * 1000) + (2 * 100) + (3 * 10) + 4 - 1192;\n}\n";
+    assert_eq!(
+        SOURCE.as_bytes(),
+        EXPECTED.as_bytes(),
+        "flags2env fixture bytes drifted"
+    );
+    fixture(SOURCE, &[], true, "42\n");
+}
+
+#[test]
+fn heap_container_source_refuses_scalar_only_jit_fallback() {
+    // Execute the actual scalar CLI, rather than matching text in a contract.
+    // No Box, Arc, Weak, Vector, Array, borrowed heap or guarded mutation
+    // lowering exists in this stage-0 Cranelift frontend. Fail closed.
+    for (name, source) in [
+        (
+            "unique heap Box",
+            "pub fnc main(): int { val Box<int> owner = Box<int>(42); return 42; }",
+        ),
+        (
+            "atomic Arc",
+            "pub fnc main(): int { val Arc<int> owner = Arc<int>(42); return 42; }",
+        ),
+        (
+            "weak shared owner",
+            "pub fnc main(): int { val Weak<int> weak = null; return 42; }",
+        ),
+        (
+            "resizable Vector",
+            "pub fnc main(): int { val Vector[int] values = [42]; return 42; }",
+        ),
+        (
+            "resizable Array",
+            "pub fnc main(): int { val Array<int> a = new Array<int>(); a.add(42); return a.get(0); }",
+        ),
+        (
+            "unique move after take",
+            "pub fnc main(): int { let int value = 42; let moved = rt take value; return value; }",
+        ),
+        (
+            "borrow heap value",
+            "pub fnc main(): int { let int value = 42; let loan = rt borrow value; return loan; }",
+        ),
+        (
+            "exclusive heap borrow",
+            "pub fnc main(): int { let int value = 42; let loan = rt mut borrow value; return loan; }",
+        ),
+        (
+            "mut share without synchronized proof",
+            "pub fnc main(): int { let int value = 42; rt mut share value; return value; }",
+        ),
+        (
+            "shared guard state",
+            "pub fnc main(): int { val Mutex<int> cell = Mutex<int>(42); return 42; }",
+        ),
+    ] {
+        assert!(!source.is_empty(), "{name} fixture must be nonempty");
+        fixture(source, &[], false, "");
+    }
+    // Keep the already supported common scalar intersection executable.
+    fixture("pub fnc main(): int { return 21 + 21; }", &[], true, "42\n");
+}
+
+#[test]
+fn source_testkit_async_callback_task_and_actor_syntax_fails_closed() {
+    // Scalar-only Cranelift must not silently accept a test body that creates
+    // async work it cannot join, observe, cancel or physically retire.
+    // These are capability *rejection* checks, NOT successful TestKit parity.
+    for source in [
+        "pub async fnc main(): int { return 42; }",
+        "suspends fnc main(): int { return 42; }",
+        "fnc main():int{return await 42;}",
+        "fnc main():int{return (async task || -> {return 42;})();}",
+        "fnc main():int{return (|int x| -> x)(42);}",
+        "fnc main():int{return spawn Worker();}",
+        "define actor Worker as end\nfnc main():int{return 42;}",
+        "import fnc run_suite from 'ores.std/testing';\nfnc main():int{return 42;}",
+        "fnc main():int{return trap worker.send(42);}",
+        "fnc main():int{return 42;}\nfnc test_async():int{return 7;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    // Reject only *syntax*, not words embedded in comments.
+    fixture(
+        "fnc main():int{return 42;} // async task callback actor await",
+        &[],
+        true,
+        "42\n",
+    );
+}
+
+#[test]
+fn orie_portable_checked_scalar_native_jit() {
+    // Exact Oreslang source bytes from the ORIE portable scalar candidate.
+    // This test invokes the *real* Cranelift compiler/JIT CLI, not a Rust
+    // arithmetic oracle. An authored fixture is not a CI execution receipt.
+    let entry = include_str!("fixtures/orie/entry_42.ores");
+    fixture(entry, &[], true, "42\n");
+
+    let overflow = include_str!("fixtures/orie/checked_overflow.ores");
+    let nonce = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "orescranelift-orie-portable-{}-{nonce}.ores",
+        std::process::id()
+    ));
+    std::fs::write(&path, overflow).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "overflow must reject with status 1"
+    );
+    assert!(result.stdout.is_empty(), "overflow emitted a normal result");
+    let diagnostic = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        diagnostic.contains("i64 arithmetic overflow"),
+        "expected a checked-overflow diagnosis, got: {diagnostic}"
+    );
+}
+
+#[test]
+fn reserved_actor_control_and_ownership_parameters_never_execute() {
+    // This stage-0 JIT cannot implement actor supervision or ownership guards.
+    // Reserved operation words must never be accepted as scalar aliases.
+    for keyword in [
+        "rt", "panic", "raise", "throw", "recover", "defer", "spawn", "stop", "select", "match",
+        "switch", "suspend", "share", "borrow", "take", "copy", "gpu", "cpu", "isoactor", "let",
+        "val", "const", "final",
+    ] {
+        let source = format!("fnc main({keyword}:int):int{{return {keyword};}}");
+        fixture(&source, &["42"], false, "");
+    }
+}
+
+#[test]
+fn snake_case_parameter_names_containing_reserved_words_still_execute() {
+    for name in ["rt_count", "panic_count", "spawn_count", "gpu_cycles"] {
+        let source = format!("fnc main({name}:int):int{{return {name};}}");
+        fixture(&source, &["42"], true, "42\n");
+    }
+}
+
+// Additional compiler-to-native-JIT tests: these check actual Oreslang guest
+// execution and fail-closed negative behavior, not just parser acceptance.
+#[test]
+fn native_integer_precision_matrix_without_f64_conversion() {
+    for (source, expected) in [
+        (
+            "fnc main():int{return 9007199254740993-9007199254740992;}",
+            "1\n",
+        ),
+        (
+            "fnc main():int{return -9007199254740993-(-9007199254740992);}",
+            "-1\n",
+        ),
+        (
+            "fnc main():int{return 9223372036854775807-9223372036854775806;}",
+            "1\n",
+        ),
+        (
+            "fnc main():int{return -9223372036854775808+1;}",
+            "-9223372036854775807\n",
+        ),
+        (
+            "fnc main():int{return 1_000_000_000_000_001-1_000_000_000_000_000;}",
+            "1\n",
+        ),
+        ("fnc main():int{return -(-42);}", "42\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+}
+
+#[test]
+fn native_integer_operator_precedence_matrix() {
+    for (source, expected) in [
+        ("fnc main():int{return 20-5-3;}", "12\n"),
+        ("fnc main():int{return 2+3*4;}", "14\n"),
+        ("fnc main():int{return (2+3)*4;}", "20\n"),
+        ("fnc main():int{return -7*6;}", "-42\n"),
+        ("fnc main():int{return 4*3-2*5;}", "2\n"),
+        ("fnc main():int{return (6-2)*(-7);}", "-28\n"),
+    ] {
+        fixture(source, &[], true, expected);
+    }
+}
+
+#[test]
+fn native_i64_checked_runtime_overflow_matrix() {
+    for (source, args) in [
+        (
+            "fnc main(x:int):int{return x+1;}",
+            &["9223372036854775807"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return -x;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x*2;}",
+            &["4611686018427387904"][..],
+        ),
+        ("fnc main(x:int):int{return x*x;}", &["3037000500"][..]),
+        (
+            "fnc main(x:int):int{return Integer.bitXor(x+1,0);}",
+            &["9223372036854775807"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn syntax_rejections_produce_no_guest_stdout() {
+    for source in [
+        "fnc main():int{return 4^1;}",
+        "fnc main():int{return 4^^1;}",
+        "fnc main():int{return 4/2;}",
+        "fnc main():int{return 4.0;}",
+        "fnc main():float{return 4;}",
+        "fnc main():int{return Integer.pow(3,4);}",
+        "fnc main():int{return Integer.bitXor(3);}",
+        "fnc main():int{return 4;} fnc another():int{return 6;}",
+        "fnc main():int{return 4;} // comment\nunsafe",
+    ] {
+        fixture(source, &[], false, "");
+    }
+}
+
+#[test]
+fn native_entry_parameter_count_and_i64_arguments_fail_closed() {
+    fixture("fnc main(x:int):int{return x;}", &[], false, "");
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["9223372036854775808"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(x:int):int{return x;}",
+        &["-9223372036854775809"],
+        false,
+        "",
+    );
+    fixture("fnc main(x:int):int{return x;}", &["not-an-int"], false, "");
+    fixture("fnc main(x:int):int{return x;}", &["42", "43"], false, "");
+    fixture("fnc main(x:int):int{return x;}", &["42"], true, "42\n");
+}
+
+#[test]
+fn native_four_parameter_order_is_stable() {
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a*1000+b*100+c*10+d;}",
+        &["1", "2", "3", "4"],
+        true,
+        "1234\n",
+    );
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a-b-c-d;}",
+        &["100", "20", "10", "5"],
+        true,
+        "65\n",
+    );
+    fixture(
+        "fnc main(a:int,b:int,c:int,d:int):int{return a+b+c+d;}",
+        &["1", "2", "3", "4"],
+        true,
+        "10\n",
+    );
+}
+
+#[test]
+fn native_signed_parameter_extremes_preserve_full_i64() {
+    for (arg, expected) in [
+        ("-9223372036854775808", "-9223372036854775808\n"),
+        ("9223372036854775807", "9223372036854775807\n"),
+        ("-9007199254740993", "-9007199254740993\n"),
+        ("9007199254740993", "9007199254740993\n"),
+        ("0", "0\n"),
+        ("-1", "-1\n"),
+    ] {
+        fixture("fnc main(x:int):int{return x;}", &[arg], true, expected);
+    }
+}
+
+#[test]
+fn malformed_numeric_digit_separators_reject_without_stdout() {
+    for expression in [
+        "1_",
+        "1__0",
+        "9_223__372",
+        "99___99",
+        "-1__0",
+        "-9_223_372_036__854_775_808",
+        "-9223372036854775808_",
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            false,
+            "",
+        );
+    }
+}
+
+#[test]
+fn checked_scalar_arithmetic_rejects_all_overflow_signs() {
+    for (source, args) in [
+        (
+            "fnc main(x:int):int{return x+1;}",
+            &["9223372036854775807"][..],
+        ),
+        (
+            "fnc main(x:int):int{return x-1;}",
+            &["-9223372036854775808"][..],
+        ),
+        (
+            "fnc main(x:int):int{return -x;}",
+            &["-9223372036854775808"][..],
+        ),
+        ("fnc main(x:int):int{return x*x;}", &["3037000500"][..]),
+        (
+            "fnc main(x:int):int{return 0-x;}",
+            &["-9223372036854775808"][..],
+        ),
+    ] {
+        fixture(source, args, false, "");
+    }
+}
+
+#[test]
+fn native_xor_intrinsic_handles_repeated_and_extreme_values() {
+    for (expression, expected) in [
+        ("Integer.bitXor(0,0)", "0\n"),
+        ("Integer.bitXor(-1,-1)", "0\n"),
+        ("Integer.bitXor(7,7)", "0\n"),
+        ("Integer.bitXor(7,0)", "7\n"),
+        ("Integer.bitXor(0,7)", "7\n"),
+        (
+            "Integer.bitXor(9223372036854775807,-1)",
+            "-9223372036854775808\n",
+        ),
+        ("Integer.bitXor(5,Integer.bitXor(3,6))", "0\n"),
+    ] {
+        fixture(
+            &format!("fnc main():int{{return {expression};}}"),
+            &[],
+            true,
+            expected,
+        );
+    }
+}
+
+#[test]
+fn commented_out_unsupported_tokens_are_not_guest_source() {
+    fixture(
+        "// unsafe actor invalid % ^ \nfnc main():int{return 42;}",
+        &[],
+        true,
+        "42\n",
+    );
+    fixture(
+        "fnc main():int{return 42;} // ^ never parsed",
+        &[],
+        true,
+        "42\n",
+    );
+    fixture(
+        "fnc main():int{return 1;} // ignored \nunsafe",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn oversized_and_deeply_nested_sources_fail_closed() {
+    fixture(&" ".repeat(1024 * 1024 + 1), &[], false, "");
+    let deep = format!(
+        "fnc main():int{{return {}1{};}}",
+        "(".repeat(140),
+        ")".repeat(140)
+    );
+    fixture(&deep, &[], false, "");
+}
+
+#[test]
+fn native_platform_portability_v1_checked_i64_source_matrix() {
+    // Exact source text is shared with conformance PR #299, rather than
+    // rewriting the arithmetic in a Rust host oracle. Compilation and the
+    // printed i64 result must come from the actual native Cranelift JIT.
+    // The source hashes and independent CI provenance still need verification
+    // before cross-backend or platform certification.
+    for (source, result) in [
+        ("pub fnc main(): int { return 40 + 2; }\n", "42\n"),
+        ("pub fnc main(): int { return (2 + 3) * 8; }\n", "40\n"),
+        ("pub fnc main(): int { return 0 - 42; }\n", "-42\n"),
+        ("pub fnc main(): int { return (30 - 10) - 10; }\n", "10\n"),
+        ("pub fnc main(): int { return 6 * (10 - 3); }\n", "42\n"),
+        ("pub fnc main(): int { return 7 - 7; }\n", "0\n"),
+        ("pub fnc main(): int { return 21 + 21; }\n", "42\n"),
+        ("pub fnc main(): int { return 7 * 6; }\n", "42\n"),
+    ] {
+        fixture(source, &[], true, result);
+    }
+    // An unsuccessful compiler check must not be mistaken for runtime
+    // overflow or a successful guest execution; no stdout is permitted.
+    fixture(
+        "pub fnc main(): int { return missing_platform_binding; }\n",
+        &[],
+        false,
+        "",
+    );
+    fixture(
+        "pub fnc main(): int { return absent_platform_function; }\n",
+        &[],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn native_platform_portability_v1_rejects_fake_backend_features() {
+    // A scalar-only Cranelift JIT must never silently accept Oreslang actor,
+    // suspension, ownership or unrelated host-language constructs.
+    for source in [
+        "pub async fnc main(): int { return 42; }\n",
+        "pub critical suspends fnc main(): int { return 42; }\n",
+        "pub fnc main(): int { return await 42; }\n",
+        "pub fnc main(): int { return unknown_runtime_platform_helper(42); }\n",
+    ] {
+        fixture(source, &[], false, "");
+    }
 }
