@@ -1,9 +1,10 @@
+//! Exact shared scalar50 source bytes, executed via the real Cranelift JIT.
+//! .atto is used for new runtime test scratch files; the pinned TSV is unchanged.
 use std::collections::HashSet;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[path = "support/mod.rs"]
+mod support;
 
 const CORPUS: &str = include_str!("../contracts/parity/scalar50/v1.tsv");
-static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn scalar50_native_jit_exact_shared_sources() {
@@ -22,18 +23,7 @@ fn scalar50_native_jit_exact_shared_sources() {
         assert!(source.starts_with("pub fnc main(): int { return "));
         assert!(source.ends_with("; }"));
         assert!(source.len() < 256);
-        let number = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "orescranelift-shared-scalar50-{}-{number}.ores",
-            std::process::id()
-        ));
-        std::fs::write(&path, source).expect("write source fixture");
-        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg("run")
-            .arg(&path)
-            .output()
-            .expect("execute real Cranelift JIT compiler");
-        std::fs::remove_file(&path).expect("remove temporary source");
+        let output = support::run_source("run", source.as_bytes(), &[]);
         assert!(
             output.status.success(),
             "{}: native JIT failed: {}",
