@@ -27,8 +27,7 @@ impl Fixture {
             .create_new(true)
             .open(&path)
             .expect("new source file");
-        writeln!(file, "pub fnc main():int{{return {source_expr};}}")
-            .expect("write source");
+        writeln!(file, "pub fnc main():int{{return {source_expr};}}").expect("write source");
         file.flush().expect("flush source");
         drop(file);
         // Compilation failures must not be credited as runtime trap passes.
@@ -59,7 +58,10 @@ fn unsupported_operators_reject_before_native_execution() {
         assert!(result.stdout.is_empty(), "{id} printed guest output");
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(stderr.starts_with("orescranelift: "), "{id}: {stderr}");
-        assert!(!stderr.contains("i64 arithmetic overflow"), "{id} misclassified");
+        assert!(
+            !stderr.contains("i64 arithmetic overflow"),
+            "{id} misclassified"
+        );
     }
 }
 #[test]
@@ -76,7 +78,10 @@ fn invalid_literals_are_compile_rejections_not_overflow_traps() {
         assert!(result.stdout.is_empty(), "{id} printed guest output");
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(stderr.starts_with("orescranelift: "), "{id}: {stderr}");
-        assert!(!stderr.contains("i64 arithmetic overflow"), "{id} misclassified");
+        assert!(
+            !stderr.contains("i64 arithmetic overflow"),
+            "{id} misclassified"
+        );
     }
 }
 #[test]

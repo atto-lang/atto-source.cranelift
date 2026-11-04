@@ -1,13 +1,23 @@
-# Oreslang Cranelift backend
+# AttoLang Cranelift backend
 
-An **independent Rust + Cranelift** experimental backend for Oreslang. It is
+**AttoLang** is the current public language name (formerly **Oreslang**).
+The independent Cranelift JIT compiles a deliberately limited signed-i64 scalar subset, not full AttoLang.
+This branding change does not imply full-language parity, AOT capabilities or
+zero-GC guarantees. This backend's checked signed-i64 scalar subset has passed
+real native execution tests using both `.atto` and legacy `.ores` files; new
+fixtures for this verified subset SHOULD use `.atto`.
+Do not rename repositories, dependencies, commands or fixed interfaces merely
+to make their names match the public brand.
+
+
+An **independent Rust + Cranelift** experimental backend for AttoLang. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
 
-## Stage-0 executable scalar profile
+## Stage-0 executable scalar profile (validated `.atto` and `.ores`)
 
 This backend compiles a deliberately narrow Oreslang source subset
-into **actual Cranelift native JIT machine code**, with a checked overflow
+into **actual Cranelift native JIT machine code** from `.atto` or `.ores` source, with a checked overflow
 status rather than an unchecked wrap or process trap.
 
 ```oreslang
@@ -15,8 +25,9 @@ fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
-cargo run --locked -- run example.ores 7 8 # 72
-cargo run --locked -- ir example.ores      # generated Cranelift IR
+cargo run --locked -- run example.atto 7 8 # 72
+cargo run --locked -- ir example.atto      # generated Cranelift IR
+cargo test --locked --all-targets            # includes .atto/.ores execution parity
 cargo test --locked --all-targets
 ```
 
@@ -43,7 +54,7 @@ The `%`, `^`, and `^^` operators are rejected at lexer admission. Typed
 Native JIT code executes inside this process. **It is not a sandbox** and
 there is no guest actor heap isolation or untrusted-source support.
 The entry ABI is internal (four i64 operands plus an output pointer returning
-an i32 status), not a published Oreslang or foreign-call ABI.
+an i32 status), not a published AttoLang or foreign-call ABI.
 
 Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
@@ -80,3 +91,18 @@ symlinks to FIFOs, in both `run` and `ir` without waiting for a writer.
 A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
+
+## Actor Sync v1 admission: unsupported on stage-0
+
+The [Oreslang Actor Sync v1 draft conformance contract](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/300)
+requires source actors, isolated actor-owned state, non-reentrant turns, async
+durable persistence and typed changefeed cursors. **This Cranelift backend has
+none of those semantics yet.** As long as its compiler is scalar-only, it
+must reject source actor and virtual sync constructs without emitting IR or a
+guest executable.
+
+`tests/actor_sync_admission.rs` adds 12 negative guest admission sources in
+both `run` and `ir` CLI modes plus a positive scalar-with-comments guard.
+These are **source rejection** tests and cannot be counted as AS01–AS24
+guest implementation parity. Native actor IR, actor memory ownership and an
+execution ABI must land first (issue #17). Cranelift is independent of Forge.
