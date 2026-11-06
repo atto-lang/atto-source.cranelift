@@ -181,6 +181,25 @@ impl<'a> Parser<'a> {
         Ok(p)
     }
 
+    /// True when the next significant byte (after whitespace and line
+    /// comments) opens a block. Used for contextual `task`/`nb` blocks.
+    fn next_opens_block(&self) -> bool {
+        let b = self.input.as_bytes();
+        let mut at = self.pos;
+        loop {
+            while at < b.len() && b" \t\r\n\x0b\x0c".contains(&b[at]) {
+                at += 1;
+            }
+            if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
+                while at < b.len() && b[at] != b'\n' {
+                    at += 1;
+                }
+                continue;
+            }
+            return b.get(at) == Some(&b'{');
+        }
+    }
+
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
         loop {
@@ -266,6 +285,18 @@ impl<'a> Parser<'a> {
                     | Token::Word("trap")
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
+            }
+            // cpu/gpu/quantum are execution-domain words reserved by every
+            // backend (Java and LLVM reject them as identifiers). This JIT
+            // lowers no execution region or CPU/GPU Task, so refuse them
+            // here rather than through an incidental syntax error.
+            if let Token::Word(word @ ("cpu" | "gpu" | "quantum")) = self.current {
+                return Err(format!(
+                    "EXECUTION_DOMAIN_UNSUPPORTED: execution domain '{word}' is reserved and not lowered by the Cranelift backend; no implicit CPU fallback"
+                ));
+            }
+            if matches!(self.current, Token::Word("task" | "nb")) && self.next_opens_block() {
+                return Err("EXECUTION_DOMAIN_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
             }
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
