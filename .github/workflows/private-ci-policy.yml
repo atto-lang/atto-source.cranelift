@@ -1,0 +1,40 @@
+# Source-local governance only: no source transfer or carrier authorization.
+name: Cranelift private CI default-deny (source-free)
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  private-ci-default-deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout pinned source without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove physical source is exact and clean
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          bash verification/source-integrity/verify.sh "$EXPECTED_HEAD"
+      - name: Refuse unauthorized private-CI destinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=.github/private-ci-approved-repositories.txt
+          test -f "$file"
+          test ! -L "$file"
+          if grep -Ev '^[[:space:]]*(#.*)?$' "$file" | grep -q .; then
+            echo "PRIVATE_CI_EXPORT_DENIED: no approved source-transfer destination" >&2
+            exit 1
+          fi
+          echo "Private-source export disabled; this job proves policy only, not native guest parity."
