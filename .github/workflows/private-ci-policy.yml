@@ -33,7 +33,14 @@ jobs:
           file=.github/private-ci-approved-repositories.txt
           test -f "$file"
           test ! -L "$file"
-          if grep -Ev '^[[:space:]]*(#.*)?$' "$file" | grep -q .; then
+          test "$(stat -c %s -- "$file")" -le 65536
+          # Single-process grep avoids hidden active rows on SIGPIPE under pipefail.
+          if grep -Evq '^[[:space:]]*(#.*)?
+            echo "PRIVATE_CI_EXPORT_DENIED: no approved source-transfer destination" >&2
+            exit 1
+          fi
+          echo "Private-source export disabled; this job proves policy only, not native guest parity."
+ "$file"; then
             echo "PRIVATE_CI_EXPORT_DENIED: no approved source-transfer destination" >&2
             exit 1
           fi
