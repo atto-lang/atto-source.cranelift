@@ -286,6 +286,20 @@ impl<'a> Parser<'a> {
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
             }
+            // Collection and borrow syntax are not represented by scalar
+            // stage-0 MIR. Reserve these names before CLIF/JIT output; a
+            // parser syntax error is not a verified semantic borrow denial.
+            // This prevents a future generic extension from accidentally
+            // interpreting them as plain i64 parameters or functions.
+            if matches!(
+                self.current,
+                Token::Word(
+                    "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
+                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                )
+            ) {
+                return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
+            }
             // cpu/gpu/quantum are execution-domain words reserved by every
             // backend (Java and LLVM reject them as identifiers). This JIT
             // lowers no execution region or CPU/GPU Task, so refuse them
