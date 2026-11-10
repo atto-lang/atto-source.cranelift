@@ -34,15 +34,30 @@ fn unavailable_collections_never_emit_clif_or_execute_i64_jit() {
 }
 
 #[test]
-fn tagged_option_and_suspending_borrows_still_reject() {
-    for source in [
-        "pub fnc main():int{return Some(42);}",
-        "pub fnc main():int{return None;}",
-        "pub fnc main():int{return rt borrow value;}",
+fn tagged_option_and_ownership_operations_fail_with_exact_denial_in_both_modes() {
+    // A nonzero process exit is not sufficient. Lexer/parser crashes or an
+    // unrelated syntax error cannot count as a semantic borrow/Option proof.
+    for (source, expected) in [
+        ("pub fnc main():int{return Some(42);}",
+            "typed Option/Result/trap is unsupported"),
+        ("pub fnc main():int{return None;}",
+            "typed Option/Result/trap is unsupported"),
+        ("pub fnc main():int{return rt borrow value;}",
+            "rt ownership operation requires checked ownership lowering"),
+        ("pub fnc main():int{return Array.of(42).get_copy(-1);}",
+            "E_SAFE_COLLECTION_ACCESS_UNSUPPORTED"),
+        ("pub fnc main():int{return Array.of(42)[0];}",
+            "E_SAFE_COLLECTION_ACCESS_UNSUPPORTED"),
     ] {
-        let result = execute("ir", source);
-        assert_eq!(result.status.code(), Some(1));
-        assert!(result.stdout.is_empty());
+        for mode in ["run", "ir"] {
+            let result = execute(mode, source);
+            assert_eq!(result.status.code(), Some(1), "{mode}/{source}");
+            assert!(result.stdout.is_empty(),
+                "{mode}: denied collection source produced stdout");
+            let diagnostic = String::from_utf8_lossy(&result.stderr);
+            assert!(diagnostic.contains(expected),
+                "{mode}: expected {expected:?}; got {diagnostic:?}");
+        }
     }
 }
 
