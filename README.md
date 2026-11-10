@@ -180,3 +180,9 @@ or parity with Java, LLVM, WASM, Forge or .NET.
 
 
 Experimental `isolate` mode applies a two-argument trusted scalar JIT to two separate tenant states. This is host lifecycle bookkeeping, not an untrusted native sandbox or source actor lowering. See docs/VM_ISOLATE_CONTRACT.md.
+
+## Canonical browser integration and native actor parity gap
+
+The playground's real browser frontend now integrates into `oreslang-source.rs/browser` ([PR #52](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/52)). It emits both Wasm and ESM from one checked IR; source.js and source.wasm consume its pinned compiler artifact. This independent native Cranelift compiler is a separate backend and does not become browser-capable by renaming native machine code to Wasm.
+
+`tests/canonical-browser/actor-state.atto` is byte-identical to that compiler's `browser/tests/fixtures/pass/61-actor-state.atto`. The regression invokes this backend's actual `run` and `ir` commands and requires an explicit unsupported-actor diagnostic with no output. This records the gap; it does not count as successful actor guest execution. Native nominal actors, ActorMail receive, owned linear-memory domains, mailbox scheduling and supervision must be lowered before the same source can pass here. Browser Wasm/ESM evidence cannot certify this backend.
