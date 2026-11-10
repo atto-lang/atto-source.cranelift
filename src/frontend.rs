@@ -254,6 +254,13 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // A macro is a compiler-only declaration, not a scalar callable.
+            // Fail before CLIF/JIT emission, even when the macro is unused.
+            // This deliberately reserves the keyword until typed AST expansion
+            // and full-AOT semantic re-admission are implemented.
+            if self.current == Token::Word("macro") {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: define macro requires compiler-only typed AST expansion and AOT semantic re-admission; no runtime/JIT fallback".into());
+            }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
             // lexically, including in unconsumed trailing source, before CLIF.
@@ -320,6 +327,10 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if first == b'!' {
+            // All bang spellings are currently unsupported, including unknown
+            // and reserved name!(...) calls. No macro may become a runtime call.
+            return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
         } else if b"()+-*{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
