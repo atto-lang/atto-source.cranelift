@@ -712,6 +712,17 @@ impl<'a> Parser<'a> {
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
             );
         }
+        // The parsed scalar main is the *whole* translation unit. Scan any
+        // already-invalid trailing input solely for compiler-only reserved
+        // constructs, so a late define macro or name!(...) does not hide
+        // behind a generic end-of-input error. Never accept that tail.
+        if self.current != Token::End {
+            let at = self.pos;
+            while self.current != Token::End {
+                self.next()?;
+            }
+            return Err(format!("unexpected token at byte {at}"));
+        }
         self.expect(Token::End)?;
         Ok(Program {
             parameters: self.parameters,
