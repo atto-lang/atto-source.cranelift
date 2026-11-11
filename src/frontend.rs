@@ -710,14 +710,18 @@ impl<'a> Parser<'a> {
 }
 
 fn has_actor_pubsub_surface(text: &str) -> bool {
-    has_unsupported_actor_surface(text, false)
+    has_unsupported_actor_surface(text, false, false)
 }
 
 fn has_actor_pipe_surface(text: &str) -> bool {
-    has_unsupported_actor_surface(text, true)
+    has_unsupported_actor_surface(text, true, false)
 }
 
-fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
+fn has_unlowered_singleton_surface(text: &str) -> bool {
+    has_unsupported_actor_surface(text, false, true)
+}
+
+fn has_unsupported_actor_surface(text: &str, detect_pipe: bool, detect_singleton: bool) -> bool {
     // Stage-0 stays scalar-only. Detect the pub/sub surface before ordinary
     // parsing so it cannot accidentally reach CLIF emission as the frontend
     // grows. Comments and quoted literals are inert.
@@ -807,6 +811,15 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             Tok::Sym(byte)
         };
 
+        if detect_singleton {
+            // The existing bounded trivia-aware scanner skips strings and comments.
+            if matches!((previous, current),
+                (Some(Tok::Id("define")), Tok::Id("singleton")))
+                || matches!((before_previous, previous, current),
+                    (Some(Tok::Id("define")), Some(Tok::Id("pub")), Tok::Id("singleton"))) {
+                return true;
+            }
+        }
         let found = match (before_previous, previous, current) {
             // Fail closed on planned runtime-wide, capability and group syntax,
             // including forms not covered by the original ActorGroup fixtures.
@@ -822,7 +835,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
             _ => false,
         };
-        if !detect_pipe && found {
+        if !detect_pipe && !detect_singleton && found {
             return true;
         }
         if detect_pipe {
@@ -896,6 +909,9 @@ pub fn parse(text: &str) -> Result<Program, String> {
     }
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
+    }
+    if has_unlowered_singleton_surface(text) {
+        return Err("SINGLETON_UNSUPPORTED: native Cranelift singleton identity, ownership and runtime lowering not implemented".into());
     }
     Parser::new(text)?.program()
 }
