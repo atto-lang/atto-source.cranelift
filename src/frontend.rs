@@ -254,6 +254,13 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // A match keyword is not a normal scalar function identifier:
+            // reject before constructing CLIF or executing a JIT guest.
+            if self.current == Token::Word("match") {
+                return Err(format!(
+                    "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
+                ));
+            }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
             // lexically, including in unconsumed trailing source, before CLIF.
@@ -320,6 +327,10 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if first == b'~' {
+            return Err(format!(
+                "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
+            ));
         } else if b"()+-*{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
