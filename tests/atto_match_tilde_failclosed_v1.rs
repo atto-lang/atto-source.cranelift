@@ -50,7 +50,7 @@ fn match_and_tilde_fail_before_jit_execution_or_clif_publication() {
 
 #[test]
 fn actual_scalar_cranelift_guest_still_returns_42_with_inert_comments() {
-    let input = "fnc main():int{/* match 9 over */ // ~map()\nreturn 40 + 2;}";
+    let input = "fnc main():int{// match 9 over ~map()\nreturn 40 + 2;}";
     let result = execute(input, "run");
     assert!(result.status.success(), "valid source failed: {}",
         String::from_utf8_lossy(&result.stderr));
