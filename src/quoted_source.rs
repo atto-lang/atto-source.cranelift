@@ -128,7 +128,7 @@ impl Scanner<'_> {
                 while i < self.bytes.len() && nested > 0 {
                     if self.bytes.get(i..i + 2) == Some(b"/*") {
                         nested += 1;
-                        if nested > 64 { return Err(err("comment nesting limit", i)); }
+                        if nested > 128 { return Err(err("comment nesting limit", i)); }
                         i += 2;
                     } else if self.bytes.get(i..i + 2) == Some(b"*/") {
                         nested -= 1;
