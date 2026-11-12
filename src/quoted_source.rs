@@ -45,7 +45,7 @@ impl Scanner<'_> {
         Ok(scalar)
     }
     fn quoted(&mut self, start: usize, depth: usize) -> Result<usize, String> {
-        if depth > 64 { return Err(err("string/template nesting limit", start)); }
+        if depth > 32 { return Err(err("string/template nesting limit", start)); }
         let quote = *self.bytes.get(start).ok_or_else(|| err("expected quote", start))?;
         if !matches!(quote, b'\'' | b'"' | b'`') {
             return Err(err("expected quote", start));
@@ -94,7 +94,7 @@ impl Scanner<'_> {
             // Java/Graal ordinary strings preserve raw multiline content.
             if quote == b'`' && ch == b'$' && self.bytes.get(i + 1) == Some(&b'{') {
                 self.interpolations += 1;
-                if self.interpolations > 128 {
+                if self.interpolations > 1024 {
                     return Err(err("template substitution limit", i));
                 }
                 let body = i + 2;
@@ -111,7 +111,7 @@ impl Scanner<'_> {
     }
 
     fn interpolation(&mut self, at: usize, depth: usize) -> Result<usize, String> {
-        if depth > 64 { return Err(err("template nesting limit", at)); }
+        if depth > 32 { return Err(err("template nesting limit", at)); }
         let mut i = at;
         let mut braces = 1_usize;
         let mut has_code = false;
@@ -146,7 +146,7 @@ impl Scanner<'_> {
             if self.bytes[i] == b'{' {
                 has_code = true;
                 braces += 1;
-                if braces > 128 { return Err(err("interpolation brace limit", i)); }
+                if braces > 256 { return Err(err("interpolation brace limit", i)); }
             } else if self.bytes[i] == b'}' {
                 braces -= 1;
                 if braces == 0 {
