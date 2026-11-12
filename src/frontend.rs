@@ -953,6 +953,36 @@ mod tests {
             let code = format!("fnc main():int{{return {literal};}}");
             assert!(parse(&code).is_err(), "malformed literal accepted: {literal}");
         }
+        let many = |n: usize| {
+            let literal = format!("`{}`", "${'x'}".repeat(n));
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&many(1024), 0), Ok(many(1024).len()));
+        assert!(quoted_source::scan_quoted(&many(1025), 0)
+            .unwrap_err().contains("template substitution limit"));
+        let braces = |n: usize| {
+            let mut literal = String::from("`${");
+            literal.push_str(&"{".repeat(n));
+            literal.push('x');
+            literal.push_str(&"}".repeat(n));
+            literal.push('}');
+            literal.push('`');
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&braces(255), 0), Ok(braces(255).len()));
+        assert!(quoted_source::scan_quoted(&braces(256), 0)
+            .unwrap_err().contains("interpolation brace limit"));
+        let nested = |n: usize| {
+            let mut literal = String::from("`");
+            literal.push_str(&"${`".repeat(n));
+            literal.push('x');
+            literal.push_str(&"`}".repeat(n));
+            literal.push('`');
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&nested(16), 0), Ok(nested(16).len()));
+        assert!(quoted_source::scan_quoted(&nested(17), 0)
+            .unwrap_err().contains("nesting limit"));
         // Code-like source inside comments remains non-executable.
         assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
         assert!(parse("fnc main():int{// 'actor' \nreturn 42;}").is_ok());
