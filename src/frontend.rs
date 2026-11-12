@@ -983,6 +983,21 @@ mod tests {
         assert_eq!(quoted_source::scan_quoted(&nested(16), 0), Ok(nested(16).len()));
         assert!(quoted_source::scan_quoted(&nested(17), 0)
             .unwrap_err().contains("nesting limit"));
+        let nested_comments = |count: usize| {
+            let mut source = String::from("`${");
+            source.push_str(&"/*".repeat(count));
+            source.push_str("ignored");
+            source.push_str(&"*/".repeat(count));
+            source.push_str("x}`");
+            source
+        };
+        assert_eq!(
+            quoted_source::scan_quoted(&nested_comments(128), 0),
+            Ok(nested_comments(128).len())
+        );
+        assert!(quoted_source::scan_quoted(&nested_comments(129), 0)
+            .unwrap_err().contains("comment nesting limit"));
+
         // Code-like source inside comments remains non-executable.
         assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
         assert!(parse("fnc main():int{// 'actor' \nreturn 42;}").is_ok());
