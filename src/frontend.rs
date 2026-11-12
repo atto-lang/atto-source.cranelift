@@ -903,6 +903,51 @@ pub fn parse(text: &str) -> Result<Program, String> {
 mod tests {
     use super::*;
     #[test]
+    fn quoted_strings_and_nested_templates_are_atomic_and_fail_closed() {
+        let positives = [
+            "'single'",
+            "\"double\"",
+            r#"'opposite "quotes"'"#,
+            r#""opposite 'quotes'""#,
+            r#"'escaped \' quote'"#,
+            r#""escaped \" quote""#,
+            r#"'unicode \u0041'"#,
+            "`raw\nmultiline`",
+            r#"`escaped \${not_interpolation}`"#,
+            r#"`outer ${call({a: "}", b: 1}, /* { */ `inner ${value}`)} end`"#,
+            r#"`outer ${fnc({a: "}"} /* outer /* inner */ outer */)} end`"#,
+        ];
+        for literal in positives {
+            assert_eq!(
+                quoted_source::scan_quoted(literal, 0),
+                Ok(literal.len()),
+                "literal incorrectly scanned: {literal}"
+            );
+            let code = format!("fnc main():int{{return {literal};}}");
+            let reason = parse(&code).expect_err("Cranelift cannot lower String yet");
+            assert!(reason.contains("STRING_BACKEND_UNSUPPORTED"),
+                "unexpected source denial for {literal}: {reason}");
+        }
+        for (literal, reason) in [
+            ("'raw\nnewline'", "newline in quoted string"),
+            ("'unclosed", "unterminated string/template"),
+            (r#"'\q'"#, "invalid string escape"),
+            (r#"'\u12X4'"#, "invalid Unicode escape"),
+            (r#"'\x0G'"#, "invalid hex escape"),
+            (r#"`bad ${ }`"#, "empty template interpolation"),
+            (r#"`bad ${ /* unterminated}`"#, "unterminated interpolation comment"),
+        ] {
+            let error = quoted_source::scan_quoted(literal, 0).unwrap_err();
+            assert!(error.contains(reason), "wrong error for {literal}: {error}");
+            let code = format!("fnc main():int{{return {literal};}}");
+            assert!(parse(&code).is_err(), "malformed literal accepted: {literal}");
+        }
+        // Code-like source inside comments remains non-executable.
+        assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
+        assert!(parse("fnc main():int{// 'actor' \nreturn 42;}").is_ok());
+    }
+
+    #[test]
     fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
         assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
         assert!(
