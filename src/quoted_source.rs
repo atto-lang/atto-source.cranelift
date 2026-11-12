@@ -66,11 +66,15 @@ impl Scanner<'_> {
                         }
                         i += 1;
                     } else {
+                        let mut scalar = 0_u32;
                         for _ in 0..4 {
-                            if !self.bytes.get(i).is_some_and(|&c| Self::hex(c).is_some()) {
-                                return Err(err("invalid Unicode escape", at));
-                            }
+                            let value = self.bytes.get(i).and_then(|&c| Self::hex(c))
+                                .ok_or_else(|| err("invalid Unicode escape", at))?;
+                            scalar = scalar * 16 + value;
                             i += 1;
+                        }
+                        if (0xd800..=0xdfff).contains(&scalar) {
+                            return Err(err("invalid Unicode escape", at));
                         }
                     }
                     continue;
@@ -119,6 +123,7 @@ impl Scanner<'_> {
         if depth > 64 { return Err(err("template nesting limit", at)); }
         let mut i = at;
         let mut braces = 1_usize;
+        let mut has_code = false;
         while i < self.bytes.len() {
             if self.bytes.get(i..i + 2) == Some(b"//") {
                 i += 2;
@@ -143,15 +148,26 @@ impl Scanner<'_> {
                 continue;
             }
             if matches!(self.bytes[i], b'\'' | b'"' | b'`') {
+                has_code = true;
                 i = self.quoted(i, depth + 1)?;
                 continue;
             }
             if self.bytes[i] == b'{' {
+                has_code = true;
                 braces += 1;
                 if braces > 128 { return Err(err("interpolation brace limit", i)); }
             } else if self.bytes[i] == b'}' {
                 braces -= 1;
-                if braces == 0 { return Ok(i + 1); }
+                if braces == 0 {
+                    if !has_code { return Err(err("empty template interpolation", at.saturating_sub(2))); }
+                    return Ok(i + 1);
+                }
+                has_code = true;
+            } else if self.newline(i) > 0 {
+                i += self.newline(i);
+                continue;
+            } else if !self.bytes[i].is_ascii_whitespace() {
+                has_code = true;
             }
             i += 1;
         }
