@@ -912,6 +912,10 @@ mod tests {
             r#"'escaped \' quote'"#,
             r#""escaped \" quote""#,
             r#"'unicode \u0041'"#,
+            "'raw\nnewline'",
+            r#"'\q'"#,
+            r#"'\x0G'"#,
+            r#"'\uD83D\uDE00'"#,
             "`raw\nmultiline`",
             r#"`escaped \${not_interpolation}`"#,
             r#"`outer ${call({a: "}", b: 1}, /* { */ `inner ${value}`)} end`"#,
@@ -929,13 +933,15 @@ mod tests {
                 "unexpected source denial for {literal}: {reason}");
         }
         for (literal, reason) in [
-            ("'raw\nnewline'", "newline in quoted string"),
             ("'unclosed", "unterminated string/template"),
-            (r#"'\q'"#, "invalid string escape"),
             (r#"'\u12X4'"#, "invalid Unicode escape"),
             (r#"'\uD800'"#, "invalid Unicode escape"),
             (r#"'\uDFFF'"#, "invalid Unicode escape"),
-            (r#"'\x0G'"#, "invalid hex escape"),
+            (r#"'\u{1f600}'"#, "invalid Unicode escape"),
+            (r#"`invalid \q`"#, "invalid template escape"),
+            (r#"`invalid \x41`"#, "invalid template escape"),
+            (r#"`invalid \u{1f600}`"#, "invalid Unicode escape"),
+            ("`invalid \\\nnewline`", "invalid template escape"),
             (r#"`only comments ${/* comment */}`"#, "empty template interpolation"),
             (r#"`line comments ${// comment
 }`"#, "empty template interpolation"),
