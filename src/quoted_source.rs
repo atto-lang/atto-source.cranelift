@@ -34,6 +34,16 @@ impl Scanner<'_> {
         }
     }
 
+    fn unicode_unit(&self, index: &mut usize, escape: usize) -> Result<u32, String> {
+        let mut scalar = 0_u32;
+        for _ in 0..4 {
+            let digit = self.bytes.get(*index).and_then(|&c| Self::hex(c))
+                .ok_or_else(|| err("invalid Unicode escape", escape))?;
+            scalar = scalar * 16 + digit;
+            *index += 1;
+        }
+        Ok(scalar)
+    }
     fn quoted(&mut self, start: usize, depth: usize) -> Result<usize, String> {
         if depth > 64 { return Err(err("string/template nesting limit", start)); }
         let quote = *self.bytes.get(start).ok_or_else(|| err("expected quote", start))?;
@@ -48,59 +58,40 @@ impl Scanner<'_> {
                 i += 1;
                 let next = *self.bytes.get(i).ok_or_else(|| err("unterminated escape", at))?;
                 let line_bytes = self.newline(i);
-                if line_bytes > 0 { i += line_bytes; continue; }
+                if line_bytes > 0 {
+                    if quote == b'`' { return Err(err("invalid template escape", at)); }
+                    i += line_bytes;
+                    continue;
+                }
                 if next == b'u' {
                     i += 1;
-                    if self.bytes.get(i) == Some(&b'{') {
-                        i += 1;
-                        let digits_at = i;
-                        let mut code_point = 0_u32;
-                        while let Some(digit) = self.bytes.get(i).and_then(|&c| Self::hex(c)) {
-                            if i - digits_at == 6 { break; }
-                            code_point = code_point * 16 + digit;
-                            i += 1;
-                        }
-                        if i == digits_at || self.bytes.get(i) != Some(&b'}') ||
-                            code_point > 0x10ffff || (0xd800..=0xdfff).contains(&code_point) {
+                    let scalar = self.unicode_unit(&mut i, at)?;
+                    if (0xd800..=0xdbff).contains(&scalar) {
+                        if self.bytes.get(i) != Some(&b'\\') ||
+                            self.bytes.get(i + 1) != Some(&b'u') {
                             return Err(err("invalid Unicode escape", at));
                         }
-                        i += 1;
-                    } else {
-                        let mut scalar = 0_u32;
-                        for _ in 0..4 {
-                            let value = self.bytes.get(i).and_then(|&c| Self::hex(c))
-                                .ok_or_else(|| err("invalid Unicode escape", at))?;
-                            scalar = scalar * 16 + value;
-                            i += 1;
-                        }
-                        if (0xd800..=0xdfff).contains(&scalar) {
+                        i += 2;
+                        let low = self.unicode_unit(&mut i, at)?;
+                        if !(0xdc00..=0xdfff).contains(&low) {
                             return Err(err("invalid Unicode escape", at));
                         }
+                    } else if (0xdc00..=0xdfff).contains(&scalar) {
+                        return Err(err("invalid Unicode escape", at));
                     }
                     continue;
                 }
-                if next == b'x' {
-                    i += 1;
-                    for _ in 0..2 {
-                        if !self.bytes.get(i).is_some_and(|&c| Self::hex(c).is_some()) {
-                            return Err(err("invalid hex escape", at));
-                        }
-                        i += 1;
-                    }
-                    continue;
-                }
-                if !matches!(next,
-                    b'\\' | b'\'' | b'"' | b'`' | b'$' | b'0' |
-                    b'b' | b'f' | b'n' | b'r' | b't' | b'v') {
-                    return Err(err("invalid string escape", at));
+                // Java retains any escaped character in ordinary quotes,
+                // but template literals use a strict escape whitelist.
+                if quote == b'`' && !matches!(next,
+                    b'\\' | b'\'' | b'"' | b'`' | b'$' | b'n' | b'r' | b't') {
+                    return Err(err("invalid template escape", at));
                 }
                 i += 1;
                 continue;
             }
             if ch == quote { return Ok(i + 1); }
-            if quote != b'`' && self.newline(i) > 0 {
-                return Err(err("newline in quoted string", i));
-            }
+            // Java/Graal ordinary strings preserve raw multiline content.
             if quote == b'`' && ch == b'$' && self.bytes.get(i + 1) == Some(&b'{') {
                 self.interpolations += 1;
                 if self.interpolations > 128 {
