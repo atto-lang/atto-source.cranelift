@@ -933,7 +933,12 @@ mod tests {
             ("'unclosed", "unterminated string/template"),
             (r#"'\q'"#, "invalid string escape"),
             (r#"'\u12X4'"#, "invalid Unicode escape"),
+            (r#"'\uD800'"#, "invalid Unicode escape"),
+            (r#"'\uDFFF'"#, "invalid Unicode escape"),
             (r#"'\x0G'"#, "invalid hex escape"),
+            (r#"`only comments ${/* comment */}`"#, "empty template interpolation"),
+            (r#"`line comments ${// comment
+}`"#, "empty template interpolation"),
             (r#"`bad ${ }`"#, "empty template interpolation"),
             (r#"`bad ${ /* unterminated}`"#, "unterminated interpolation comment"),
         ] {
