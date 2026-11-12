@@ -1,4 +1,6 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
+#[path = "quoted_source.rs"]
+mod quoted_source;
 const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
@@ -150,6 +152,7 @@ pub struct Program {
 enum Token<'a> {
     Word(&'a str),
     Number(&'a str),
+    Quoted(&'a str),
     Punct(u8),
     End,
 }
@@ -298,6 +301,9 @@ impl<'a> Parser<'a> {
             if matches!(self.current, Token::Word("task" | "nb")) && self.next_opens_block() {
                 return Err("EXECUTION_DOMAIN_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
             }
+        } else if matches!(first, b'\'' | b'"' | b'`') {
+            self.pos = quoted_source::scan_quoted(self.input, start)?;
+            self.current = Token::Quoted(&self.input[start..self.pos]);
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
@@ -384,6 +390,9 @@ impl<'a> Parser<'a> {
             return Ok(e);
         }
         match self.current {
+            Token::Quoted(_) => Err(format!(
+                "STRING_BACKEND_UNSUPPORTED: typed String IR and native template interpolation lowering required at byte {}", self.pos
+            )),
             Token::Number(n) => {
                 let value = integer_digits(n)?
                     .parse::<i64>()
@@ -778,20 +787,10 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         }
 
         if matches!(byte, b'"' | b'\'' | b'`') {
-            let quote = byte;
-            index += 1;
-            let mut escaped = false;
-            while index < bytes.len() {
-                let current = bytes[index];
-                index += 1;
-                if escaped {
-                    escaped = false;
-                } else if current == b'\\' {
-                    escaped = true;
-                } else if current == quote {
-                    break;
-                }
-            }
+            // Shared nested-template grammar keeps source-only actor/security
+            // preflight from treating interpolation string contents as code.
+            // Any malformed literal is rejected by the actual parser below.
+            index = quoted_source::scan_quoted(text, index).unwrap_or(bytes.len());
             continue;
         }
 
