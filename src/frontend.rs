@@ -998,6 +998,16 @@ mod tests {
         assert!(quoted_source::scan_quoted(&nested_comments(129), 0)
             .unwrap_err().contains("comment nesting limit"));
 
+        // Next Line is Unicode whitespace: it cannot count as code.
+        for body in ["\u{0085}", "\u{0085}/* comment */", "\u{0085}\n",
+                     "\u{0085}\u{2028}\u{2029}"] {
+            let template = format!("`x ${{{body}}}`");
+            assert!(quoted_source::scan_quoted(&template, 0)
+                .unwrap_err().contains("empty template interpolation"));
+        }
+        let valid_nel = "`x ${\u{0085}x}`";
+        assert_eq!(quoted_source::scan_quoted(valid_nel, 0), Ok(valid_nel.len()));
+
         // Code-like source inside comments remains non-executable.
         assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
         assert!(parse("fnc main():int{// 'actor' \nreturn 42;}").is_ok());
