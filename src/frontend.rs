@@ -1,6 +1,29 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
 #[path = "quoted_source.rs"]
 mod quoted_source;
+// Use the same line boundaries as the Java/Rust source lexer and the
+// quoted-template scanner. Keep byte offsets stable for all diagnostics.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
+fn whitespace_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b' ' | b'\t' | b'\x0b' | b'\x0c') => 1,
+        _ => line_break_width(bytes, at),
+    }
+}
+
 const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
@@ -190,11 +213,14 @@ impl<'a> Parser<'a> {
         let b = self.input.as_bytes();
         let mut at = self.pos;
         loop {
-            while at < b.len() && b" \t\r\n\x0b\x0c".contains(&b[at]) {
-                at += 1;
+            while at < b.len() {
+                let width = whitespace_width(b, at);
+                if width == 0 { break; }
+                at += width;
             }
             if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
-                while at < b.len() && b[at] != b'\n' {
+                at += 2;
+                while at < b.len() && line_break_width(b, at) == 0 {
                     at += 1;
                 }
                 continue;
@@ -206,14 +232,16 @@ impl<'a> Parser<'a> {
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
         loop {
-            while self.pos < b.len() && b" \t\r\n\x0b\x0c".contains(&b[self.pos]) {
-                self.pos += 1;
+            while self.pos < b.len() {
+                let width = whitespace_width(b, self.pos);
+                if width == 0 { break; }
+                self.pos += width;
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                // CR-only files are legal source input, so a line comment
-                // must not swallow the following model declaration.
-                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
+                // CR/LF/NEL/Unicode line separators all terminate // comments.
+                // A comment must not swallow the following source declaration.
+                while self.pos < b.len() && line_break_width(b, self.pos) == 0 {
                     self.pos += 1;
                 }
                 continue;
@@ -753,14 +781,15 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     while index < bytes.len() {
         let byte = bytes[index];
 
-        if byte.is_ascii_whitespace() {
-            index += 1;
+        let whitespace = whitespace_width(bytes, index);
+        if whitespace != 0 {
+            index += whitespace;
             continue;
         }
 
         if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
             index += 2;
-            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+            while index < bytes.len() && line_break_width(bytes, index) == 0 {
                 index += 1;
             }
             continue;
@@ -1560,6 +1589,40 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn unicode_line_boundaries_align_scalar_lexer_and_actor_preflight() {
+        for separator in ["\r", "\n", "\u{0085}", "\u{2028}", "\u{2029}"] {
+            let scalar = format!("// inert{separator}fnc main():int{{return 42;}}");
+            let p = parse(&scalar).expect("line comment must end at separator");
+            assert_eq!(eval(&p.result, &[]), Ok(42), "{separator:?}");
+            let inline = format!("fnc{separator}main():int{{return 42;}}");
+            assert!(parse(&inline).is_ok(), "whitespace {separator:?}");
+
+            let pubsub = format!("// inert{separator}runtime_pubsub.publish");
+            assert!(has_actor_pubsub_surface(&pubsub), "pubsub hidden after {separator:?}");
+            assert!(
+                parse(&pubsub).unwrap_err().contains("native ActorGroup/Topic"),
+                "actor preflight denied with wrong class after {separator:?}"
+            );
+            let inert = format!(
+                "// runtime_pubsub.publish{separator}fnc main():int{{return 42;}}"
+            );
+            assert!(!has_actor_pubsub_surface(&inert), "comment was active");
+            assert!(parse(&inert).is_ok(), "comment was not inert");
+
+            let pipe = format!("// inert{separator}first pipe second");
+            assert!(has_actor_pipe_surface(&pipe), "actor pipe hidden after {separator:?}");
+
+            let task = format!(
+                "fnc main():int{{return task // inert{separator}{{ 42 }};}}"
+            );
+            assert!(
+                parse(&task).unwrap_err().contains("EXECUTION_DOMAIN_UNSUPPORTED"),
+                "task block was not recognized after {separator:?}"
+            );
+        }
+    }
     #[test]
     fn actor_preflight_cr_comments_end_at_carriage_return() {
         assert!(has_actor_pubsub_surface("// inert\rruntime_pubsub.publish"));
