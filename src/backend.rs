@@ -158,7 +158,37 @@ fn emit(
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
+        Bool(v) => b.ins().iconst(types::I64, i64::from(*v)),
         Param(i) => params[*i],
+        Equals(x, y) => {
+            let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let eq = b.ins().icmp(IntCC::Equal, lhs, rhs);
+            b.ins().uextend(types::I64, eq)
+        }
+        Conditional { condition, when_true, when_false } => {
+            // Emit actual native control flow, not a select that might eagerly
+            // evaluate overflowing/side-effecting untaken expressions. The
+            // parser checks BOTH arms and requires a strict Boolean condition.
+            let cond = emit(condition, b, params, error, divisor_error, negative_exponent_error);
+            let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, cond, 0);
+            let yes = b.create_block();
+            let no = b.create_block();
+            let join = b.create_block();
+            b.append_block_param(join, types::I64);
+            b.ins().brif(nonzero, yes, &[], no, &[]);
+            b.switch_to_block(yes);
+            b.seal_block(yes);
+            let true_value = emit(when_true, b, params, error, divisor_error, negative_exponent_error);
+            b.ins().jump(join, &[BlockArg::Value(true_value)]);
+            b.switch_to_block(no);
+            b.seal_block(no);
+            let false_value = emit(when_false, b, params, error, divisor_error, negative_exponent_error);
+            b.ins().jump(join, &[BlockArg::Value(false_value)]);
+            b.switch_to_block(join);
+            b.seal_block(join);
+            b.block_params(join)[0]
+        },
         ShiftRight8(x) => {
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte
@@ -559,6 +589,47 @@ mod native_named_signed64_differential {
                 Ok(expected),
                 "native large exponent pow({base},{exponent})"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_typed_ternary_parity {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn native_scalar_ternaries_emit_lazy_real_branch_cfg() {
+        for (source, args, expected) in [
+            ("fnc main():int{return true ? 42 : 7;}", vec![], 42),
+            ("fnc main():int{return false ? 7 : 42;}", vec![], 42),
+            ("fnc main():int{return true ? 40+2 : 9223372036854775807+1;}", vec![], 42),
+            ("fnc main():int{return false ? 9223372036854775807+1 : 42;}", vec![], 42),
+            ("fnc main():int{return 1==1 ? 42 : Integer.rem(1,0);}", vec![], 42),
+            ("fnc main():int{return 1==2 ? Integer.pow(2,63) : 42;}", vec![], 42),
+            ("fnc main():int{return false ? 1 : true ? 42 : 3;}", vec![], 42),
+            ("fnc main(a:int,b:int):int{return a==b ? 42 : 7;}", vec![3,3], 42),
+            ("fnc main(a:int,b:int):int{return a==b ? 7 : 42;}", vec![3,4], 42),
+            ("fnc main():int{return (true ? 20 : 1) + 22;}", vec![], 42),
+            ("fnc main():int{return true==false ? 3 : 42;}", vec![], 42),
+        ] {
+            let parsed = parse(source).expect("real scalar ternary source");
+            let native = compile(&parsed).expect("real CLIF CFG and machine code");
+            assert!(native.clif.contains("brif"), "ternary did not emit CFG: {source}");
+            assert_eq!(native.run(&args), Ok(expected), "{source}");
+        }
+    }
+
+    #[test]
+    fn native_selected_arm_errors_are_not_hidden() {
+        for (source, error) in [
+            ("fnc main():int{return true ? 9223372036854775807+1 : 42;}", "i64 arithmetic overflow"),
+            ("fnc main():int{return false ? 42 : Integer.rem(1,0);}", "integer divisor zero"),
+            ("fnc main():int{return true ? Integer.pow(2,-1) : 42;}", "negative integer exponent"),
+        ] {
+            let parsed = parse(source).expect("well typed scalar program");
+            let compiled = compile(&parsed).expect("native CFG verification");
+            assert_eq!(compiled.run(&[]).as_deref(), Err(error), "{source}");
         }
     }
 }
