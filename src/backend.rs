@@ -629,7 +629,7 @@ mod native_typed_ternary_parity {
         ] {
             let parsed = parse(source).expect("well typed scalar program");
             let compiled = compile(&parsed).expect("native CFG verification");
-            assert_eq!(compiled.run(&[]).as_deref(), Err(error), "{source}");
+            assert_eq!(compiled.run(&[]).unwrap_err(), error, "{source}");
         }
     }
 }
