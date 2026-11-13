@@ -128,7 +128,10 @@ fn integer_digits(token: &str) -> Result<String, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(i64),
+    Bool(bool),
     Param(usize),
+    Equals(Box<Expr>, Box<Expr>),
+    Conditional { condition: Box<Expr>, when_true: Box<Expr>, when_false: Box<Expr> },
     Neg(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
@@ -150,6 +153,7 @@ pub struct Program {
 enum Token<'a> {
     Word(&'a str),
     Number(&'a str),
+    EqualEqual,
     Punct(u8),
     End,
 }
@@ -320,7 +324,10 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
-        } else if b"()+-*{};:,>.".contains(&first) {
+        } else if first == b'=' && b.get(self.pos) == Some(&b'=') {
+            self.pos += 1;
+            self.current = Token::EqualEqual;
+        } else if b"()+-*{};:,>.?".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -379,11 +386,13 @@ impl<'a> Parser<'a> {
             return self.atom(depth + 1);
         }
         if self.take(Token::Punct(b'('))? {
-            let e = self.expr(0, depth + 1)?;
+            let e = self.conditional(depth + 1)?;
             self.expect(Token::Punct(b')'))?;
             return Ok(e);
         }
         match self.current {
+            Token::Word("true") => { self.next()?; self.node(Expr::Bool(true)) }
+            Token::Word("false") => { self.next()?; self.node(Expr::Bool(false)) }
             Token::Number(n) => {
                 let value = integer_digits(n)?
                     .parse::<i64>()
@@ -401,9 +410,9 @@ impl<'a> Parser<'a> {
                     return Err(format!("unsupported Integer operation: {operation}"));
                 }
                 self.expect(Token::Punct(b'('))?;
-                let lhs = self.expr(0, depth + 1)?;
+                let lhs = self.conditional(depth + 1)?;
                 self.expect(Token::Punct(b','))?;
-                let rhs = self.expr(0, depth + 1)?;
+                let rhs = self.conditional(depth + 1)?;
                 self.expect(Token::Punct(b')'))?;
                 let lhs = Box::new(lhs);
                 let rhs = Box::new(rhs);
@@ -462,7 +471,7 @@ impl<'a> Parser<'a> {
             // continue to reject before executable code is generated.
             // Bind more tightly than multiplication, without changing the
             // underlying i64 value or using an unchecked reinterpretation.
-            if self.current == Token::Word("as") && min_bp <= 5 {
+            if self.current == Token::Word("as") && min_bp <= 7 {
                 self.next()?;
                 if !self.take(Token::Word("int"))? {
                     return Err("unsupported checked cast target (only int is supported)".into());
@@ -470,10 +479,11 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
-                Token::Punct(b'+') => (1, 2, b'+'),
-                Token::Punct(b'-') => (1, 2, b'-'),
-                Token::Punct(b'*') => (3, 4, b'*'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                Token::EqualEqual => (0, 1, b'='),
+                Token::Punct(b'>') => (1, 2, b'>'),
+                Token::Punct(b'+') => (3, 4, b'+'),
+                Token::Punct(b'-') => (3, 4, b'-'),
+                Token::Punct(b'*') => (5, 6, b'*'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -488,6 +498,7 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'=' => Expr::Equals(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -498,6 +509,26 @@ impl<'a> Parser<'a> {
             })?;
         }
         Ok(lhs)
+    }
+    // Ternary is right-associative and binds below equality and arithmetic.
+    // Both arms are parsed before native admission, even if the condition
+    // is a literal. LLVM/Cranelift must never emit untyped eager selects.
+    fn conditional(&mut self, depth: usize) -> Result<Expr, String> {
+        if depth > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        let condition = self.expr(0, depth + 1)?;
+        if !self.take(Token::Punct(b'?'))? {
+            return Ok(condition);
+        }
+        let when_true = self.conditional(depth + 1)?;
+        self.expect(Token::Punct(b':'))?;
+        let when_false = self.conditional(depth + 1)?;
+        self.node(Expr::Conditional {
+            condition: Box::new(condition),
+            when_true: Box::new(when_true),
+            when_false: Box::new(when_false),
+        })
     }
     fn program(mut self) -> Result<Program, String> {
         let mut seen_define = false;
@@ -693,7 +724,13 @@ impl<'a> Parser<'a> {
             );
         }
         self.expect(Token::Word("return"))?;
-        let result = self.expr(0, 0)?;
+        let result = self.conditional(0)?;
+        // Scalar entry ABI returns i64. Fail before native CFG emission;
+        // no bool-to-int truthiness, speculative return casts or untyped
+        // branch merges are permitted.
+        if validate_type(&result, 0)? != ScalarType::Int {
+            return Err("TYPE_MISMATCH: scalar main return requires int".into());
+        }
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
@@ -706,6 +743,52 @@ impl<'a> Parser<'a> {
             parameters: self.parameters,
             result,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarType { Int, Bool }
+
+fn validate_type(expr: &Expr, depth: usize) -> Result<ScalarType, String> {
+    if depth > MAX_DEPTH {
+        return Err("expression depth budget exceeded".into());
+    }
+    let child = depth + 1;
+    let int = |expr: &Expr| -> Result<(), String> {
+        if validate_type(expr, child)? != ScalarType::Int {
+            return Err("TYPE_MISMATCH: arithmetic operands must be int".into());
+        }
+        Ok(())
+    };
+    match expr {
+        Expr::Literal(_) | Expr::Param(_) => Ok(ScalarType::Int),
+        Expr::Bool(_) => Ok(ScalarType::Bool),
+        Expr::Neg(x) | Expr::ShiftRight8(x) => {
+            int(x)?;
+            Ok(ScalarType::Int)
+        }
+        Expr::Add(x,y) | Expr::Sub(x,y) | Expr::Mul(x,y) |
+        Expr::BitXor(x,y) | Expr::NamedRem(x,y) |
+        Expr::NamedMod(x,y) | Expr::NamedPow(x,y) => {
+            int(x)?;
+            int(y)?;
+            Ok(ScalarType::Int)
+        }
+        Expr::Equals(x,y) => {
+            let lhs = validate_type(x, child)?;
+            let rhs = validate_type(y, child)?;
+            if lhs != rhs { return Err("TYPE_MISMATCH: equality operand types differ".into()); }
+            Ok(ScalarType::Bool)
+        }
+        Expr::Conditional {condition, when_true, when_false} => {
+            if validate_type(condition, child)? != ScalarType::Bool {
+                return Err("TYPE_MISMATCH: ternary condition must be bool".into());
+            }
+            let lhs = validate_type(when_true, child)?;
+            let rhs = validate_type(when_false, child)?;
+            if lhs != rhs { return Err("TYPE_MISMATCH: ternary arm types differ".into()); }
+            Ok(lhs)
+        }
     }
 }
 
@@ -903,6 +986,39 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scalar_ternary_ast_is_typed_and_right_associative() {
+        let parsed = parse(
+            "fnc main(a:int,b:int):int{return a==b ? 42 : false ? 1 : 7;}"
+        ).unwrap();
+        let Expr::Conditional {condition, when_true, when_false} = parsed.result else {
+            panic!("expected ternary AST");
+        };
+        assert!(matches!(*condition, Expr::Equals(..)));
+        assert!(matches!(*when_true, Expr::Literal(42)));
+        assert!(matches!(*when_false, Expr::Conditional {..}));
+        assert!(parse("fnc main():int{return (true ? 2 : 3) + 40;}").is_ok());
+        assert!(parse("fnc main():int{return Integer.rem(true ? 8 : 10, 2)+42;}").is_ok());
+    }
+
+    #[test]
+    fn scalar_ternary_type_errors_are_fail_closed_even_in_untaken_arms() {
+        for (source, expected) in [
+            ("fnc main():int{return 1 ? 2 : 3;}", "condition must be bool"),
+            ("fnc main():int{return true ? 1 : false;}", "arm types differ"),
+            ("fnc main():int{return true ? 1 : missing;}", "unbound"),
+            ("fnc main():int{return true ? 1 : (false + 1);}", "must be int"),
+            ("fnc main():int{return true ? 1 : (1 == false ? 2 : 3);}", "equality operand types differ"),
+            ("fnc main():int{return true;}", "return requires int"),
+            ("fnc main():int{return 1 == 1;}", "return requires int"),
+            ("fnc main():int{return false ? 1 : (true ? false : 2);}", "arm types differ"),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert!(parse("fnc main():int{return true ? 42 : 1 + ;}").is_err());
+    }
+
     #[test]
     fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
         assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
