@@ -1102,7 +1102,16 @@ mod tests {
     fn eval(e: &Expr, args: &[i64]) -> Result<i64, &'static str> {
         match e {
             Expr::Literal(x) => Ok(*x),
+            Expr::Bool(v) => Ok(i64::from(*v)),
             Expr::Param(i) => Ok(args[*i]),
+            Expr::Equals(a,b) => Ok(i64::from(eval(a,args)? == eval(b,args)?)),
+            Expr::Conditional { condition, when_true, when_false } => {
+                if eval(condition, args)? != 0 {
+                    eval(when_true, args)
+                } else {
+                    eval(when_false, args)
+                }
+            },
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
