@@ -320,7 +320,7 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
-        } else if b"()+-*{};:,>.".contains(&first) {
+        } else if b"()+-*{}[];:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -499,7 +499,32 @@ impl<'a> Parser<'a> {
         }
         Ok(lhs)
     }
+    // Stage-0 can export only the compiled scalar main. Nominal types and
+    // package-private linking are fail-closed until the proper symbol linker.
+    fn file_export(&mut self) -> Result<(), String> {
+        self.expect(Token::Word("export"))?;
+        self.expect(Token::Word("pub"))?;
+        if self.take(Token::Punct(b'['))? {
+            self.expect(Token::Word("pkg"))?;
+            self.expect(Token::Punct(b']'))?;
+            return Err("EXPORT_PACKAGE_LINKER_UNSUPPORTED: package-private native entrypoint".into());
+        }
+        if self.take(Token::Word("class"))? {
+            return Err("EXPORT_KIND_UNSUPPORTED: nominal class descriptors not lowered".into());
+        }
+        self.take(Token::Word("fnc"))?;
+        self.expect(Token::Word("main"))?;
+        self.expect(Token::Punct(b';'))?;
+        Ok(())
+    }
+
     fn program(mut self) -> Result<Program, String> {
+        let mut seen_export = false;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         let mut seen_define = false;
         let mut seen_pub = false;
         loop {
@@ -696,6 +721,11 @@ impl<'a> Parser<'a> {
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
             return Err(
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
