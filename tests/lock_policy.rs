@@ -339,21 +339,20 @@ fn rejects_root_registry_impersonation_and_unchecked_local_packages() {
     let root_ident = "name = \"orescranelift\"\nversion = \"0.1.0\"";
     let root_with_checksum = FIXTURE_LOCK.replacen(
         root_ident,
-        "name = \"orescranelift\"\nversion = \"0.1.0\"\nchecksum = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        &format!("{root_ident}\nchecksum = \"{}\"", "a".repeat(64)),
         1,
     );
     assert!(validate(&root_with_checksum, FIXTURE_MANIFEST).is_err());
 
     let root_with_source = FIXTURE_LOCK.replacen(
         root_ident,
-        "name = \"orescranelift\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"",
+        &format!("{root_ident}\nsource = \"{REGISTRY}\""),
         1,
     );
     assert!(validate(&root_with_source, FIXTURE_MANIFEST).is_err());
 
-    let checksum_field =
-        "checksum = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n";
-    let without_checksum = FIXTURE_LOCK.replacen(checksum_field, "", 1);
+    let checksum_field = format!("checksum = \"{}\"\n", "a".repeat(64));
+    let without_checksum = FIXTURE_LOCK.replacen(&checksum_field, "", 1);
     assert!(
         validate(&without_checksum, FIXTURE_MANIFEST)
             .unwrap_err()
@@ -368,7 +367,13 @@ fn dynamic_root_alias_passes_but_cranelift_transitive_drift_fails() {
     assert_eq!(validate(&aliased_lock, &aliased_manifest), Ok(3));
 
     let extra_cranelift = format!(
-        "{FIXTURE_LOCK}[[package]]\nname = \"cranelift-jit\"\nversion = \"0.136.0\"\nsource = \"{REGISTRY}\"\nchecksum = \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"\n"
+        r#"{FIXTURE_LOCK}[[package]]
+name = "cranelift-jit"
+version = "0.136.0"
+source = "{REGISTRY}"
+checksum = "{}"
+"#,
+        "c".repeat(64)
     );
     assert!(
         validate(&extra_cranelift, FIXTURE_MANIFEST)
