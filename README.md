@@ -28,3 +28,15 @@ This README describes the repository's intended responsibilities. Feature suppor
 - [Language specification](https://github.com/atto-lang/atto-spec)
 - [Platform conformance](https://github.com/atto-lang/atto-platform-conformance)
 - [Commercial infrastructure](https://github.com/atto-co)
+
+## Repository ownership and contribution routing
+
+**Belongs here:** Cranelift code generation, ABI lowering, compiled guest smoke tests, runtime integration and independent backend differential evidence.
+
+**Belongs elsewhere:** LLVM-specific IR and codegen in atto-source.llvm; other backend implementations in their respective atto-source.* repositories.
+
+**Security and portability boundary:** Keep source semantics/ownership checks ahead of codegen; contain actor traps and memory bounds, prevent stale generation handles, and require native guest receipts.
+
+AttoLang is the public name; preserve existing Oreslang/.ores compatibility and use canonical .atto for new portable library source. This README defines scope, not feature readiness.
+
+**Acceptance:** name exact source SHA/tree, runtime/toolchain, positive and negative checks and execution receipt before claiming support. Host-only tests and empty CI steps do not prove guest execution.
