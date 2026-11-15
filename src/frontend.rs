@@ -891,6 +891,9 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
+    if let Some((offset, _)) = text.char_indices().find(|(_, c)| *c == '\u{001b}' || *c == '\u{007f}') {
+        return Err(format!("source contains terminal control at byte {offset}"));
+    }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
