@@ -907,6 +907,18 @@ pub fn parse(text: &str) -> Result<Program, String> {
 mod tests {
     use super::*;
     #[test]
+    fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("fnc main():int{{/*{control}*/return 42;}}"),
+                format!("fnc main():int{{return 42;}}//{control}"),
+            ] {
+                assert!(parse(&source).unwrap_err().contains("terminal control"));
+            }
+        }
+        assert!(parse("fnc main():int{\r\n\treturn 42;\r\n}").is_ok());
+    }
+    #[test]
     fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
         assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
         assert!(
