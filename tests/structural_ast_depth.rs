@@ -58,3 +58,69 @@ fn long_left_spines_reject_before_ir_or_jit_without_stdout() {
         }
     }
 }
+
+
+#[test]
+fn exact_structural_depth_budget_is_inclusive_in_native_cli() {
+    for extension in ["atto", "ores"] {
+        let admitted = addition_chain(128);
+        let rejected = addition_chain(129);
+        for mode in ["run", "ir"] {
+            let good = invoke(mode, extension, &admitted);
+            assert_eq!(
+                good.status.code(),
+                Some(0),
+                "{mode} {extension} boundary: {}",
+                String::from_utf8_lossy(&good.stderr)
+            );
+            assert!(good.stderr.is_empty());
+            if mode == "run" {
+                assert_eq!(good.stdout, b"128\n");
+            } else {
+                assert!(!good.stdout.is_empty());
+            }
+
+            let bad = invoke(mode, extension, &rejected);
+            assert_eq!(bad.status.code(), Some(1), "{mode} {extension}");
+            assert!(bad.stdout.is_empty(), "rejected guest produced output");
+            assert_eq!(
+                String::from_utf8_lossy(&bad.stderr),
+                "orescranelift: expression depth budget exceeded\n"
+            );
+        }
+    }
+}
+
+#[test]
+fn unary_shift_and_intrinsic_wrappers_consume_structural_depth() {
+    let inside_limit = vec!["1"; 127].join("+");
+    let outside_limit = vec!["1"; 128].join("+");
+    for (prefix, suffix, expected_stdout) in [
+        ("-(", ")", "-127\n"),
+        ("Integer.rem(", ",5)", "2\n"),
+        ("", " >> 8", "0\n"),
+    ] {
+        for extension in ["atto", "ores"] {
+            let admitted = format!("fnc main():int{{return {prefix}{inside_limit}{suffix};}}");
+            let good = invoke("run", extension, &admitted);
+            assert_eq!(
+                good.status.code(),
+                Some(0),
+                "{extension} {prefix}: {}",
+                String::from_utf8_lossy(&good.stderr)
+            );
+            assert_eq!(good.stdout, expected_stdout.as_bytes());
+
+            let rejected = format!("fnc main():int{{return {prefix}{outside_limit}{suffix};}}");
+            for mode in ["run", "ir"] {
+                let bad = invoke(mode, extension, &rejected);
+                assert_eq!(bad.status.code(), Some(1), "{mode} {extension} {prefix}");
+                assert!(bad.stdout.is_empty());
+                assert_eq!(
+                    String::from_utf8_lossy(&bad.stderr),
+                    "orescranelift: expression depth budget exceeded\n"
+                );
+            }
+        }
+    }
+}
