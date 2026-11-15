@@ -64,6 +64,6 @@ fn unsupported_guest_aggregate_and_dynamic_source_fails_before_ir() {
 fn scalar_native_execution_remains_unaffected() {
     let result = run_source("fnc main(x:int):int{return x+2;}", "run", &["40"]);
     assert!(result.status.success(), "{:?}", result.stderr);
-    assert_eq!(result.stdout, b"42\n");
+    assert_eq!(result.stdout.as_slice(), b"42\n");
     assert!(result.stderr.is_empty());
 }
