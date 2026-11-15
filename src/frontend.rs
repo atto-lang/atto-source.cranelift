@@ -399,7 +399,10 @@ impl<'a> Parser<'a> {
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
                 let operation = self.name()?;
-                if !matches!(operation.as_str(), "bitXor" | "bitAnd" | "bitOr" | "rem" | "mod" | "pow") {
+                if !matches!(
+                    operation.as_str(),
+                    "bitXor" | "bitAnd" | "bitOr" | "rem" | "mod" | "pow"
+                ) {
                     return Err(format!("unsupported Integer operation: {operation}"));
                 }
                 self.expect(Token::Punct(b'('))?;
