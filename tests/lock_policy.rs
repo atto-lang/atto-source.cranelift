@@ -209,9 +209,33 @@ fn validate(lock: &str, manifest: &str) -> Result<usize, String> {
     Ok(packages.len())
 }
 
-const FIXTURE_MANIFEST: &str = "[package]\nname = \"orescranelift\"\nversion = \"0.1.0\"\n[dependencies]\ncranelift-codegen = \"=0.137.0\"\nlibc = \"=0.2.191\"\n";
-const FIXTURE_LOCK: &str = "version = 4\n[[package]]\nname = \"orescranelift\"\nversion = \"0.1.0\"\ndependencies = [\n \"cranelift-codegen\",\n \"libc\",\n]\n[[package]]\nname = \"cranelift-codegen\"\nversion = \"0.137.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n[[package]]\nname = \"libc\"\nversion = \"0.2.191\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n";
+const FIXTURE_MANIFEST: &str = r#"[package]
+name = "orescranelift"
+version = "0.1.0"
+[dependencies]
+cranelift-codegen = "=0.137.0"
+libc = "=0.2.191"
+"#;
 
+const FIXTURE_LOCK: &str = r#"version = 4
+[[package]]
+name = "orescranelift"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen",
+ "libc",
+]
+[[package]]
+name = "cranelift-codegen"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[[package]]
+name = "libc"
+version = "0.2.191"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+"#;
 #[test]
 fn actual_locked_dependency_graph_matches_exact_policy() {
     assert!(validate(REAL_LOCK, REAL_MANIFEST).unwrap() > 10);
@@ -227,9 +251,21 @@ fn rejects_unapproved_sources_checksums_and_cranelift_drift() {
     for (find, replacement, expected) in [
         (REGISTRY, "git+https://example.invalid/repo", "non-crates.io"),
         (REGISTRY, "registry+https://github.com/rust-lang/crates.io-index/extra", "non-crates.io"),
-        ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "checksum"),
-        ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "checksum"),
-        ("cranelift-codegen\"\nversion = \"0.137.0", "cranelift-codegen\"\nversion = \"0.136.0", "Cranelift version drift"),
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "checksum",
+        ),
+        (
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "checksum",
+        ),
+        (
+            "cranelift-codegen\"\nversion = \"0.137.0",
+            "cranelift-codegen\"\nversion = \"0.136.0",
+            "Cranelift version drift",
+        ),
     ] {
         let rejected = FIXTURE_LOCK.replacen(find, replacement, 1);
         assert!(validate(&rejected, FIXTURE_MANIFEST).unwrap_err().contains(expected));
@@ -241,20 +277,32 @@ fn rejects_direct_pin_drift_and_unpinned_manifest() {
     for bad in ["^0.2", "0.2.191", "*", ">=0.2.191", "=0.2.190"] {
         let altered = FIXTURE_MANIFEST.replace("libc = \"=0.2.191\"", &format!("libc = \"{bad}\""));
         let error = validate(FIXTURE_LOCK, &altered).unwrap_err();
-        assert!(error.contains("exactly pinned") || error.contains("lock mismatch"), "{bad}: {error}");
+        assert!(
+            error.contains("exactly pinned") || error.contains("lock mismatch"),
+            "{bad}: {error}"
+        );
     }
 }
 
 #[test]
 fn rejects_duplicate_local_and_wrong_root_dependencies() {
-    let duplicate = format!("{FIXTURE_LOCK}[[package]]\nname = \"orescranelift\"\nversion = \"0.1.0\"\n");
+    let duplicate =
+        format!("{FIXTURE_LOCK}[[package]]\nname = \"orescranelift\"\nversion = \"0.1.0\"\n");
     assert!(validate(&duplicate, FIXTURE_MANIFEST).unwrap_err().contains("duplicate"));
     let shadow = format!("{FIXTURE_LOCK}[[package]]\nname = \"shadow\"\nversion = \"0.1.0\"\n");
     assert!(validate(&shadow, FIXTURE_MANIFEST).unwrap_err().contains("local/path"));
     let omitted = FIXTURE_LOCK.replace(" \"libc\",\n", "");
-    assert!(validate(&omitted, FIXTURE_MANIFEST).unwrap_err().contains("root locked dependencies differ"));
+    assert!(
+        validate(&omitted, FIXTURE_MANIFEST)
+            .unwrap_err()
+            .contains("root locked dependencies differ")
+    );
     let extra = FIXTURE_LOCK.replace(" \"libc\",\n", " \"libc\",\n \"libc\",\n");
-    assert!(validate(&extra, FIXTURE_MANIFEST).unwrap_err().contains("root locked dependencies differ"));
+    assert!(
+        validate(&extra, FIXTURE_MANIFEST)
+            .unwrap_err()
+            .contains("root locked dependencies differ")
+    );
 }
 
 #[test]
@@ -263,12 +311,25 @@ fn rejects_malformed_lock_tables_and_non_v4_formats() {
         let altered = FIXTURE_LOCK.replacen("version = 4", &format!("version = {bad}"), 1);
         assert!(validate(&altered, FIXTURE_MANIFEST).is_err());
     }
-    assert!(validate(&FIXTURE_LOCK.replace("[[package]]", "[[package.other]]"), FIXTURE_MANIFEST).is_err());
-    assert!(validate(&FIXTURE_LOCK.replace("dependencies = [", "dependencies = [ \"libc\" ]"), FIXTURE_MANIFEST).is_err());
+    assert!(
+        validate(
+            &FIXTURE_LOCK.replace("[[package]]", "[[package.other]]"),
+            FIXTURE_MANIFEST
+        )
+        .is_err()
+    );
+    assert!(
+        validate(
+            &FIXTURE_LOCK.replace("dependencies = [", "dependencies = [ \"libc\" ]"),
+            FIXTURE_MANIFEST
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn rejects_unreviewed_manifest_dependency_sections() {
-    let injected = format!("{FIXTURE_MANIFEST}\n[target.'cfg(unix)'.dependencies]\nmalicious = \"*\"\n");
+    let injected =
+        format!("{FIXTURE_MANIFEST}\n[target.'cfg(unix)'.dependencies]\nmalicious = \"*\"\n");
     assert!(validate(FIXTURE_LOCK, &injected).unwrap_err().contains("unapproved manifest section"));
 }
