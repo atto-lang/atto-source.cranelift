@@ -10,11 +10,15 @@ pub mod uhl1;
 use std::io::Read;
 
 fn run() -> Result<(), String> {
-    let mut argv = std::env::args();
+    let mut argv = std::env::args_os();
     let _ = argv.next();
-    let mode = argv.next().ok_or(
-        "usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities",
-    )?;
+    let mode = argv
+        .next()
+        .ok_or(
+            "usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+        )?
+        .into_string()
+        .map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
             return Err("hotload-capabilities accepts no source or guest arguments".into());
@@ -44,6 +48,18 @@ fn run() -> Result<(), String> {
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
     }
+    // A malformed guest argument must not trigger any source descriptor open,
+    // filesystem access, parser work or native JIT allocation. args_os also
+    // prevents std::env::args from panicking on non-UTF-8 OS arguments.
+    let values = supplied
+        .into_iter()
+        .map(|v| {
+            v.to_str()
+                .ok_or_else(|| "invalid i64 argument".to_owned())?
+                .parse::<i64>()
+                .map_err(|_| "invalid i64 argument".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     // Nonblocking admission is essential before descriptor-level validation:
     // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
     let mut options = std::fs::OpenOptions::new();
@@ -78,13 +94,6 @@ fn run() -> Result<(), String> {
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
     let parsed = frontend::parse(source)?;
-    let values = supplied
-        .into_iter()
-        .map(|v| {
-            v.parse::<i64>()
-                .map_err(|_| "invalid i64 argument".to_owned())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     if mode == "run" && values.len() != parsed.parameters.len() {
         return Err("runtime argument count mismatch".into());
     }
