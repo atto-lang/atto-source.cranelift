@@ -3,6 +3,7 @@ mod backend;
 pub mod critical_gate;
 mod frontend;
 mod isolate;
+pub mod layout;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
