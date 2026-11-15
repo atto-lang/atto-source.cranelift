@@ -333,3 +333,46 @@ fn rejects_unreviewed_manifest_dependency_sections() {
         format!("{FIXTURE_MANIFEST}\n[target.'cfg(unix)'.dependencies]\nmalicious = \"*\"\n");
     assert!(validate(FIXTURE_LOCK, &injected).unwrap_err().contains("unapproved manifest section"));
 }
+
+#[test]
+fn rejects_root_registry_impersonation_and_unchecked_local_packages() {
+    let root_ident = "name = \"orescranelift\"\nversion = \"0.1.0\"";
+    let root_with_checksum = FIXTURE_LOCK.replacen(
+        root_ident,
+        "name = \"orescranelift\"\nversion = \"0.1.0\"\nchecksum = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        1,
+    );
+    assert!(validate(&root_with_checksum, FIXTURE_MANIFEST).is_err());
+
+    let root_with_source = FIXTURE_LOCK.replacen(
+        root_ident,
+        "name = \"orescranelift\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"",
+        1,
+    );
+    assert!(validate(&root_with_source, FIXTURE_MANIFEST).is_err());
+
+    let checksum_field =
+        "checksum = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n";
+    let without_checksum = FIXTURE_LOCK.replacen(checksum_field, "", 1);
+    assert!(
+        validate(&without_checksum, FIXTURE_MANIFEST)
+            .unwrap_err()
+            .contains("checksum")
+    );
+}
+
+#[test]
+fn dynamic_root_alias_passes_but_cranelift_transitive_drift_fails() {
+    let aliased_manifest = FIXTURE_MANIFEST.replace("orescranelift", "atto-cranelift");
+    let aliased_lock = FIXTURE_LOCK.replace("orescranelift", "atto-cranelift");
+    assert_eq!(validate(&aliased_lock, &aliased_manifest), Ok(3));
+
+    let extra_cranelift = format!(
+        "{FIXTURE_LOCK}[[package]]\nname = \"cranelift-jit\"\nversion = \"0.136.0\"\nsource = \"{REGISTRY}\"\nchecksum = \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"\n"
+    );
+    assert!(
+        validate(&extra_cranelift, FIXTURE_MANIFEST)
+            .unwrap_err()
+            .contains("Cranelift version drift")
+    );
+}
