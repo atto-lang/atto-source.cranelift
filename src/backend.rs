@@ -167,12 +167,18 @@ fn emit(
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
         }
-        BitXor(x, y) => {
-            // Both operands are emitted in lexical order. bxor is an actual
-            // native Cranelift instruction, not a host-side reference oracle.
+        BitXor(x, y) | BitAnd(x, y) | BitOr(x, y) => {
+            // Native signed-i64 bitwise primitives, not host-side emulation.
+            // Emit and check each operand in lexical order before the bitwise
+            // instruction; a checked arithmetic failure cannot be skipped.
             let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
             let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
-            b.ins().bxor(lhs, rhs)
+            match e {
+                BitXor(_, _) => b.ins().bxor(lhs, rhs),
+                BitAnd(_, _) => b.ins().band(lhs, rhs),
+                BitOr(_, _) => b.ins().bor(lhs, rhs),
+                _ => unreachable!(),
+            }
         }
         NamedRem(x, y) | NamedMod(x, y) => {
             let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
