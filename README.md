@@ -34,9 +34,13 @@ cargo test --locked --all-targets
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
 grouping, unary +/-, binary + - *, and line comments.
-The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
-values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected. Named `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` also lower to native checked i64 code. Remainder follows truncation toward zero; modulus is nonnegative for either divisor sign. Zero divisors and negative exponents reject at execution. Power uses checked exponentiation by squaring.
+The named signed64 bitwise expressions `Integer.bitXor(a,b)`, `Integer.bitAnd(a,b)`
+and `Integer.bitOr(a,b)` compile through actual Cranelift `bxor`, `band` and `bor`
+instructions, respectively. Both operands are evaluated left-to-right with checked
+arithmetic; unsupported `&`, `|`, `^` and `^^` source operators remain rejected.
+These bitAnd/bitOr names are a **Cranelift candidate extension** pending shared
+language-contract and cross-backend review, not language-wide parity.
+Named `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` also lower to native checked i64 code. Remainder follows truncation toward zero; modulus is nonnegative for either divisor sign. Zero divisors and negative exponents reject at execution. Power uses checked exponentiation by squaring.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
