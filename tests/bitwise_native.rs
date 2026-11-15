@@ -52,7 +52,7 @@ fn operand_overflow_and_unsupported_surface_do_not_emit_guest_or_ir() {
     for expr in [
         "Integer.bitAnd(9223372036854775807+1,y)",
         "Integer.bitOr(x,9223372036854775807+1)",
-        "Integer.bitAnd(x-9223372036854775807,y)",
+        "Integer.bitAnd(x-9223372036854775807-9,y)",
         "Integer.bitand(x,y)",
         "Integer.bitOr(x)",
         "Integer.bitAnd(x,y,1)",
