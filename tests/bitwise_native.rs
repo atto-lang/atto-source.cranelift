@@ -71,7 +71,12 @@ fn operand_overflow_and_unsupported_surface_do_not_emit_guest_or_ir() {
                 assert!(!out.stdout.is_empty(), "{expr}: empty verified IR");
                 continue;
             }
-            assert_eq!(out.status.code(), Some(1), "{mode}/{expr}: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "{mode}/{expr}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             assert!(out.stdout.is_empty(), "{mode}/{expr}: stdout must be empty on rejection");
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(stderr.starts_with("orescranelift: "), "{mode}/{expr}: {stderr}");
