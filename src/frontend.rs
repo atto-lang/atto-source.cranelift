@@ -251,6 +251,19 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            // Source ownership bangs are not macros. Deny them before CLIF
+            // emission until checked typed move/borrow/share IR exists.
+            // Comments are already skipped by this lexer.
+            if self.pos < b.len() && b[self.pos] == b'!'
+                && matches!(self.current,
+                    Token::Word("copy" | "take" | "borrow" | "share"))
+                && b.get(self.pos + 1) != Some(&b'=')
+                && !(b.get(self.pos + 1..self.pos.saturating_add(3)) == Some(b"eq")
+                    && !b.get(self.pos + 3).is_some_and(|c|
+                        c.is_ascii_alphanumeric() || *c == b'_'))
+            {
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+            }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
