@@ -258,7 +258,8 @@ impl<'a> Parser<'a> {
                 && matches!(self.current,
                     Token::Word("copy" | "take" | "borrow" | "share"))
                 && b.get(self.pos + 1) != Some(&b'=')
-                && !(b.get(self.pos + 1..self.pos.saturating_add(3)) == Some(b"eq")
+                && !(b.get(self.pos + 1) == Some(&b'e')
+                    && b.get(self.pos + 2) == Some(&b'q')
                     && !b.get(self.pos + 3).is_some_and(|c|
                         c.is_ascii_alphanumeric() || *c == b'_'))
             {
