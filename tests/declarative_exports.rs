@@ -29,7 +29,7 @@ fn exports_before_or_after_main_compile_and_execute() {
     ] {
         let run = invoke("run", &source);
         assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(run.stdout, b"42\n");
+        assert_eq!(run.stdout.as_slice(), b"42\n");
         assert!(run.stderr.is_empty());
 
         let ir = invoke("ir", &source);
