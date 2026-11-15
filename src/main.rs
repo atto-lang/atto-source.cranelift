@@ -36,7 +36,9 @@ fn run() -> Result<(), String> {
     if mode != "run" && mode != "ir" && mode != "isolate" {
         return Err("usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
-    let path = argv.next().ok_or("missing source file")?;
+    // Preserve platform-native source filenames without treating a non-UTF-8
+    // path as an invalid guest integer or crashing argument iteration.
+    let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
     // argv BEFORE opening files, parsing source or allocating executable
     // memory. Reading at most five elements also avoids collecting an
