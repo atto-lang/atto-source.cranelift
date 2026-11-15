@@ -57,6 +57,8 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
     for expression in [
         "copy!42", "take!42", "borrow! value", "borrow!mut value",
         "borrow! mut value", "mut borrow! value", "mut borrow!value", "share!value",
+        "borrow!\nmut value", "borrow!/* checked loan */mut value",
+        "mut borrow!\nvalue",
     ] {
         for mode in ["run", "ir"] {
             let source = format!("fnc main():int{{return {expression};}}");
