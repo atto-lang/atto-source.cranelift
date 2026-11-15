@@ -18,7 +18,7 @@ fn quoted(value: &str) -> Result<String, String> {
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .ok_or("expected quoted TOML string")?;
-    if value.contains(['"', '\\', '\r', '\n', '\0']) {
+    if value.chars().any(|ch| matches!(ch, '"' | '\\' | '\r' | '\n' | '\0')) {
         return Err("unsupported TOML string escape/control".into());
     }
     Ok(value.to_owned())
