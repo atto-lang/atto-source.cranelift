@@ -114,8 +114,12 @@ sandbox**. Actor/tenant constructs remain rejected in both `run` and
 
 Before loading source or compiling any native code, `run` rejects more
 than four runtime arguments (the fixed native entry ABI); `ir` rejects
-all runtime arguments. This argument-vector admission is not a resource
-quota on the host process and does not authorize hostile source execution.
+all runtime arguments. Guest i64 arguments are also validated **before**
+opening the source path; invalid Unicode OS arguments produce deterministic
+diagnostics rather than panicking in the Rust argument iterator. The source
+path itself may still be a platform-native OS path. These admission checks
+are not a sandbox or a resource quota on the host process and do not
+authorize hostile source execution.
 
 ## Unix source file admission
 
