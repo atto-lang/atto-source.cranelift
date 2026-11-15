@@ -702,6 +702,9 @@ impl<'a> Parser<'a> {
             );
         }
         self.expect(Token::End)?;
+        // Parser-call depth alone does not bound a left-associated AST.
+        // Check the final tree before recursive CLIF lowering can start.
+        validate_ast_depth(&result)?;
         Ok(Program {
             parameters: self.parameters,
             result,
@@ -885,6 +888,36 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     }
 
     false
+}
+
+// Limit the *constructed* AST, not just recursive descent. A chain such as
+// 1+1+... parses at shallow call depth but produces a deep left spine that
+// recursive native lowering would otherwise traverse without a depth guard.
+// Iterative validation avoids introducing another recursive traversal.
+fn validate_ast_depth(root: &Expr) -> Result<(), String> {
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, level)) = pending.pop() {
+        if level > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        match expr {
+            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+                pending.push((inner.as_ref(), level + 1));
+            }
+            Expr::Add(left, right)
+            | Expr::Sub(left, right)
+            | Expr::Mul(left, right)
+            | Expr::BitXor(left, right)
+            | Expr::NamedRem(left, right)
+            | Expr::NamedMod(left, right)
+            | Expr::NamedPow(left, right) => {
+                pending.push((left.as_ref(), level + 1));
+                pending.push((right.as_ref(), level + 1));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {
