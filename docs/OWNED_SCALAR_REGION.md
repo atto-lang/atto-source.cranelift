@@ -16,8 +16,10 @@ stacked on the [AoS/SoA layout planner PR #126](https://github.com/ores-truffle-
   `RegionLease`. A foreign or stale lease cannot read/write another region,
   including one created after its predecessor retired.
 - All access goes through checked field/index offsets in the compile-time
-  planner. The current data bridge admits only signed i64 fields and stores
-  little-endian bytes, avoiding unaligned host pointer casts.
+  planner. The current data bridge admits the canonical signed i64, IEEE-754 f64 and
+  one-byte bool scalar subset. It stores i64/f64 bits in little-endian order,
+  preserves signed zero and NaN payloads, and restricts bool to canonical
+  0/1 bytes, without unaligned host pointer casts.
 - Rust borrow checking requires `&mut OwnedScalarRegion` for mutation; the
   immutable read path has only `&OwnedScalarRegion`. This does not implement
   guest `critical-read`/`critical-write`, actor locks or suspension checks.
@@ -50,10 +52,21 @@ cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The six new Rust unit tests exercise each AoS/SoA mode against native-byte
-round-trips and signed64 edge values, foreign lease rejection, post-retirement
+The seven new Rust unit tests exercise each AoS/SoA mode against byte
+round-trips, signed64 edges, IEEE-754 exact bits, canonical bool values,
+foreign lease rejection, post-retirement
 rejection, generation/replacement identity, independent quota enforcement,
 scalar-type mismatch and zero-capacity access.
+
+The two additional layout-unit tests protect explicit AoS/SoA source intent
+from profiling hints and establish one-byte canonical boolean widths.
+`Array<T>` remains AoS and `InvertedArray<T>` remains SoA unless the
+language explicitly selects a separate `auto` store; no traced host profile
+may silently change a declared inverted representation. This matches the
+proposed `EXPLICIT_INVERTED_LAYOUT_V1` and `INVERTED_CLASS_V1_ACCEPTANCE`
+contracts in `oreslang-platform-conformance`. The shape planner still admits
+other scalar widths as a *host storage calculation*, not as production guest
+inverted-class type-checker support.
 
 These are **host runtime unit tests**, not compiled guest execution. For a
 real guest parity milestone, connect typed AttoLang aggregate/actor AST and
