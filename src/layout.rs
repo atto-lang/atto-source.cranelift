@@ -64,13 +64,13 @@ pub struct FieldPlacement {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayoutPlan {
-    pub mode: LayoutMode,
-    pub capacity: u64,
-    pub allocation_alignment: u64,
-    pub allocation_bytes: u64,
+    mode: LayoutMode,
+    capacity: u64,
+    allocation_alignment: u64,
+    allocation_bytes: u64,
     /// Only meaningful for AoS; SoA elements have individual field strides.
-    pub record_stride: Option<u64>,
-    pub fields: Vec<FieldPlacement>,
+    record_stride: Option<u64>,
+    fields: Vec<FieldPlacement>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +176,30 @@ pub fn plan_layout(
 }
 
 impl LayoutPlan {
+    pub fn mode(&self) -> LayoutMode {
+        self.mode
+    }
+
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    pub fn allocation_alignment(&self) -> u64 {
+        self.allocation_alignment
+    }
+
+    pub fn allocation_bytes(&self) -> u64 {
+        self.allocation_bytes
+    }
+
+    pub fn record_stride(&self) -> Option<u64> {
+        self.record_stride
+    }
+
+    pub fn fields(&self) -> &[FieldPlacement] {
+        &self.fields
+    }
+
     /// Returns a checked byte offset. It never produces a pointer, borrow,
     /// reference, or lifetime claim. Caller must separately validate its arena.
     pub fn field_offset(&self, field: usize, element: u64) -> Result<u64, LayoutError> {
@@ -187,10 +211,17 @@ impl LayoutPlan {
             .element_stride
             .checked_mul(element)
             .ok_or(LayoutError::ArithmeticOverflow)?;
-        placement
+        let offset = placement
             .offset
             .checked_add(displacement)
-            .ok_or(LayoutError::ArithmeticOverflow)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let end = offset
+            .checked_add(placement.bytes)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        if end > self.allocation_bytes {
+            return Err(LayoutError::BudgetExceeded);
+        }
+        Ok(offset)
     }
 }
 
@@ -293,6 +324,44 @@ mod tests {
                 ),
                 Err(LayoutError::BudgetExceeded)
             );
+        }
+    }
+
+    #[test]
+    fn all_scalar_shapes_have_nonoverlapping_in_bounds_fields() {
+        let shapes: &[&[ScalarField]] = &[
+            &[ScalarField::U8],
+            &[ScalarField::U16, ScalarField::U8],
+            &[ScalarField::U8, ScalarField::I64, ScalarField::F32],
+            &[
+                ScalarField::U8,
+                ScalarField::U16,
+                ScalarField::U32,
+                ScalarField::U64,
+                ScalarField::F32,
+                ScalarField::F64,
+            ],
+        ];
+        for shape in shapes {
+            for capacity in 1..=16 {
+                for mode in [LayoutMode::Aos, LayoutMode::Soa] {
+                    let plan =
+                        plan_layout(shape, capacity, mode, AddressWidth::Bits32, 4096).unwrap();
+                    let mut covered = vec![false; plan.allocation_bytes() as usize];
+                    for (index, placement) in plan.fields().iter().enumerate() {
+                        for element in 0..plan.capacity() {
+                            let offset = plan.field_offset(index, element).unwrap();
+                            assert_eq!(offset % placement.alignment, 0);
+                            for byte in offset..offset + placement.bytes {
+                                let location = byte as usize;
+                                assert!(location < covered.len());
+                                assert!(!covered[location], "overlapping {mode:?} field bytes");
+                                covered[location] = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
