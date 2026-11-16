@@ -56,6 +56,7 @@ impl AddressWidth {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldPlacement {
+    pub kind: ScalarField,
     pub offset: u64,
     pub element_stride: u64,
     pub bytes: u64,
@@ -122,6 +123,7 @@ pub fn plan_layout(
             for field in fields {
                 cursor = align_up(cursor, field.alignment())?;
                 placements.push(FieldPlacement {
+                    kind: *field,
                     offset: cursor,
                     element_stride: 0,
                     bytes: field.bytes(),
@@ -145,6 +147,7 @@ pub fn plan_layout(
             for field in fields {
                 cursor = align_up(cursor, field.alignment())?;
                 placements.push(FieldPlacement {
+                    kind: *field,
                     offset: cursor,
                     element_stride: field.bytes(),
                     bytes: field.bytes(),
