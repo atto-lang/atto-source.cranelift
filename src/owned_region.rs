@@ -156,6 +156,8 @@ impl OwnedScalarRegion {
         // Logical clearing only; not a secure cryptographic memory wipe.
         self.bytes.fill(0);
         self.bytes = Vec::new();
+        // Retired generations are never reused by this region.
+        self.generation += 1;
         self.retired = true;
         Ok(())
     }
