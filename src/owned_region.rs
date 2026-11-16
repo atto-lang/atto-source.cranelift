@@ -124,7 +124,10 @@ impl OwnedScalarRegion {
     ) -> Result<i64, RegionError> {
         self.admit(lease)?;
         let span = self.scalar_span(field, index)?;
-        let raw: [u8; 8] = self.bytes[span]
+        let raw: [u8; 8] = self
+            .bytes
+            .get(span)
+            .ok_or(RegionError::AllocationBudget)?
             .try_into()
             .map_err(|_| RegionError::AllocationBudget)?;
         Ok(i64::from_le_bytes(raw))
