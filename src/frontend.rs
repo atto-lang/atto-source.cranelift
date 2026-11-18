@@ -1102,7 +1102,7 @@ mod tests {
             let err = parse(source).expect_err("invalid source admitted");
             assert!(err.starts_with(expected), "expected {expected}, got {err}");
         }
-        assert!(parse("// café\\nfnc main():int{return 42;}").is_ok());
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
     }
 
     #[test]
@@ -1123,7 +1123,7 @@ mod tests {
                     "wrong diagnostic for U+{cp:04X}: {error}");
             }
         }
-        assert!(parse("// café\\nfnc main():int{return 42;}").is_ok());
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
     }
 
     #[test]
