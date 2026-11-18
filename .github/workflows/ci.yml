@@ -15,16 +15,20 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Verify exact source revision and Git tree
+      - name: Verify exact commit and indexed Git tree without checkout filters
         env:
           EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED"
-          test -z "$(git status --porcelain)"
-          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+          SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
           SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
           test "$SOURCE_COMMIT" = "$EXPECTED"
+          # Inspect Git objects and the index, never filter-capable git status/diff
+          # on untrusted source before tests. This is an index proof, not a
+          # full raw-worktree-byte proof (tracked separately).
+          test "$(git cat-file -t "$SOURCE_TREE")" = tree
+          test "$(git write-tree)" = "$SOURCE_TREE"
           echo "SOURCE_COMMIT=$SOURCE_COMMIT"
           echo "SOURCE_TREE=$SOURCE_TREE"
           {
