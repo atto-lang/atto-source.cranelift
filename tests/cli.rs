@@ -157,7 +157,7 @@ fn native_integer_bitxor_source_execution() {
         false,
         "",
     );
-    fixture("fnc main():int{return Integer.rem(9,4);}", &[], false, "");
+    fixture("fnc main():int{return Integer.rem(9,4);}", &[], true, "1\n");
     fixture("fnc main():int{return 5 ^ 3;}", &[], false, "");
     fixture(
         "fnc main():int{return Integer.bitXor(1,Integer.bitXor(4,2));}",
@@ -303,12 +303,20 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
     let fifo =
         std::env::temp_dir().join(format!("orescranelift-fifo-{}-{nonce}", std::process::id()));
     let link = fifo.with_extension("link");
+    let regular = fifo.with_extension("ores");
+    let regular_link = fifo.with_extension("regular-link");
     let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: the CString provides a valid NUL-terminated POSIX pathname.
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     symlink(&fifo, &link).unwrap();
+    std::fs::write(&regular, "fnc main():int{return 42;}").unwrap();
+    symlink(&regular, &regular_link).unwrap();
 
-    for source in [&fifo, &link] {
+    for (source, expected_diagnostic) in [
+        (&fifo, "source must be a regular file"),
+        (&link, "source symlinks are forbidden"),
+        (&regular_link, "source symlinks are forbidden"),
+    ] {
         for mode in ["run", "ir"] {
             let mut child = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
                 .arg(mode)
@@ -339,12 +347,14 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
                 "{mode} emitted stdout on rejection"
             );
             assert!(
-                String::from_utf8_lossy(&result.stderr).contains("source must be a regular file"),
+                String::from_utf8_lossy(&result.stderr).contains(expected_diagnostic),
                 "{mode} returned wrong diagnostic: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
         }
     }
+    std::fs::remove_file(regular_link).unwrap();
+    std::fs::remove_file(regular).unwrap();
     std::fs::remove_file(link).unwrap();
     std::fs::remove_file(fifo).unwrap();
 }
@@ -421,4 +431,49 @@ fn rt_mut_share_inside_comments_does_not_change_scalar_execution() {
         true,
         "42\n",
     );
+}
+
+#[test]
+fn named_rem_real_native_jit_and_fail_closed_divisors() {
+    for (source, args, result) in [
+        ("fnc main():int{return Integer.rem(-7,3);}", &[][..], "-1\n"),
+        ("fnc main():int{return Integer.rem(7,-3);}", &[][..], "1\n"),
+        ("fnc main():int{return Integer.rem(-9223372036854775808,-1);}", &[][..], "0\n"),
+        ("fnc main(x:int):int{return Integer.rem(x,3);}", &["-7"][..], "-1\n"),
+        ("fnc main(x:int):int{return Integer.rem(x,-9223372036854775808);}", &["7"][..], "7\n"),
+        ("fnc main():int{return Integer.rem(8,3)*2;}", &[][..], "4\n"),
+    ] {
+        fixture(source, args, true, result);
+    }
+    for source in [
+        "fnc main(x:int):int{return Integer.rem(x,0);}",
+        "fnc main(x:int,y:int):int{return Integer.rem(x,y);}",
+        "fnc main():int{return Integer.rem(7,1+1);}",
+        "fnc main():int{return Integer.mod(7,3);}",
+        "fnc main():int{return Integer.rem(7);}",
+        "fnc main():int{return Integer.rem(7,3,1);}",
+        "fnc main():int{return 7%3;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
+    fixture(
+        "fnc main(x:int):int{return Integer.rem(x+1,-1);}",
+        &["9223372036854775807"],
+        false,
+        "",
+    );
+}
+
+#[test]
+fn carriage_return_comment_boundary_is_not_an_effect_bypass_in_cli() {
+    fixture("fnc main():int{return 42;} // harmless % text\r\n", &[], true, "42\n");
+    for source in [
+        "fnc main():int{return 42;} // masked\r 7%3",
+        "fnc main():int{return 42;} // masked\r critical {}",
+        "fnc main():int{return 42;} // masked\r suspends",
+        "fnc main(critical:int):int{return critical;}",
+        "fnc main(suspends:int):int{return suspends;}",
+    ] {
+        fixture(source, &[], false, "");
+    }
 }

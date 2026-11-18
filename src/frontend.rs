@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                while self.pos < b.len() && b[self.pos] != b'\n' {
+                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
                     self.pos += 1;
                 }
                 continue;
@@ -190,13 +190,33 @@ impl<'a> Parser<'a> {
                 // must reject before emitting native code.
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
-                self.expect(Token::Word("bitXor"))?;
+                let method = self.name()?;
+                if method != "bitXor" && method != "rem" {
+                    return Err(format!("unsupported Integer intrinsic: {method}"));
+                }
                 self.expect(Token::Punct(b'('))?;
                 let lhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b','))?;
                 let rhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b')'))?;
-                self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)))
+                if method == "bitXor" {
+                    return self.node(Expr::BitXor(Box::new(lhs), Box::new(rhs)));
+                }
+                // The shipping scalar JIT has no checked dynamic divisor
+                // lowering. Admit only a literal signed divisor, preserving
+                // left-to-right evaluation of the numerator and a safe -1 edge.
+                let divisor = match rhs {
+                    Expr::Literal(v) => v,
+                    Expr::Neg(inner) => match *inner {
+                        Expr::Literal(v) => v.checked_neg().ok_or("Integer.rem divisor out of range")?,
+                        _ => return Err("Integer.rem requires a signed literal divisor".into()),
+                    },
+                    _ => return Err("Integer.rem requires a signed literal divisor".into()),
+                };
+                if divisor == 0 {
+                    return Err("Integer.rem divisor cannot be zero".into());
+                }
+                self.node(Expr::Rem(Box::new(lhs), divisor))
             }
             Token::Word("rt") => {
                 // Stage-0 has no SharedMutex<T>, shared allocation domain, or
@@ -282,6 +302,8 @@ impl<'a> Parser<'a> {
                         | "rt"
                         | "async"
                         | "await"
+                        | "critical"
+                        | "suspends"
                         | "actor"
                 ) || self.parameters.contains(&name)
                 {
@@ -401,11 +423,55 @@ mod tests {
         assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
     #[test]
+    fn carriage_return_terminates_line_comment_and_reserved_effect_names_fail() {
+        let valid = parse("fnc main():int{return 42;} // harmless % text\r\n").unwrap();
+        assert_eq!(eval(&valid.result, &[]), Ok(42));
+        for source in [
+            "fnc main():int{return 42;} // comment\r %",
+            "fnc main():int{return 42;} // comment\r critical",
+            "fnc main():int{return 42;} // comment\r suspends",
+            "fnc main(critical:int):int{return critical;}",
+            "fnc main(suspends:int):int{return suspends;}",
+        ] {
+            assert!(parse(source).is_err(), "source admission bypass: {source:?}");
+        }
+    }
+    #[test]
+    fn named_rem_literal_divisor_contract() {
+        for (source, args, expected) in [
+            ("fnc main():int{return Integer.rem(-7,3);}", &[][..], -1),
+            ("fnc main():int{return Integer.rem(7,-3);}", &[][..], 1),
+            ("fnc main():int{return Integer.rem(-7,-3);}", &[][..], -1),
+            ("fnc main():int{return Integer.rem(20,6)+Integer.rem(8,3);}", &[][..], 4),
+            ("fnc main():int{return Integer.rem(-9223372036854775808,-1);}", &[][..], 0),
+            ("fnc main(x:int):int{return Integer.rem(x,-9223372036854775808);}", &[7][..], 7),
+            ("fnc main(x:int):int{return Integer.rem(x+1,3);}", &[4][..], 2),
+        ] {
+            let program = parse(source).unwrap();
+            assert_eq!(eval(&program.result, args), Ok(expected), "{source}");
+        }
+        for source in [
+            "fnc main(x:int):int{return Integer.rem(x,0);}",
+            "fnc main(x:int,y:int):int{return Integer.rem(x,y);}",
+            "fnc main(x:int):int{return Integer.rem(x,(1+1));}",
+            "fnc main(x:int):int{return Integer.rem(x,-x);}",
+            "fnc main():int{return Integer.mod(7,3);}",
+            "fnc main():int{return Integer.rem(7);}",
+            "fnc main():int{return Integer.rem(7,3,1);}",
+            "fnc main():int{return 7%3;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+        // A checked arithmetic error in the numerator must never be
+        // optimized away, even when the result divisor is -1.
+        let overflowing = parse("fnc main(x:int):int{return Integer.rem(x+1,-1);}").unwrap();
+        assert_eq!(eval(&overflowing.result, &[i64::MAX]), Err("overflow"));
+    }
+    #[test]
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
             "fnc main():int{return 5 ^ 3;}",
-            "fnc main():int{return Integer.rem(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",
             "fnc main():int{return Integer.bitXor(5,3,1);}",
             "fnc main(Integer:int):int{return Integer;}",
