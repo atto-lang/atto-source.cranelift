@@ -3,6 +3,9 @@ mod backend;
 pub mod critical_gate;
 mod frontend;
 mod isolate;
+pub mod layout;
+#[allow(dead_code)]
+mod owned_region;
 #[allow(dead_code)]
 mod actor_isolation_access_v1;
 mod state_region;
