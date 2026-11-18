@@ -1,13 +1,23 @@
-# Oreslang Cranelift backend
+# AttoLang Cranelift backend
 
-An **independent Rust + Cranelift** experimental backend for Oreslang. It is
+**AttoLang** is the current public language name (formerly **Oreslang**).
+The independent Cranelift JIT compiles a deliberately limited signed-i64 scalar subset, not full AttoLang.
+This branding change does not imply full-language parity, AOT capabilities or
+zero-GC guarantees. This backend's checked signed-i64 scalar subset has passed
+real native execution tests using both `.atto` and legacy `.ores` files; new
+fixtures for this verified subset SHOULD use `.atto`.
+Do not rename repositories, dependencies, commands or fixed interfaces merely
+to make their names match the public brand.
+
+
+An **independent Rust + Cranelift** experimental backend for AttoLang. It is
 **not** part of `oreslang-source.forge`. Forge remains on its own self-hosting
 path, and must never link to Cranelift.
 
-## Stage-0 executable scalar profile
+## Stage-0 executable scalar profile (validated `.atto` and `.ores`)
 
 This backend compiles a deliberately narrow Oreslang source subset
-into **actual Cranelift native JIT machine code**, with a checked overflow
+into **actual Cranelift native JIT machine code** from `.atto` or `.ores` source, with a checked overflow
 status rather than an unchecked wrap or process trap.
 
 ```oreslang
@@ -15,58 +25,83 @@ fnc main(x:int,y:int):int{return (x+2)*y;}
 ```
 
 ```sh
-cargo run --locked -- run example.ores 7 8 # 72
-cargo run --locked -- ir example.ores      # generated Cranelift IR
+cargo run --locked -- run example.atto 7 8 # 72
+cargo run --locked -- ir example.atto      # generated Cranelift IR
+cargo test --locked --all-targets            # includes .atto/.ores execution parity
 cargo test --locked --all-targets
 ```
 
 Supported: one `main` function, 0–4 typed `int` parameters (`int x` or `x:int`),
 signed i64 literals (including MIN and digit separators such as `1_000`),
-grouping, unary +/-, binary + - *, immutable scalar locals, checked identity `as int`,
-`val` fixed bindings, and line comments.
-The first additional Java-defined expression is `Integer.bitXor(a,b)` on signed64
-values. Its arguments evaluate left-to-right and the compiler emits Cranelift's
-native `bxor` instruction; caret operators remain rejected. Other `Integer.*`
-named functions (including `rem`, `mod`, and `pow`) remain unsupported.
+grouping, unary +/-, binary + - *, and line comments.
+The named signed64 bitwise expressions `Integer.bitXor(a,b)`, `Integer.bitAnd(a,b)`
+and `Integer.bitOr(a,b)` compile through actual Cranelift `bxor`, `band` and `bor`
+instructions, respectively. Both operands are evaluated left-to-right with checked
+arithmetic; unsupported `&`, `|`, `^` and `^^` source operators remain rejected.
+These bitAnd/bitOr names are a **Cranelift candidate extension** pending shared
+language-contract and cross-backend review, not language-wide parity.
+Named `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` also lower to native checked i64 code. Remainder follows truncation toward zero; modulus is nonnegative for either divisor sign. Zero divisors and negative exponents reject at execution. Power uses checked exponentiation by squaring.
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
+The 128-level bound applies to the constructed AST, including left-associative
+operator chains, not only parser recursion. Over-depth input is denied before CLIF.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
-classes, actors, heaps, ownership, recursion, async, control flow,
-division, dynamic/zero-divisor remainder, `as?`, bool/string/nominal casts,
+classes, actors, heaps, ownership, recursion, async, control flow, division, operator remainder expressions,
 structural types, UTF-8 identifiers, and any trailing code.
 
-The Oreslang language contract removes the `%`, `^`, and `^^` operators. The
-Cranelift frontend rejects `%` before native code emission; named remainder
-functions are still unsupported and must not be silently substituted.
+The `%`, `^`, and `^^` operators are rejected at lexer admission. Typed
+`Integer.bitXor` remains available.
 
 ## Explicit security boundary
 
 Native JIT code executes inside this process. **It is not a sandbox** and
 there is no guest actor heap isolation or untrusted-source support.
 The entry ABI is internal (four i64 operands plus an output pointer returning
-an i32 status), not a published Oreslang or foreign-call ABI.
+an i32 status), not a published AttoLang or foreign-call ABI.
 
 Direct Cranelift crates are pinned to 0.137.0, and transitive dependencies
 are pinned by the committed `Cargo.lock`, generated with Rust 1.99.1. The
 `rust-toolchain.toml` pin and `--locked` CI prevent silent dependency drift.
 
-This branch remains experimental. Passing its scalar JIT tests does **not**
+The backend remains experimental. Passing scalar JIT tests does **not**
 establish full Oreslang support, actor isolation or Forge self-hosting.
+
+### Verification and dependency gates
+
+- Generated Cranelift IR is verified **unconditionally** with
+  `cranelift_codegen::verify_function` before defining or finalizing JIT
+  native code. A deliberately malformed return-signature fixture must be
+  rejected by the verifier; successful compilation alone does not demonstrate
+  that the verifier ran.
+- `scripts/check_lock_policy.py` fails on missing/bad SHA-256 registry checksums,
+  git/path/alternate dependency sources, duplicate packages, drift from
+  exactly pinned direct dependencies, and Cranelift release mismatches. The
+  independent Python rejection tests must also execute in CI.
+- Structural lockfile validation and `cargo test --locked` do **not** establish
+  dependency vulnerability clearance or publisher provenance. Review applicable
+  RustSec advisories and sign off separately before release.
+- CI prints the actual checkout commit and root tree using Git objects, not
+  handwritten source labels. A private external carrier must compare its
+  **actual checked-out subtree** to the specified original source tree, prove
+  that it ran test steps, and document its independent carrier identity; a
+  matching printed label is insufficient.
 
 ## Acceptance
 
 - Run native positive and negative cases, including overflow at runtime.
-- Verify the four signed64 `bit_xor` vectors against the normative Java #2193
+- Verify the signed64 `bit_xor` vectors against the normative Java #2193
   fixture through **actual Cranelift native guest execution**, not a host oracle.
-  The tests have been authored on a draft branch; no exact-head executed CI
-  result has yet been confirmed for this change.
+  Do not reuse evidence from a different commit or tree. PR #1's Linux x64
+  [successful exact-tree carrier run](https://github.com/honeypot-r-us-test/hnpt-e2e/actions/runs/40757732781)
+  proves its *own* source tree (`1a5bcf7b94505144bbffbed8cb2aad09182ee203`),
+  not later backend revisions.
 - Require malformed/unsupported syntax to fail without stdout.
 - Record exact source commit/tree, compiler versions, and executed CI steps.
 - Cross-check source results against LLVM and Forge on their **actual** common
   scalar subset, never assume parity from shared fixture names.
-- Keep the branch draft until CI actually allocates a runner and executes tests.
+- Do not mark any later PR as verified until its exact tree has admitted runner jobs with executed tests.
 
 ## Forge scalar/v1 intersection tests
 
@@ -74,6 +109,22 @@ The CLI integration suite also embeds the six positive and five negative
 source examples from Forge's scalar/v1 contract. These are candidate
 differential test cases; the repository does not yet pin a shared fixture
 blob or provide executed cross-backend equivalence evidence.
+
+## Fail-closed tenant and CLI admission
+
+The Cranelift stage-0 compiler has **no actor runtime, IsolateVM, tenant
+heap, supervisor CONTROL lane, ownership borrowing or untrusted native JIT
+sandbox**. Actor/tenant constructs remain rejected in both `run` and
+`ir` modes rather than being accepted as scalar aliases. The
+`tenant_fail_closed` CLI integration suite probes those boundaries.
+
+Before loading source or compiling any native code, `run` rejects more
+than four runtime arguments (the fixed native entry ABI); `ir` rejects
+all runtime arguments. Numeric guest arguments are checked before source
+file access; invalid Unicode OS argument encodings reject deterministically
+rather than panicking. The source filename remains a platform-native path.
+This argument-vector admission is not a resource quota on the host process
+and does not authorize hostile source execution.
 
 ## Unix source file admission
 
@@ -84,76 +135,74 @@ A dedicated native CLI regression imposes a three-second hang guard.
 Non-Unix systems retain the existing source-file handling behavior and do
 not claim that nonblocking POSIX guarantee.
 
-## Shared Java/LLVM/Wasm/.NET/Cranelift scalar intersection
+## Actor Sync v1 admission: unsupported on stage-0
 
-The exact-byte shared contract `contracts/parity/portable-scalar-v1-20261101.json`
-has Git blob `001e8894cbeb87509878a4de36263a1a327805b1`, matching the
-corresponding candidate in Java, LLVM, Wasm and .NET. It contains **16 positive
-checked-i64 expressions and 6 compiler-negative admission vectors**. The
-`tests/portable_scalar_v1.rs` integration runner pins the contract blob,
-compiles each expression with the Cranelift frontend and executes the real
-native JIT for positive cases. Negative cases must fail without stdout and
-have a compiler-owned diagnostic. No independent Rust arithmetic is used
-to credit guest execution.
+The [Oreslang Actor Sync v1 draft conformance contract](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/300)
+requires source actors, isolated actor-owned state, non-reentrant turns, async
+durable persistence and typed changefeed cursors. **This Cranelift backend has
+none of those semantics yet.** As long as its compiler is scalar-only, it
+must reject source actor and virtual sync constructs without emitting IR or a
+guest executable.
 
-Eleven additional `tests/parity/34-*.ores` through `44-*.ores` guest files are
-byte-identical (same Git blob SHA per file) to programs 34–44 in
-`oreslang-compilers-parity-testing` draft PR #16. The
-`tests/portable_scalar_intersection.rs` runner verifies each pinned blob
-before compiling and executing the source through the Cranelift CLI.
-Neither these test bodies nor the pinned manifest alone establish
-five-backend execution parity.
+`tests/actor_sync_admission.rs` adds 12 negative guest admission sources in
+both `run` and `ir` CLI modes plus a positive scalar-with-comments guard.
+These are **source rejection** tests and cannot be counted as AS01–AS24
+guest implementation parity. Native actor IR, actor memory ownership and an
+execution ABI must land first (issue #17). Cranelift is independent of Forge.
 
-The removed `%` operator is rejected by the Cranelift lexer, including in
-unused immutable initializers. The shared JSON negative contract likewise
-rejects `%`, `^`, `^^`, unsupported integer division and out-of-range
-literals before native publication. Do not reintroduce the legacy remainder
-branch to make a test green.
+## ODB1 scalar floor — native signed shift by eight (draft)
 
-**Evidence required:** an exact-head Actions job with nonzero executed steps,
-`cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D
-warnings`, `cargo test --locked --all-targets`, Git blob/commit read-back,
-native outputs/negative diagnostics, and independent review. Java, LLVM,
-Wasm and .NET must each execute their own compiler/guest lane against the
-same source semantics; a Cranelift pass is not a substitute. A zero-step
-failure remains runner admission, not a compiler failure.
+For native Oreslang DB code, the canonical ODB1 encoder replaces
+`int / 256` (a float-valued operation in Java/GraalVM Oreslang) with
+a signed integer `>> 8`. Cranelift stage-0 now accepts **only**
+`x >> 8`, with the literal shift count 8 and lower precedence than
+checked addition/multiplication; all other shift counts, dynamic shift
+expressions, and unsigned shifts fail closed before JIT lowering.
+
+The actual Cranelift IR uses `sshr`, and the integration test runs
+positive, negative and overflow vectors through the real native JIT
+when cargo/runners are available. Stage-0 **still cannot** import the
+DB's `wal_frame` module, allocate `List<int>`, construct `Frame`,
+implement `Result<T,E>`, or offer actor-owned async WAL.
+This is a *scalar prerequisite*, NOT five-backend ODB1 parity.
+
+## Explicit full-AOT and mutable-state admission gate
+
+`orescranelift aot` and `orescranelift full-aot` explicitly reject with nonzero
+status rather than executing or packaging the stage-0 scalar JIT. Both `run`
+and `ir` reject `@Inject`/`@StateBacked` state-provider annotations,
+`define state container`, `define actor` and `define virtual actor`.
+This is intentional: native heap provenance, scoped borrow lowering,
+supervisor quiescence and deterministic object drop paths are unavailable.
+Comment-only annotation text remains inert. This is **not** evidence of full
+AOT, zero tracing GC or actor support. The negative gate verifies absence
+of generated IR, guest stdout and build artifacts.
+
+WebSocket, HTTP, TCP and LiveView actor declarations are an explicit
+**unsupported** capability and emit a fail-closed diagnostic before Cranelift
+IR or JIT execution. The CLI test matrix exercises eight declaration shapes
+in both `run` and `ir`, plus unsupported `websocket.listen` calls and
+comment-only positive controls. These tests execute through the native Rust/Cargo integration suite. This negative admission behavior is
+not RFC6455 protocol support, actor ownership, WebSocket guest compilation,
+or parity with Java, LLVM, WASM, Forge or .NET.
 
 
-## Scalar inference / checked-cast parity slice
 
-The stage-0 Cranelift frontend now follows the common binding rule for its
-implemented signed-i64 subset:
+Experimental `isolate` mode applies a two-argument trusted scalar JIT to two separate tenant states. This is host lifecycle bookkeeping, not an untrusted native sandbox or source actor lowering. See docs/VM_ISOLATE_CONTRACT.md.
 
-- `const int x = e`, `const x: int = e`, `const x = e`, `val x = e`,
-  and type-first `int x = e` all produce fixed bindings; runtime-dependent
-  initializers are valid and execute once in source order.
-- `e as int` is a checked identity proof and emits no conversion instruction.
-- `let x = e` is explicitly rebindable in the signed-i64-only profile. Each
-  assignment eagerly evaluates exactly once, appends an SSA version, and
-  retains any earlier `const`/`val` snapshot. Inferred scalar type cannot
-  change across rebindings.
-- `as?`, bool/string casts and nominal/dynamic casts fail closed before JIT
-  code publication because their type/runtime representation is not yet owned
-  by this stage-0 backend.
-- Parentheses are required when arithmetic follows a checked cast, matching
-  the Java/LLVM cast-vs-arithmetic precedence instead of inventing a
-  Cranelift-specific interpretation.
+## Repository ownership and migration (2026-11-08)
 
-This is bounded scalar parity, not full Java/LLVM type-system parity.
+**Present home:** `ores-truffle-oreslang/oreslang-source.cranelift` in the legacy Oreslang organization; the public language name is **AttoLang**. Preserve existing `oreslang-*` project, package and command names and `.ores` fixtures until explicitly verified migration steps are approved.
 
-## Scalar SSA and hardened casting audit (2026-11-01)
+- **Belongs here:** Independent Cranelift lowering/compiler backend and native JIT experiments.
+- **Does not belong here:** Treating oreslang-source.rs as the same compiler or guaranteeing parity with LLVM. Shared language semantics and portable core/std should be implemented as canonical `.atto` code rather than copied into per-host adapters.
+- **Organization separation:** [atto-lang](https://github.com/atto-lang) governs language/compiler/runtime/tooling/conformance and portable ecosystem code. [atto-co](https://github.com/atto-co) governs commercial cloud deployments, billing, identity, tenancy and hosted services. A similarly named pre-existing `atto-*` repository is not proof of an executed Git transfer or parity.
+- **Proposed migration:** this legacy repository may first transfer to `atto-lang/oreslang-source.cranelift` under its **existing name and stable GitHub repository ID**. No direct `atto-co` move is currently authorized; product carve-outs require a later independent plan.
 
-The draft inference branch additionally tests actual JIT execution of mutable
-`let` with versioned scalar SSA, runtime const initializers, snapshot safety,
-and eager checked-overflow propagation. It rejects reserved names such as
-`as`, `bool`, `true`, `rt` and `val`, rather than parsing these lexical
-operators or future scalar types as local declarations.
+**Transfer gate:** claim coordination in [legacy issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and use [review-only transfer runbook #25](https://github.com/ores-truffle-oreslang/.github/pull/25). Record exact head SHA/tree and ID, independent security and source/target admin approval, destination rules/visibility, PRs, Actions, app credentials, packages, releases, webhooks, Pages, dependents and rollback owner. Do **not** mirror private sources or overwrite existing `atto-*` repos. Recheck unchanged ID/tree and controls after real GitHub ownership transfer; execute exact-head CI at destination. `steps=[]` or `steps=null` is `NOT_EXECUTED`; host-only or source-free tests do not prove compiled AttoLang guest features. Do not mix repository transfers with forced syntax renames or AOT/zero-GC claims.
 
-Existing `tests/cli.rs` expectations that runtime-dependent `const` and
-`val int x` should fail were stale and have been corrected. The old
-`%` operator remains removed, including in dead initializer code.
+## Canonical browser integration and native actor parity gap
 
-**Evidence:** source changes and tests are authored, but no exact-head Rust
-compile, Cranelift native execution or Clippy result is claimed until a
-stepful runner executes `cargo test --locked --all-targets` and
-`cargo clippy --locked --all-targets -- -D warnings`.
+The browser Wasm/ESM compiler is staged in the still-open `oreslang-source.rs` [PR #52](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/52), not yet merged into `main`. Its intended checked-IR emission and downstream source.js/source.wasm artifact consumption remain separate verification obligations. This independent native Cranelift compiler is a separate backend and does not become browser-capable by renaming native machine code to Wasm.
+
+`tests/canonical-browser/actor-state.atto` has the same Git blob SHA (`41a5abf398bb025639c5e190ee1c93e569a9b035`) as `browser/tests/fixtures/pass/61-actor-state.atto` at source.rs PR #52 head `9b40edd07e78c69f541408ad41d7349f34725f1c`; this establishes fixture identity, not executed browser parity. The regression invokes this backend's actual `run` and `ir` commands and requires an explicit unsupported-actor diagnostic with no output. This records the gap; it does not count as successful actor guest execution. Native nominal actors, ActorMail receive, owned linear-memory domains, mailbox scheduling and supervision must be lowered before the same source can pass here. Browser Wasm/ESM evidence cannot certify this backend.

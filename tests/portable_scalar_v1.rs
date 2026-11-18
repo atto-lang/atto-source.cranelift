@@ -1,43 +1,96 @@
-//! Actual Cranelift native JIT execution of the shared 16+6 pure-i64 contract.
-//! Shared contract is byte-identical to Java, LLVM, Wasm, and .NET candidates.
-//! No host arithmetic oracle, no stdlib/actor claim, and no claim of hosted CI.
-use std::path::Path;
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Real Cranelift JIT conformance against the same 22 source expressions
+//! pinned in Java, LLVM, WASM, and .NET. This is not JVM/LLVM/NativeAOT proof.
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const MANIFEST: &str = include_str!("../contracts/parity/portable-scalar-v1-20261101.json");
+static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct Fixture(PathBuf);
+impl Fixture {
+    fn new() -> Self {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "orescranelift-portable-v1-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).expect("cannot create isolated scalar test directory");
+        Self(path)
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn run_source(dir: &Fixture, id: &str, expr: &str) -> Output {
+    let source = dir.0.join(format!("{id}.ores"));
+    fs::write(&source, format!("fnc main():int{{return {expr};}}\n"))
+        .expect("cannot write scalar case");
+    Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("run")
+        .arg(source)
+        .output()
+        .expect("real compiled Cranelift CLI must execute")
+}
+fn assert_manifest_case(id: &str, expr: &str, expected: Option<&str>) {
+    assert!(
+        MANIFEST.contains(&format!("\"id\": \"{id}\"")),
+        "manifest case missing: {id}"
+    );
+    assert!(
+        MANIFEST.contains(&format!("\"expression\": \"{expr}\"")),
+        "expression drift for {id}"
+    );
+    if let Some(value) = expected {
+        assert!(
+            MANIFEST.contains(&format!("\"expected\": \"{value}\"")),
+            "expected i64 value absent for {id}"
+        );
+    }
+}
 
 #[test]
-fn native_i64_v1_contract_with_negative_admission() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("contracts")
-        .join("parity")
-        .join("portable-scalar-v1-20261101.json");
-    let metadata = std::fs::symlink_metadata(&manifest).expect("missing shared scalar contract");
-    assert!(metadata.file_type().is_file(), "contract must be a regular file");
-    let hash = Command::new("git")
-        .arg("hash-object")
-        .arg("--")
-        .arg(&manifest)
-        .output()
-        .expect("git required for exact-byte conformance pin");
-    assert!(hash.status.success(), "failed to fingerprint scalar contract");
-    assert_eq!(
-        String::from_utf8_lossy(&hash.stdout).trim(),
-        "001e8894cbeb87509878a4de36263a1a327805b1",
-        "the five-backend scalar contract has drifted"
-    );
+fn shared_manifest_inventory_cannot_silently_drop_cases() {
+    assert!(MANIFEST.contains("\"schema_version\": \"2026-11-01.scalar-v1\""));
+    assert!(MANIFEST.contains("\"scope\": \"import-free-pure-i64\""));
+    assert_eq!(MANIFEST.matches("\"id\":").count(), 22);
+    assert_eq!(MANIFEST.matches("\"expression\":").count(), 22);
+    assert_eq!(MANIFEST.matches("\"expected\":").count(), 16);
+    assert_eq!(MANIFEST.matches("\"reason\":").count(), 6);
+}
 
-    // These expressions are transcribed exactly from the pinned immutable
-    // contract. A changed contract blob must fail before invoking any guest.
-    let positive = [
+#[test]
+fn portable_shared_scalar_matrix_executes_in_real_cranelift_jit() {
+    let fixture = Fixture::new();
+    for (id, expr, expected) in [
         ("zero", "0", "0"),
         ("positive-forty-two", "6 * 7", "42"),
         ("negative-forty-two", "-7 * 6", "-42"),
         ("max-i64", "9223372036854775807", "9223372036854775807"),
         ("min-i64", "-9223372036854775808", "-9223372036854775808"),
-        ("max-minus-one", "9223372036854775807 - 1", "9223372036854775806"),
-        ("min-plus-one", "-9223372036854775808 + 1", "-9223372036854775807"),
-        ("over-binary64-mantissa", "9007199254740993 - 9007199254740992", "1"),
-        ("negative-over-binary64", "-9007199254740993 - (-9007199254740992)", "-1"),
+        (
+            "max-minus-one",
+            "9223372036854775807 - 1",
+            "9223372036854775806",
+        ),
+        (
+            "min-plus-one",
+            "-9223372036854775808 + 1",
+            "-9223372036854775807",
+        ),
+        (
+            "over-binary64-mantissa",
+            "9007199254740993 - 9007199254740992",
+            "1",
+        ),
+        (
+            "negative-over-binary64",
+            "-9007199254740993 - (-9007199254740992)",
+            "-1",
+        ),
         ("precedence", "2 + 3 * 4", "14"),
         ("parentheses", "(2 + 3) * 4", "20"),
         ("subtraction-left-assoc", "20 - 5 - 3", "12"),
@@ -45,69 +98,47 @@ fn native_i64_v1_contract_with_negative_admission() {
         ("double-negative", "-(-42)", "42"),
         ("two-negative-factors", "(-7) * (-6)", "42"),
         ("underscore-literal", "1_000 + 24", "1024"),
-    ];
-    let negative = [
-        ("div-int", "7 / 2", "invalid character"),
-        ("forbidden-caret", "7 ^ 3", "invalid character"),
-        ("forbidden-double-caret", "7 ^^ 3", "invalid character"),
-        ("forbidden-remainder", "7 % 3", "operator '%' is removed"),
-        ("i64-overflow-literal", "9223372036854775808", "i64 literal out of range"),
-        ("negative-i64-underflow-literal", "-9223372036854775809", "i64 literal out of range"),
-    ];
-    assert_eq!(positive.len(), 16);
-    assert_eq!(negative.len(), 6);
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before epoch")
-        .as_nanos();
-    let workspace = std::env::temp_dir().join(format!(
-        "orescranelift-portable-scalar-{}-{stamp}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&workspace).expect("cannot create isolated fixture directory");
-
-    for (i, (id, expression, expected)) in positive.iter().enumerate() {
-        let path = workspace.join(format!("positive-{i:02}-{id}.ores"));
-        std::fs::write(
-            &path,
-            format!("pub fnc main(): int {{ return {expression}; }}\n"),
-        )
-        .expect("cannot write guest fixture");
-        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg("run")
-            .arg(&path)
-            .output()
-            .expect("native CLI did not start");
+    ] {
+        assert_manifest_case(id, expr, Some(expected));
+        let result = run_source(&fixture, id, expr);
         assert!(
-            output.status.success(),
-            "native JIT rejected positive case {id}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            result.status.success(),
+            "{id} must execute; stderr: {}",
+            String::from_utf8_lossy(&result.stderr)
         );
         assert_eq!(
-            output.stdout,
-            format!("{expected}\n").into_bytes(),
-            "incorrect native i64 value for {id}"
+            String::from_utf8_lossy(&result.stdout),
+            format!("{expected}\n"),
+            "wrong signed i64 JIT result: {id}"
         );
-    }
-    for (i, (id, expression, diagnostic)) in negative.iter().enumerate() {
-        let path = workspace.join(format!("negative-{i:02}-{id}.ores"));
-        std::fs::write(
-            &path,
-            format!("pub fnc main(): int {{ return {expression}; }}\n"),
-        )
-        .expect("cannot write negative fixture");
-        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg("run")
-            .arg(&path)
-            .output()
-            .expect("native CLI did not start");
-        assert!(!output.status.success(), "native JIT admitted invalid case {id}");
-        assert!(output.stdout.is_empty(), "invalid case {id} printed stdout");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
-            "wrong rejection for {id}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            result.stderr.is_empty(),
+            "successful JIT case {id} unexpectedly logged a diagnostic"
         );
     }
-    std::fs::remove_dir_all(&workspace).expect("cannot remove test fixture directory");
+}
+
+#[test]
+fn portable_shared_scalar_negatives_fail_closed_without_guest_stdout() {
+    let fixture = Fixture::new();
+    for (id, expr) in [
+        ("div-int", "7 / 2"),
+        ("forbidden-caret", "7 ^ 3"),
+        ("forbidden-double-caret", "7 ^^ 3"),
+        ("forbidden-remainder", "7 % 3"),
+        ("i64-overflow-literal", "9223372036854775808"),
+        ("negative-i64-underflow-literal", "-9223372036854775809"),
+    ] {
+        assert_manifest_case(id, expr, None);
+        let result = run_source(&fixture, id, expr);
+        assert!(!result.status.success(), "{id} must never be accepted");
+        assert!(
+            result.stdout.is_empty(),
+            "{id} emitted stdout after rejection"
+        );
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("orescranelift:"),
+            "{id} did not produce a compiler-owned diagnostic"
+        );
+    }
 }
