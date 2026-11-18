@@ -254,12 +254,16 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
-            // A match keyword is not a normal scalar function identifier:
-            // reject before constructing CLIF or executing a JIT guest.
+            // Match requires a typed CFG and exhaustive pattern lowering.
             if self.current == Token::Word("match") {
                 return Err(format!(
                     "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
                 ));
+            }
+            // Macro declarations require compiler-time AST expansion.
+            // Stage-0 must reject before CLIF/JIT, including unused macros.
+            if self.current == Token::Word("macro") {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: define macro requires compiler-only typed AST expansion and AOT semantic re-admission; no runtime/JIT fallback".into());
             }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
@@ -292,6 +296,20 @@ impl<'a> Parser<'a> {
                     | Token::Word("trap")
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
+            }
+            // Collection and borrow syntax are not represented by scalar
+            // stage-0 MIR. Reserve these names before CLIF/JIT output; a
+            // parser syntax error is not a verified semantic borrow denial.
+            // This prevents a future generic extension from accidentally
+            // interpreting them as plain i64 parameters or functions.
+            if matches!(
+                self.current,
+                Token::Word(
+                    "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
+                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                )
+            ) {
+                return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
             // cpu/gpu/quantum are execution-domain words reserved by every
             // backend (Java and LLVM reject them as identifiers). This JIT
@@ -331,6 +349,9 @@ impl<'a> Parser<'a> {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
             ));
+        } else if first == b'!' {
+            // Bang invocation is not a runtime scalar call.
+            return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
         } else if b"()+-*{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -540,6 +561,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(kind) = unsupported_kind {
+            if kind == "singleton" {
+                return Err("DECL_KIND_UNSUPPORTED: ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and guarded unique-owner RW lowering; scalar Cranelift cannot provide it".into());
+            }
             return Err(format!(
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
@@ -711,6 +735,15 @@ impl<'a> Parser<'a> {
             return Err(
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
             );
+        }
+        // Scan only already-invalid trailing source, preserving compiler-only
+        // macro diagnostics without accepting anything after scalar main.
+        if self.current != Token::End {
+            let at = self.pos;
+            while self.current != Token::End {
+                self.next()?;
+            }
+            return Err(format!("unexpected token at byte {at}"));
         }
         self.expect(Token::End)?;
         Ok(Program {
