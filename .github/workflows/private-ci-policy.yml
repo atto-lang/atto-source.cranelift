@@ -26,6 +26,22 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           bash verification/source-integrity/verify.sh "$EXPECTED_HEAD"
+      - name: Exercise deny-by-default classifier on synthetic data
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp)"
+          trap 'rm -f "$fixture"' EXIT
+          printf '# comment only\n  \n  # second comment\n' > "$fixture"
+          if grep -Evq '^[[:space:]]*(#.*)?$' "$fixture"; then
+            echo "PRIVATE_CI_POLICY_TEST_FAILED: comment-only fixture rejected" >&2
+            exit 1
+          fi
+          printf 'unapproved-org/unapproved-repository\n' >> "$fixture"
+          if ! grep -Evq '^[[:space:]]*(#.*)?$' "$fixture"; then
+            echo "PRIVATE_CI_POLICY_TEST_FAILED: active export destination accepted" >&2
+            exit 1
+          fi
       - name: Refuse unauthorized private-CI destinations
         shell: bash
         run: |
@@ -34,14 +50,10 @@ jobs:
           test -f "$file"
           test ! -L "$file"
           test "$(stat -c %s -- "$file")" -le 65536
-          # Single-process grep avoids hidden active rows on SIGPIPE under pipefail.
-          if grep -Evq '^[[:space:]]*(#.*)?
+          # One grep process avoids SIGPIPE false negatives with pipefail.
+          # Every nonblank noncomment line must fail closed.
+          if grep -Evq '^[[:space:]]*(#.*)?$' "$file"; then
             echo "PRIVATE_CI_EXPORT_DENIED: no approved source-transfer destination" >&2
             exit 1
           fi
-          echo "Private-source export disabled; this job proves policy only, not native guest parity."
- "$file"; then
-            echo "PRIVATE_CI_EXPORT_DENIED: no approved source-transfer destination" >&2
-            exit 1
-          fi
-          echo "Private-source export disabled; this job proves policy only, not native guest parity."
+          echo "Private-source export disabled; policy check only, not native guest parity."

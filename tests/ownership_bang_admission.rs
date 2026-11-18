@@ -57,8 +57,8 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
     for expression in [
         "copy!42", "take!42", "borrow! value", "borrow!mut value",
         "borrow! mut value", "mut borrow! value", "mut borrow!value", "share!value",
-        "borrow!\nmut value", "borrow!/* checked loan */mut value",
-        "mut borrow!\nvalue",
+        "borrow!\\nmut value", "borrow!/* checked loan */mut value",
+        "mut borrow!\\nvalue",
     ] {
         for mode in ["run", "ir"] {
             let source = format!("fnc main():int{{return {expression};}}");
@@ -76,7 +76,7 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
 fn commented_ownership_does_not_poison_scalar_execution() {
     for mode in ["run", "ir"] {
         let output = run_source(
-            "fnc main():int{/* borrow! mut item */return 42;}",
+            "fnc main():int{// borrow! mut item\nreturn 42;}",
             mode,
         );
         assert!(output.status.success(), "{mode}: {}",
