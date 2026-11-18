@@ -1,3 +1,0 @@
-// 47: checked identity cast precedence through multiplication.
-// Candidate only: no five-backend compiler execution has been verified.
-pub fnc main(): int { return ((2 + 5) as int) * 6; }

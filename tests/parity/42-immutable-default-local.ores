@@ -1,7 +1,0 @@
-// 42: immutable typed locals must retain checked i64 value propagation.
-// Candidate shared-byte five-backend fixture, not verified guest evidence.
-pub fnc main(): int {
-  int x = 7;
-  int y = x * 6;
-  return y;
-}

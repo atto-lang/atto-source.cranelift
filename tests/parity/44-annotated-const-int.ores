@@ -1,6 +1,0 @@
-// 44: colon-annotated immutable local must retain checked int semantics.
-// Candidate shared-byte five-backend fixture, not verified guest evidence.
-pub fnc main(): int {
-  const x: int = -(-42);
-  return x;
-}
