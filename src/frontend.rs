@@ -1017,6 +1017,11 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
+    // Reject terminal control bytes in ignored comments or source before
+    // parsing or machine-code emission, without forbidding CR/LF/TAB.
+    if let Some((offset, _)) = text.char_indices().find(|(_, c)| *c == '\u{001b}' || *c == '\u{007f}') {
+        return Err(format!("source contains terminal control at byte {offset}"));
+    }
     reject_source_unicode_controls(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
@@ -1030,6 +1035,18 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("fnc main():int{{/*{control}*/return 42;}}"),
+                format!("fnc main():int{{return 42;}}//{control}"),
+            ] {
+                assert!(parse(&source).unwrap_err().contains("terminal control"));
+            }
+        }
+        assert!(parse("fnc main():int{\r\n\treturn 42;\r\n}").is_ok());
+    }
     #[test]
     fn rejects_deceptive_unicode_controls_before_comment_scanning() {
         let baseline = "fnc main():int{return 42;}";
