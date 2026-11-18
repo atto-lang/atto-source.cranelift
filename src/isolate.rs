@@ -18,6 +18,10 @@ pub struct IsolateHandle {
     generation: u64,
     authority: Arc<()>,
 }
+/// Canonical opaque tenant-generation identity. Legacy IsolateHandle is
+/// retained for source compatibility, not proof of untrusted native isolation.
+pub type TenantVMHandle = IsolateHandle;
+
 #[derive(Clone)]
 pub struct ActorTicket {
     isolate: IsolateHandle,
@@ -110,6 +114,17 @@ impl OresVM {
             }),
         })
     }
+    /// Canonical spelling for TRUSTED scalar-JIT tenant admission only.
+    /// Does not change the native guest's security boundary.
+    pub fn create_tenant_vm(
+        &self,
+        tenant: &str,
+        max_actors: usize,
+        max_pins: usize,
+    ) -> Result<TenantVMHandle, &'static str> {
+        self.create_isolate(tenant, max_actors, max_pins)
+    }
+
     pub fn create_isolate(
         &self,
         tenant: &str,
