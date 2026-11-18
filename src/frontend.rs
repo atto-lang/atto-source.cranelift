@@ -1953,4 +1953,34 @@ mod tests {
             "// runtime_pubsub.publish\rfnc main():int{return 1;}"
         ));
     }
+
+    #[test]
+    fn return_first_scalar_main_matches_legacy_ast_for_all_four_spellings() {
+        let baseline = parse("fnc main():int{return 42;}").unwrap();
+        for header in ["int <- main()", "int• main()", "fnc int <- main()", "fnc int• main()"] {
+            for ending in ["end", "end.", "end;"] {
+                let source = format!("{header}\nbegin\n  return 42;\n{ending}\n");
+                let result = parse(&source).unwrap_or_else(|err| panic!("{source}: {err}"));
+                assert_eq!(result.parameters, baseline.parameters);
+                assert_eq!(result.result, baseline.result);
+            }
+        }
+    }
+
+    #[test]
+    fn return_first_rejects_inline_begin_invalid_closers_and_nominal_methods() {
+        for source in [
+            "int <- main() begin return 42; end",
+            "int <- main()\nbegin return 42;\nend",
+            "int <- main()\nbegin\nreturn 42;",
+            "int <- main()\nbegin\nreturn 42;\nend..",
+            "int <- main()\nbegin\nreturn 42;\nend; garbage",
+            "int < - main()\nbegin\nreturn 42;\nend",
+            "int <- main() -> int\nbegin\nreturn 42;\nend",
+            "define actor Worker as\nint <- receive()\nbegin\nreturn 42;\nend\nend",
+        ] {
+            assert!(parse(source).is_err(), "should reject {source:?}");
+        }
+        assert!(parse("int <- main()\nbegin // opener\nreturn 42;\nend. // closer").is_ok());
+    }
 }
