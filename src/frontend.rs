@@ -1,4 +1,29 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
+#[path = "quoted_source.rs"]
+mod quoted_source;
+// Use the same line boundaries as the Java/Rust source lexer and the
+// quoted-template scanner. Keep byte offsets stable for all diagnostics.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2).copied(), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
+fn whitespace_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b' ' | b'\t' | b'\x0b' | b'\x0c') => 1,
+        _ => line_break_width(bytes, at),
+    }
+}
+
 const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
@@ -128,15 +153,14 @@ fn integer_digits(token: &str) -> Result<String, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(i64),
-    Bool(bool),
     Param(usize),
-    Equals(Box<Expr>, Box<Expr>),
-    Conditional { condition: Box<Expr>, when_true: Box<Expr>, when_false: Box<Expr> },
     Neg(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
+    BitAnd(Box<Expr>, Box<Expr>),
+    BitOr(Box<Expr>, Box<Expr>),
     NamedRem(Box<Expr>, Box<Expr>),
     NamedMod(Box<Expr>, Box<Expr>),
     NamedPow(Box<Expr>, Box<Expr>),
@@ -153,7 +177,7 @@ pub struct Program {
 enum Token<'a> {
     Word(&'a str),
     Number(&'a str),
-    EqualEqual,
+    Quoted(&'a str),
     Punct(u8),
     End,
 }
@@ -191,11 +215,14 @@ impl<'a> Parser<'a> {
         let b = self.input.as_bytes();
         let mut at = self.pos;
         loop {
-            while at < b.len() && b" \t\r\n\x0b\x0c".contains(&b[at]) {
-                at += 1;
+            while at < b.len() {
+                let width = whitespace_width(b, at);
+                if width == 0 { break; }
+                at += width;
             }
             if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
-                while at < b.len() && b[at] != b'\n' {
+                at += 2;
+                while at < b.len() && line_break_width(b, at) == 0 {
                     at += 1;
                 }
                 continue;
@@ -207,14 +234,16 @@ impl<'a> Parser<'a> {
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
         loop {
-            while self.pos < b.len() && b" \t\r\n\x0b\x0c".contains(&b[self.pos]) {
-                self.pos += 1;
+            while self.pos < b.len() {
+                let width = whitespace_width(b, self.pos);
+                if width == 0 { break; }
+                self.pos += width;
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                // CR-only files are legal source input, so a line comment
-                // must not swallow the following model declaration.
-                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
+                // CR/LF/NEL/Unicode line separators all terminate // comments.
+                // A comment must not swallow the following source declaration.
+                while self.pos < b.len() && line_break_width(b, self.pos) == 0 {
                     self.pos += 1;
                 }
                 continue;
@@ -255,8 +284,40 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            // Typed ownership bangs must never be interpreted as scalar
+            // identifiers or a runtime macro call. Detect the contiguous
+            // operator before scalar AST admission, including borrow! mut.
+            if matches!(
+                self.current,
+                Token::Word("copy" | "take" | "borrow" | "share")
+            ) && b.get(self.pos) == Some(&b'!') {
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+            }
+            // The 'mut borrow!' form also must fail with an ownership-specific
+            // diagnostic: without lookahead the parser would reject 'mut'
+            // generically before advancing to the borrow token.
+            if self.current == Token::Word("mut") {
+                let mut at = self.pos;
+                while b.get(at).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
+                    at += 1;
+                }
+                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..]) {
+                    return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                }
+            }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
+            }
+            // Match requires a typed CFG and exhaustive pattern lowering.
+            if self.current == Token::Word("match") {
+                return Err(format!(
+                    "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
+                ));
+            }
+            // Macro declarations require compiler-time AST expansion.
+            // Stage-0 must reject before CLIF/JIT, including unused macros.
+            if self.current == Token::Word("macro") {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: define macro requires compiler-only typed AST expansion and AOT semantic re-admission; no runtime/JIT fallback".into());
             }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
@@ -290,6 +351,20 @@ impl<'a> Parser<'a> {
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
             }
+            // Collection and borrow syntax are not represented by scalar
+            // stage-0 MIR. Reserve these names before CLIF/JIT output; a
+            // parser syntax error is not a verified semantic borrow denial.
+            // This prevents a future generic extension from accidentally
+            // interpreting them as plain i64 parameters or functions.
+            if matches!(
+                self.current,
+                Token::Word(
+                    "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
+                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                )
+            ) {
+                return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
+            }
             // cpu/gpu/quantum are execution-domain words reserved by every
             // backend (Java and LLVM reject them as identifiers). This JIT
             // lowers no execution region or CPU/GPU Task, so refuse them
@@ -302,6 +377,9 @@ impl<'a> Parser<'a> {
             if matches!(self.current, Token::Word("task" | "nb")) && self.next_opens_block() {
                 return Err("EXECUTION_DOMAIN_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
             }
+        } else if matches!(first, b'\'' | b'"' | b'`') {
+            self.pos = quoted_source::scan_quoted(self.input, start)?;
+            self.current = Token::Quoted(&self.input[start..self.pos]);
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
@@ -324,10 +402,14 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
-        } else if first == b'=' && b.get(self.pos) == Some(&b'=') {
-            self.pos += 1;
-            self.current = Token::EqualEqual;
-        } else if b"()+-*{};:,>.?".contains(&first) {
+        } else if first == b'~' {
+            return Err(format!(
+                "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
+            ));
+        } else if first == b'!' {
+            // Bang invocation is not a runtime scalar call.
+            return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
+        } else if b"()+-*{}[];:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -386,13 +468,14 @@ impl<'a> Parser<'a> {
             return self.atom(depth + 1);
         }
         if self.take(Token::Punct(b'('))? {
-            let e = self.conditional(depth + 1)?;
+            let e = self.expr(0, depth + 1)?;
             self.expect(Token::Punct(b')'))?;
             return Ok(e);
         }
         match self.current {
-            Token::Word("true") => { self.next()?; self.node(Expr::Bool(true)) }
-            Token::Word("false") => { self.next()?; self.node(Expr::Bool(false)) }
+            Token::Quoted(_) => Err(format!(
+                "STRING_BACKEND_UNSUPPORTED: typed String IR and native template interpolation lowering required at byte {}", self.pos
+            )),
             Token::Number(n) => {
                 let value = integer_digits(n)?
                     .parse::<i64>()
@@ -401,23 +484,28 @@ impl<'a> Parser<'a> {
                 self.node(Expr::Literal(value))
             }
             Token::Word("Integer") => {
-                // Recognize only this typed intrinsic. Unknown Integer.* calls
+                // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
                 let operation = self.name()?;
-                if !matches!(operation.as_str(), "bitXor" | "rem" | "mod" | "pow") {
+                if !matches!(
+                    operation.as_str(),
+                    "bitXor" | "bitAnd" | "bitOr" | "rem" | "mod" | "pow"
+                ) {
                     return Err(format!("unsupported Integer operation: {operation}"));
                 }
                 self.expect(Token::Punct(b'('))?;
-                let lhs = self.conditional(depth + 1)?;
+                let lhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b','))?;
-                let rhs = self.conditional(depth + 1)?;
+                let rhs = self.expr(0, depth + 1)?;
                 self.expect(Token::Punct(b')'))?;
                 let lhs = Box::new(lhs);
                 let rhs = Box::new(rhs);
                 self.node(match operation.as_str() {
                     "bitXor" => Expr::BitXor(lhs, rhs),
+                    "bitAnd" => Expr::BitAnd(lhs, rhs),
+                    "bitOr" => Expr::BitOr(lhs, rhs),
                     "rem" => Expr::NamedRem(lhs, rhs),
                     "mod" => Expr::NamedMod(lhs, rhs),
                     "pow" => Expr::NamedPow(lhs, rhs),
@@ -471,7 +559,7 @@ impl<'a> Parser<'a> {
             // continue to reject before executable code is generated.
             // Bind more tightly than multiplication, without changing the
             // underlying i64 value or using an unchecked reinterpretation.
-            if self.current == Token::Word("as") && min_bp <= 7 {
+            if self.current == Token::Word("as") && min_bp <= 5 {
                 self.next()?;
                 if !self.take(Token::Word("int"))? {
                     return Err("unsupported checked cast target (only int is supported)".into());
@@ -479,11 +567,10 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
-                Token::EqualEqual => (0, 1, b'='),
-                Token::Punct(b'>') => (1, 2, b'>'),
-                Token::Punct(b'+') => (3, 4, b'+'),
-                Token::Punct(b'-') => (3, 4, b'-'),
-                Token::Punct(b'*') => (5, 6, b'*'),
+                Token::Punct(b'+') => (1, 2, b'+'),
+                Token::Punct(b'-') => (1, 2, b'-'),
+                Token::Punct(b'*') => (3, 4, b'*'),
+                Token::Punct(b'>') => (0, 1, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -498,7 +585,6 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
-                b'=' => Expr::Equals(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -510,27 +596,37 @@ impl<'a> Parser<'a> {
         }
         Ok(lhs)
     }
-    // Ternary is right-associative and binds below equality and arithmetic.
-    // Both arms are parsed before native admission, even if the condition
-    // is a literal. LLVM/Cranelift must never emit untyped eager selects.
-    fn conditional(&mut self, depth: usize) -> Result<Expr, String> {
-        if depth > MAX_DEPTH {
-            return Err("expression depth budget exceeded".into());
+    // Stage-0 can export only the compiled scalar main. No package linker or
+    // nominal descriptors are available, and exports convey no guest authority.
+    fn file_export(&mut self) -> Result<(), String> {
+        self.expect(Token::Word("export"))?;
+        self.expect(Token::Word("pub"))?;
+        if self.take(Token::Punct(b'['))? {
+            if self.current != Token::Word("pkg") {
+                return Err(format!("unexpected token at byte {}", self.pos));
+            }
+            self.next()?;
+            self.expect(Token::Punct(b']'))?;
+            return Err("EXPORT_PACKAGE_LINKER_UNSUPPORTED: package-private native entrypoint".into());
         }
-        let condition = self.expr(0, depth + 1)?;
-        if !self.take(Token::Punct(b'?'))? {
-            return Ok(condition);
+        if self.take(Token::Word("class"))? {
+            return Err("EXPORT_KIND_UNSUPPORTED: nominal class descriptors not lowered".into());
         }
-        let when_true = self.conditional(depth + 1)?;
-        self.expect(Token::Punct(b':'))?;
-        let when_false = self.conditional(depth + 1)?;
-        self.node(Expr::Conditional {
-            condition: Box::new(condition),
-            when_true: Box::new(when_true),
-            when_false: Box::new(when_false),
-        })
+        self.take(Token::Word("fnc"))?;
+        if self.current != Token::Word("main") {
+            return Err(format!("unexpected token at byte {}", self.pos));
+        }
+        self.next()?;
+        self.expect(Token::Punct(b';'))?;
+        Ok(())
     }
     fn program(mut self) -> Result<Program, String> {
+        let mut seen_export = false;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         let mut seen_define = false;
         let mut seen_pub = false;
         loop {
@@ -560,6 +656,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(kind) = unsupported_kind {
+            if kind == "singleton" {
+                return Err("DECL_KIND_UNSUPPORTED: ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and guarded unique-owner RW lowering; scalar Cranelift cannot provide it".into());
+            }
             return Err(format!(
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
@@ -724,71 +823,35 @@ impl<'a> Parser<'a> {
             );
         }
         self.expect(Token::Word("return"))?;
-        let result = self.conditional(0)?;
-        // Scalar entry ABI returns i64. Fail before native CFG emission;
-        // no bool-to-int truthiness, speculative return casts or untyped
-        // branch merges are permitted.
-        if validate_type(&result, 0)? != ScalarType::Int {
-            return Err("TYPE_MISMATCH: scalar main return requires int".into());
-        }
+        let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
             return Err(
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
             );
         }
+        // Scan only already-invalid trailing source, preserving compiler-only
+        // macro diagnostics without accepting anything after scalar main.
+        if self.current != Token::End {
+            let at = self.pos;
+            while self.current != Token::End {
+                self.next()?;
+            }
+            return Err(format!("unexpected token at byte {at}"));
+        }
         self.expect(Token::End)?;
+        // Bound the constructed left-associative AST before recursive CLIF lowering.
+        validate_ast_depth(&result)?;
         Ok(Program {
             parameters: self.parameters,
             result,
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScalarType { Int, Bool }
-
-fn validate_type(expr: &Expr, depth: usize) -> Result<ScalarType, String> {
-    if depth > MAX_DEPTH {
-        return Err("expression depth budget exceeded".into());
-    }
-    let child = depth + 1;
-    let int = |expr: &Expr| -> Result<(), String> {
-        if validate_type(expr, child)? != ScalarType::Int {
-            return Err("TYPE_MISMATCH: arithmetic operands must be int".into());
-        }
-        Ok(())
-    };
-    match expr {
-        Expr::Literal(_) | Expr::Param(_) => Ok(ScalarType::Int),
-        Expr::Bool(_) => Ok(ScalarType::Bool),
-        Expr::Neg(x) | Expr::ShiftRight8(x) => {
-            int(x)?;
-            Ok(ScalarType::Int)
-        }
-        Expr::Add(x,y) | Expr::Sub(x,y) | Expr::Mul(x,y) |
-        Expr::BitXor(x,y) | Expr::NamedRem(x,y) |
-        Expr::NamedMod(x,y) | Expr::NamedPow(x,y) => {
-            int(x)?;
-            int(y)?;
-            Ok(ScalarType::Int)
-        }
-        Expr::Equals(x,y) => {
-            let lhs = validate_type(x, child)?;
-            let rhs = validate_type(y, child)?;
-            if lhs != rhs { return Err("TYPE_MISMATCH: equality operand types differ".into()); }
-            Ok(ScalarType::Bool)
-        }
-        Expr::Conditional {condition, when_true, when_false} => {
-            if validate_type(condition, child)? != ScalarType::Bool {
-                return Err("TYPE_MISMATCH: ternary condition must be bool".into());
-            }
-            let lhs = validate_type(when_true, child)?;
-            let rhs = validate_type(when_false, child)?;
-            if lhs != rhs { return Err("TYPE_MISMATCH: ternary arm types differ".into()); }
-            Ok(lhs)
-        }
     }
 }
 
@@ -827,14 +890,15 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     while index < bytes.len() {
         let byte = bytes[index];
 
-        if byte.is_ascii_whitespace() {
-            index += 1;
+        let whitespace = whitespace_width(bytes, index);
+        if whitespace != 0 {
+            index += whitespace;
             continue;
         }
 
         if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
             index += 2;
-            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+            while index < bytes.len() && line_break_width(bytes, index) == 0 {
                 index += 1;
             }
             continue;
@@ -861,20 +925,10 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         }
 
         if matches!(byte, b'"' | b'\'' | b'`') {
-            let quote = byte;
-            index += 1;
-            let mut escaped = false;
-            while index < bytes.len() {
-                let current = bytes[index];
-                index += 1;
-                if escaped {
-                    escaped = false;
-                } else if current == b'\\' {
-                    escaped = true;
-                } else if current == quote {
-                    break;
-                }
-            }
+            // Shared nested-template grammar keeps source-only actor/security
+            // preflight from treating interpolation string contents as code.
+            // Any malformed literal is rejected by the actual parser below.
+            index = quoted_source::scan_quoted(text, index).unwrap_or(bytes.len());
             continue;
         }
 
@@ -970,10 +1024,66 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     false
 }
 
+// The parser recursion budget does not bound a long left-associative chain.
+// This bounded, iterative traversal rejects an oversized constructed AST.
+fn validate_ast_depth(root: &Expr) -> Result<(), String> {
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, level)) = pending.pop() {
+        if level > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        match expr {
+            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+                pending.push((inner.as_ref(), level + 1));
+            }
+            Expr::Add(left, right)
+            | Expr::Sub(left, right)
+            | Expr::Mul(left, right)
+            | Expr::BitXor(left, right)
+            | Expr::NamedRem(left, right)
+            | Expr::NamedMod(left, right)
+            | Expr::NamedPow(left, right) => {
+                pending.push((left.as_ref(), level + 1));
+                pending.push((right.as_ref(), level + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Admit source bytes only when visual order and line breaks cannot disagree
+/// between editor display and the actual lexer. Check ignored comments too.
+fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
+    for (offset, ch) in text.char_indices() {
+        let cp = ch as u32;
+        // Check the original UTF-8 source in byte order. Neither quotes nor
+        // comments may conceal control bytes before compiler admission.
+        if cp == 0 {
+            return Err(format!("source_nul at byte {offset}"));
+        }
+        if matches!(cp, 0x001b | 0x007f) {
+            return Err(format!(
+                "source_terminal_control at byte {offset}; source contains terminal control"
+            ));
+        }
+        if matches!(cp, 0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029)
+            || (0x202a..=0x202e).contains(&cp)
+            || (0x2066..=0x2069).contains(&cp)
+        {
+            return Err(format!(
+                "source contains bidirectional Unicode control; source_unicode_control at byte {offset}: U+{cp:04X}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
+    reject_source_unicode_controls(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -987,36 +1097,179 @@ pub fn parse(text: &str) -> Result<Program, String> {
 mod tests {
     use super::*;
     #[test]
-    fn scalar_ternary_ast_is_typed_and_right_associative() {
-        let parsed = parse(
-            "fnc main(a:int,b:int):int{return a==b ? 42 : false ? 1 : 7;}"
-        ).unwrap();
-        let Expr::Conditional {condition, when_true, when_false} = parsed.result else {
-            panic!("expected ternary AST");
-        };
-        assert!(matches!(*condition, Expr::Equals(..)));
-        assert!(matches!(*when_true, Expr::Literal(42)));
-        assert!(matches!(*when_false, Expr::Conditional {..}));
-        assert!(parse("fnc main():int{return (true ? 2 : 3) + 40;}").is_ok());
-        assert!(parse("fnc main():int{return Integer.rem(true ? 8 : 10, 2)+42;}").is_ok());
+    fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("fnc main():int{{/*{control}*/return 42;}}"),
+                format!("fnc main():int{{return 42;}}//{control}"),
+            ] {
+                assert!(parse(&source).unwrap_err().contains("terminal control"));
+            }
+        }
+        assert!(parse("fnc main():int{\r\n\treturn 42;\r\n}").is_ok());
+    }
+    #[test]
+    fn rejects_raw_terminal_controls_in_comments_and_literals() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("/* hidden{control} */ fnc main():int{{return 42;}}"),
+                format!("// hidden{control}\nfnc main():int{{return 42;}}"),
+                format!("\"hidden{control}\""),
+                format!("/* café 😀 */{control}"),
+            ] {
+                let at = source.find(control).unwrap();
+                let err = parse(&source).expect_err("terminal control admitted");
+                assert!(
+                    err.contains(&format!("source_terminal_control at byte {at}")),
+                    "incorrect source location or category: {err}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn scalar_ternary_type_errors_are_fail_closed_even_in_untaken_arms() {
+    fn first_offender_is_reported_even_with_unicode_prefix() {
         for (source, expected) in [
-            ("fnc main():int{return 1 ? 2 : 3;}", "condition must be bool"),
-            ("fnc main():int{return true ? 1 : false;}", "arm types differ"),
-            ("fnc main():int{return true ? 1 : missing;}", "unbound"),
-            ("fnc main():int{return true ? 1 : (false + 1);}", "must be int"),
-            ("fnc main():int{return true ? 1 : (1 == false ? 2 : 3);}", "equality operand types differ"),
-            ("fnc main():int{return true;}", "return requires int"),
-            ("fnc main():int{return 1 == 1;}", "return requires int"),
-            ("fnc main():int{return false ? 1 : (true ? false : 2);}", "arm types differ"),
+            ("\0\u{001b}", "source_nul at byte 0"),
+            ("\u{007f}\0", "source_terminal_control at byte 0"),
+            ("/* café 😀 */\u{001b}", "source_terminal_control at byte 16"),
         ] {
-            let error = parse(source).unwrap_err();
-            assert!(error.contains(expected), "{source}: {error}");
+            let err = parse(source).expect_err("invalid source admitted");
+            assert!(err.starts_with(expected), "expected {expected}, got {err}");
         }
-        assert!(parse("fnc main():int{return true ? 42 : 1 + ;}").is_err());
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
+    }
+
+    #[test]
+    fn rejects_deceptive_unicode_controls_before_comment_scanning() {
+        let baseline = "fnc main():int{return 42;}";
+        for cp in [0x0085, 0x061c, 0x200e, 0x200f, 0x2028, 0x2029,
+                   0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+                   0x2066, 0x2067, 0x2068, 0x2069] {
+            let control = char::from_u32(cp).unwrap();
+            for source in [
+                format!("/* hidden{control} */ {baseline}"),
+                format!("// hidden{control}\n{baseline}"),
+                format!("{baseline} // {control}"),
+            ] {
+                let offset = source.find(control).unwrap();
+                let error = parse(&source).expect_err("forbidden source control admitted");
+                assert!(error.contains(&format!("source_unicode_control at byte {offset}")),
+                    "wrong diagnostic for U+{cp:04X}: {error}");
+            }
+        }
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
+    }
+
+    #[test]
+    fn quoted_strings_and_nested_templates_are_atomic_and_fail_closed() {
+        let positives = [
+            "'single'",
+            "\"double\"",
+            r#"'opposite "quotes"'"#,
+            r#""opposite 'quotes'""#,
+            r#"'escaped \' quote'"#,
+            r#""escaped \" quote""#,
+            r#"'unicode \u0041'"#,
+            "'raw\nnewline'",
+            r#"'\q'"#,
+            r#"'\x0G'"#,
+            r#"'\uD83D\uDE00'"#,
+            "`raw\nmultiline`",
+            r#"`escaped \${not_interpolation}`"#,
+            r#"`outer ${call({a: "}", b: 1}, /* { */ `inner ${value}`)} end`"#,
+            r#"`outer ${fnc({a: "}"} /* outer /* inner */ outer */)} end`"#,
+        ];
+        for literal in positives {
+            assert_eq!(
+                quoted_source::scan_quoted(literal, 0),
+                Ok(literal.len()),
+                "literal incorrectly scanned: {literal}"
+            );
+            let code = format!("fnc main():int{{return {literal};}}");
+            let reason = parse(&code).expect_err("Cranelift cannot lower String yet");
+            assert!(reason.contains("STRING_BACKEND_UNSUPPORTED"),
+                "unexpected source denial for {literal}: {reason}");
+        }
+        for (literal, reason) in [
+            ("'unclosed", "unterminated string/template"),
+            (r#"'\u12X4'"#, "invalid Unicode escape"),
+            (r#"'\uD800'"#, "invalid Unicode escape"),
+            (r#"'\uDFFF'"#, "invalid Unicode escape"),
+            (r#"'\u{1f600}'"#, "invalid Unicode escape"),
+            (r#"`invalid \q`"#, "invalid template escape"),
+            (r#"`invalid \x41`"#, "invalid template escape"),
+            (r#"`invalid \u{1f600}`"#, "invalid Unicode escape"),
+            ("`invalid \\\nnewline`", "invalid template escape"),
+            (r#"`only comments ${/* comment */}`"#, "empty template interpolation"),
+            (r#"`line comments ${// comment
+}`"#, "empty template interpolation"),
+            (r#"`bad ${ }`"#, "empty template interpolation"),
+            (r#"`bad ${ /* unterminated}`"#, "unterminated interpolation comment"),
+        ] {
+            let error = quoted_source::scan_quoted(literal, 0).unwrap_err();
+            assert!(error.contains(reason), "wrong error for {literal}: {error}");
+            let code = format!("fnc main():int{{return {literal};}}");
+            assert!(parse(&code).is_err(), "malformed literal accepted: {literal}");
+        }
+        let many = |n: usize| {
+            let literal = format!("`{}`", "${'x'}".repeat(n));
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&many(1024), 0), Ok(many(1024).len()));
+        assert!(quoted_source::scan_quoted(&many(1025), 0)
+            .unwrap_err().contains("template substitution limit"));
+        let braces = |n: usize| {
+            let mut literal = String::from("`${");
+            literal.push_str(&"{".repeat(n));
+            literal.push('x');
+            literal.push_str(&"}".repeat(n));
+            literal.push('}');
+            literal.push('`');
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&braces(255), 0), Ok(braces(255).len()));
+        assert!(quoted_source::scan_quoted(&braces(256), 0)
+            .unwrap_err().contains("interpolation brace limit"));
+        let nested = |n: usize| {
+            let mut literal = String::from("`");
+            literal.push_str(&"${`".repeat(n));
+            literal.push('x');
+            literal.push_str(&"`}".repeat(n));
+            literal.push('`');
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&nested(16), 0), Ok(nested(16).len()));
+        assert!(quoted_source::scan_quoted(&nested(17), 0)
+            .unwrap_err().contains("nesting limit"));
+        let nested_comments = |count: usize| {
+            let mut source = String::from("`${");
+            source.push_str(&"/*".repeat(count));
+            source.push_str("ignored");
+            source.push_str(&"*/".repeat(count));
+            source.push_str("x}`");
+            source
+        };
+        assert_eq!(
+            quoted_source::scan_quoted(&nested_comments(128), 0),
+            Ok(nested_comments(128).len())
+        );
+        assert!(quoted_source::scan_quoted(&nested_comments(129), 0)
+            .unwrap_err().contains("comment nesting limit"));
+
+        // Next Line is Unicode whitespace: it cannot count as code.
+        for body in ["\u{0085}", "\u{0085}/* comment */", "\u{0085}\n",
+                     "\u{0085}\u{2028}\u{2029}"] {
+            let template = format!("`x ${{{body}}}`");
+            assert!(quoted_source::scan_quoted(&template, 0)
+                .unwrap_err().contains("empty template interpolation"));
+        }
+        let valid_nel = "`x ${\u{0085}x}`";
+        assert_eq!(quoted_source::scan_quoted(valid_nel, 0), Ok(valid_nel.len()));
+
+        // Code-like source inside comments remains non-executable.
+        assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
+        assert!(parse("fnc main():int{// 'actor' \nreturn 42;}").is_ok());
     }
 
     #[test]
@@ -1102,21 +1355,14 @@ mod tests {
     fn eval(e: &Expr, args: &[i64]) -> Result<i64, &'static str> {
         match e {
             Expr::Literal(x) => Ok(*x),
-            Expr::Bool(v) => Ok(i64::from(*v)),
             Expr::Param(i) => Ok(args[*i]),
-            Expr::Equals(a,b) => Ok(i64::from(eval(a,args)? == eval(b,args)?)),
-            Expr::Conditional { condition, when_true, when_false } => {
-                if eval(condition, args)? != 0 {
-                    eval(when_true, args)
-                } else {
-                    eval(when_false, args)
-                }
-            },
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
+            Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
+            Expr::BitOr(a, b) => Ok(eval(a, args)? | eval(b, args)?),
             Expr::NamedRem(a, b) => signed_rem(eval(a, args)?, eval(b, args)?),
             Expr::NamedMod(a, b) => {
                 let left = eval(a, args)?;
@@ -1175,6 +1421,29 @@ mod tests {
         let under = parse("fnc main():int{return --9223372036854775808;}").unwrap();
         assert!(eval(&under.result, &[]).is_err());
     }
+    #[test]
+    fn native_bitwise_and_or_parser_and_reference_edges() {
+        for (operation, left, right, expected) in [
+            ("bitAnd", "7", "3", 3),
+            ("bitOr", "4", "3", 7),
+            ("bitAnd", "-1", "-9223372036854775808", i64::MIN),
+            ("bitOr", "-9223372036854775808", "1", i64::MIN + 1),
+        ] {
+            let source = format!("fnc main():int{{return Integer.{operation}({left},{right});}}");
+            let program = parse(&source).unwrap();
+            assert_eq!(eval(&program.result, &[]), Ok(expected), "{source}");
+        }
+        for invalid in [
+            "Integer.bitand(1,2)",
+            "Integer.bitOr(1)",
+            "Integer.bitAnd(1,2,3)",
+            "Integer.bitOr(1 | 2,3)",
+        ] {
+            let source = format!("fnc main():int{{return {invalid};}}");
+            assert!(parse(&source).is_err(), "{source}");
+        }
+    }
+
     #[test]
     fn guest_bitxor_parsing_and_eager_eval() {
         let program = parse("fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}").unwrap();
@@ -1573,6 +1842,55 @@ mod tests {
             parse("fnc main(pipe:int):int{return pipe+1;}").is_ok(),
             "a contextual pipe operator must not ban scalar parameters named pipe"
         );
+    }
+
+
+    #[test]
+    fn unicode_line_boundaries_align_scalar_lexer_and_actor_preflight() {
+        for separator in ["\r", "\n"] {
+            let scalar = format!("// inert{separator}fnc main():int{{return 42;}}");
+            let p = parse(&scalar).expect("line comment must end at separator");
+            assert_eq!(eval(&p.result, &[]), Ok(42), "{separator:?}");
+            let inline = format!("fnc{separator}main():int{{return 42;}}");
+            assert!(parse(&inline).is_ok(), "whitespace {separator:?}");
+
+            let pubsub = format!("// inert{separator}runtime_pubsub.publish");
+            assert!(has_actor_pubsub_surface(&pubsub), "pubsub hidden after {separator:?}");
+            assert!(
+                parse(&pubsub).unwrap_err().contains("native ActorGroup/Topic"),
+                "actor preflight denied with wrong class after {separator:?}"
+            );
+            let inert = format!(
+                "// runtime_pubsub.publish{separator}fnc main():int{{return 42;}}"
+            );
+            assert!(!has_actor_pubsub_surface(&inert), "comment was active");
+            assert!(parse(&inert).is_ok(), "comment was not inert");
+
+            let pipe = format!("// inert{separator}first pipe second");
+            assert!(has_actor_pipe_surface(&pipe), "actor pipe hidden after {separator:?}");
+
+            let task = format!(
+                "fnc main():int{{return task // inert{separator}{{ 42 }};}}"
+            );
+            assert!(
+                parse(&task).unwrap_err().contains("EXECUTION_DOMAIN_UNSUPPORTED"),
+                "task block was not recognized after {separator:?}"
+            );
+        }
+    }
+    #[test]
+    fn unicode_security_preflight_rejects_control_separators_even_in_literals() {
+        for control in ["\u{0085}", "\u{2028}", "\u{2029}"] {
+            for source in [
+                format!("// comment{control}\nfnc main():int{{return 42;}}"),
+                format!("fnc main():int{{return \"quoted{control}\";}}"),
+            ] {
+                assert!(
+                    parse(&source).unwrap_err().contains("source_unicode_control"),
+                    "Unicode security control must fail before quote/comment admission"
+                );
+            }
+        }
     }
 
     #[test]
