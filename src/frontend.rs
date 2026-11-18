@@ -134,6 +134,8 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
+    BitAnd(Box<Expr>, Box<Expr>),
+    BitOr(Box<Expr>, Box<Expr>),
     NamedRem(Box<Expr>, Box<Expr>),
     NamedMod(Box<Expr>, Box<Expr>),
     NamedPow(Box<Expr>, Box<Expr>),
@@ -445,12 +447,15 @@ impl<'a> Parser<'a> {
                 self.node(Expr::Literal(value))
             }
             Token::Word("Integer") => {
-                // Recognize only this typed intrinsic. Unknown Integer.* calls
+                // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
                 self.next()?;
                 self.expect(Token::Punct(b'.'))?;
                 let operation = self.name()?;
-                if !matches!(operation.as_str(), "bitXor" | "rem" | "mod" | "pow") {
+                if !matches!(
+                    operation.as_str(),
+                    "bitXor" | "bitAnd" | "bitOr" | "rem" | "mod" | "pow"
+                ) {
                     return Err(format!("unsupported Integer operation: {operation}"));
                 }
                 self.expect(Token::Punct(b'('))?;
@@ -462,6 +467,8 @@ impl<'a> Parser<'a> {
                 let rhs = Box::new(rhs);
                 self.node(match operation.as_str() {
                     "bitXor" => Expr::BitXor(lhs, rhs),
+                    "bitAnd" => Expr::BitAnd(lhs, rhs),
+                    "bitOr" => Expr::BitOr(lhs, rhs),
                     "rem" => Expr::NamedRem(lhs, rhs),
                     "mod" => Expr::NamedMod(lhs, rhs),
                     "pow" => Expr::NamedPow(lhs, rhs),
@@ -1215,6 +1222,8 @@ mod tests {
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
+            Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
+            Expr::BitOr(a, b) => Ok(eval(a, args)? | eval(b, args)?),
             Expr::NamedRem(a, b) => signed_rem(eval(a, args)?, eval(b, args)?),
             Expr::NamedMod(a, b) => {
                 let left = eval(a, args)?;
@@ -1273,6 +1282,29 @@ mod tests {
         let under = parse("fnc main():int{return --9223372036854775808;}").unwrap();
         assert!(eval(&under.result, &[]).is_err());
     }
+    #[test]
+    fn native_bitwise_and_or_parser_and_reference_edges() {
+        for (operation, left, right, expected) in [
+            ("bitAnd", "7", "3", 3),
+            ("bitOr", "4", "3", 7),
+            ("bitAnd", "-1", "-9223372036854775808", i64::MIN),
+            ("bitOr", "-9223372036854775808", "1", i64::MIN + 1),
+        ] {
+            let source = format!("fnc main():int{{return Integer.{operation}({left},{right});}}");
+            let program = parse(&source).unwrap();
+            assert_eq!(eval(&program.result, &[]), Ok(expected), "{source}");
+        }
+        for invalid in [
+            "Integer.bitand(1,2)",
+            "Integer.bitOr(1)",
+            "Integer.bitAnd(1,2,3)",
+            "Integer.bitOr(1 | 2,3)",
+        ] {
+            let source = format!("fnc main():int{{return {invalid};}}");
+            assert!(parse(&source).is_err(), "{source}");
+        }
+    }
+
     #[test]
     fn guest_bitxor_parsing_and_eager_eval() {
         let program = parse("fnc main(x:int,y:int):int{return Integer.bitXor(x+1,y*2);}").unwrap();
