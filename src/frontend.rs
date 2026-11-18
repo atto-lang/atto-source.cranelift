@@ -254,6 +254,12 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Match requires a typed CFG and exhaustive pattern lowering.
+            if self.current == Token::Word("match") {
+                return Err(format!(
+                    "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
+                ));
+            }
             // Macro declarations require compiler-time AST expansion.
             // Stage-0 must reject before CLIF/JIT, including unused macros.
             if self.current == Token::Word("macro") {
@@ -339,6 +345,10 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if first == b'~' {
+            return Err(format!(
+                "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
+            ));
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
