@@ -1202,6 +1202,69 @@ pub fn parse(text: &str) -> Result<Program, String> {
 mod tests {
     use super::*;
     #[test]
+    fn bounded_immutable_scalar_locals_and_const_binding_kinds() {
+        for (source, locals) in [
+            ("fnc main():int{int x=7;return x*6;}", 1),
+            ("fnc main(a:int):int{val x=a+1;return x*2;}", 1),
+            ("fnc main():int{const x=7;const y=x*6;return y;}", 2),
+            ("fnc main():int{const int x=7;return x;}", 1),
+            ("fnc main():int{const x:int=7;return x;}", 1),
+            ("fnc main(a:int):int{int x=a;val int y=x+1;return y;}", 2),
+            ("fnc main():int{int x=Integer.rem(9,4);return x;}", 1),
+            ("fnc main():int{val x=7 as int;return x;}", 1),
+        ] {
+            let p = parse(source).expect("immutable scalar syntax must parse");
+            assert_eq!(p.locals.len(), locals, "{source}");
+        }
+        let empty = parse("fnc main():int{return 42;}").unwrap();
+        assert!(empty.locals.is_empty());
+        let full = (0..MAX_LOCALS)
+            .map(|i| format!("int x{i}={i};"))
+            .collect::<String>();
+        assert!(parse(&format!("fnc main():int{{{full}return x63;}}")).is_ok());
+    }
+
+    #[test]
+    fn immutable_locals_fail_closed_on_invalid_binding_or_const() {
+        for (source, why) in [
+            ("fnc main():int{int x=x;return x;}", "unbound"),
+            ("fnc main():int{int a=b;int b=1;return a;}", "unbound"),
+            ("fnc main():int{int x=1;val x=2;return x;}", "duplicate"),
+            ("fnc main(x:int):int{int x=2;return x;}", "duplicate"),
+            ("fnc main():int{const c=7;val c=8;return c;}", "duplicate"),
+            ("fnc main(x:int):int{const c=x;return c;}", "compile-time"),
+            ("fnc main(x:int):int{val y=x;const c=y;return c;}", "compile-time"),
+            ("fnc main():int{int y=7;const c=y;return c;}", "compile-time"),
+            ("fnc main():int{const c=Integer.rem(9,4);return c;}", "compile-time"),
+            ("fnc main():int{const c=9223372036854775807+1;return c;}", "compile-time i64 overflow"),
+            ("fnc main():int{int x=7;x=8;return x;}", "unexpected"),
+            ("fnc main():int{let x=7;return x;}", "unexpected"),
+            ("fnc main():int{int x=7;return x+missing;}", "unbound"),
+        ] {
+            let error = parse(source).expect_err("invalid binding was accepted");
+            assert!(error.contains(why), "{source}: {error}");
+        }
+        let too_many = (0..=MAX_LOCALS)
+            .map(|i| format!("int x{i}={i};"))
+            .collect::<String>();
+        let error = parse(&format!("fnc main():int{{{too_many}return 1;}}"))
+            .expect_err("more than 64 local bindings");
+        assert!(error.contains("exceeds 64"), "{error}");
+    }
+
+    #[test]
+    fn locals_retain_ast_depth_and_identity_cast_budgets() {
+        let deep = format!("fnc main():int{{int x={};return x;}}",
+            "1+".repeat(MAX_DEPTH + 1) + "1");
+        assert!(parse(&deep).unwrap_err().contains("depth budget"));
+        let casts = format!("fnc main():int{{int x=7{};return x;}}",
+            " as int".repeat(MAX_NODES + 1));
+        assert!(parse(&casts).unwrap_err().contains("AST node budget"));
+        // Comment text cannot be mistaken for a local declaration.
+        assert!(parse("fnc main():int{// const x=999;\nreturn 42;}").is_ok());
+    }
+
+    #[test]
     fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
         for control in ['\u{001b}', '\u{007f}'] {
             for source in [
