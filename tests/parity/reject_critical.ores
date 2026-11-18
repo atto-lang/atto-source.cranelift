@@ -1,0 +1,2 @@
+@Critical(queue_timeout_ms=50)
+pub critical suspends fnc main(): int { return 7; }
