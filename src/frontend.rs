@@ -970,6 +970,13 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
+    // Reject bidirectional source-format controls in original UTF-8 text,
+    // even inside ignored comments, before tokenizing or emitting CLIF.
+    if text.chars().any(|c| matches!(c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' |
+        '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) {
+        return Err("source contains bidirectional Unicode control".into());
+    }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
