@@ -179,6 +179,7 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    ReturnFirstBullet,
     End,
 }
 
@@ -409,7 +410,12 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.".contains(&first) {
+        } else if first == 0xe2
+            && b.get(self.pos..self.pos.saturating_add(2)) == Some(&[0x80, 0xa2][..])
+        {
+            self.pos += 2;
+            self.current = Token::ReturnFirstBullet;
+        } else if b"()+-*{}[];:,>.<".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -736,7 +742,25 @@ impl<'a> Parser<'a> {
         if self.current == Token::Word("await") {
             return Err("E_SUSPENDS_UNSUPPORTED: await requires continuation lowering".into());
         }
-        self.expect(Token::Word("fnc"))?;
+        let explicit_fnc = self.take(Token::Word("fnc"))?;
+        let return_first = if self.take(Token::Word("int"))? {
+            if self.take(Token::ReturnFirstBullet)? {
+                true
+            } else if self.current == Token::Punct(b'<')
+                && self.input.as_bytes().get(self.pos) == Some(&b'-')
+            {
+                self.expect(Token::Punct(b'<'))?;
+                self.expect(Token::Punct(b'-'))?;
+                true
+            } else {
+                return Err("return-first scalar declaration requires adjacent <- or •".into());
+            }
+        } else {
+            if !explicit_fnc {
+                return Err("expected scalar fnc or int <-/• declaration".into());
+            }
+            false
+        };
         if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
             return Err(
                 "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
@@ -745,6 +769,7 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
+        let mut header_end = self.pos;
         if !self.take(Token::Punct(b')'))? {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
@@ -805,14 +830,41 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+            // pos is already one byte beyond the RParen token
+            // before the scanner consumes trivia for the next token.
             self.expect(Token::Punct(b')'))?;
         }
-        if !self.take(Token::Punct(b':'))? {
-            self.expect(Token::Punct(b'-'))?;
-            self.expect(Token::Punct(b'>'))?;
+        // Start of the actual header terminator is recovered from the
+        // next significant token. Compare against a known region just after
+        // the name/parameters, not a type or comment's inner punctuation.
+        if return_first {
+            // When the current token is 'begin', pos points to its final byte.
+            // Require a newline after the header and after the opener itself.
+            let begin_start = self.pos.checked_sub(5).unwrap_or(0);
+            // The last ')' before begin closes the scalar parameter list.
+            let header_end = self.input[..begin_start]
+                .rfind(')').map_or(header_end, |at| at + 1);
+            if self.current != Token::Word("begin")
+                || !self.input.as_bytes()[header_end..begin_start]
+                    .iter().any(|b| *b == b'\n' || *b == b'\r')
+            {
+                return Err("return-first declaration requires begin on the next line".into());
+            }
+            let begin_end = self.pos;
+            self.expect(Token::Word("begin"))?;
+            if !self.input.as_bytes()[begin_end..self.pos]
+                .iter().any(|b| *b == b'\n' || *b == b'\r')
+            {
+                return Err("begin must be alone on its line".into());
+            }
+        } else {
+            if !self.take(Token::Punct(b':'))? {
+                self.expect(Token::Punct(b'-'))?;
+                self.expect(Token::Punct(b'>'))?;
+            }
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'{'))?;
         }
-        self.expect(Token::Word("int"))?;
-        self.expect(Token::Punct(b'{'))?;
         if self.current == Token::Word("critical")
             || self.current == Token::Word("try")
             || self.current == Token::Word("await")
@@ -825,7 +877,14 @@ impl<'a> Parser<'a> {
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
-        self.expect(Token::Punct(b'}'))?;
+        if return_first {
+            self.expect(Token::Word("end"))?;
+            if !self.take(Token::Punct(b'.'))? {
+                self.take(Token::Punct(b';'))?;
+            }
+        } else {
+            self.expect(Token::Punct(b'}'))?;
+        }
         while self.current == Token::Word("export") {
             if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
             self.file_export()?;
