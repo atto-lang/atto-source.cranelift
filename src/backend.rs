@@ -620,3 +620,34 @@ mod native_named_signed64_differential {
         }
     }
 }
+
+#[cfg(test)]
+mod local_binding_native_invariants {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn malformed_local_reference_is_rejected_without_jit() {
+        let source = Program {
+            parameters: vec![],
+            locals: vec![Expr::Local(0)],
+            result: Expr::Literal(42),
+        };
+        assert!(compile(&source).unwrap_err().contains("invalid or forward local reference"));
+    }
+
+    #[test]
+    fn failed_unused_initializer_preserves_output_abi_sentinel() {
+        let source = parse(
+            "fnc main(x:int):int{int unused=x+1;return 42;}"
+        ).unwrap();
+        let native = compile(&source).expect("real native CLIF/JIT lowering");
+        type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
+        let function: Entry =
+            unsafe { std::mem::transmute(native.module.get_finalized_function(native.id)) };
+        let mut output = 0x1122_3344_5566_7788_i64;
+        let status = unsafe { function(i64::MAX, 0, 0, 0, &mut output) };
+        assert_eq!(status, 1);
+        assert_eq!(output, 0x1122_3344_5566_7788_i64);
+    }
+}
