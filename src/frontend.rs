@@ -254,6 +254,11 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Macro declarations require compiler-time AST expansion.
+            // Stage-0 must reject before CLIF/JIT, including unused macros.
+            if self.current == Token::Word("macro") {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: define macro requires compiler-only typed AST expansion and AOT semantic re-admission; no runtime/JIT fallback".into());
+            }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
             // lexically, including in unconsumed trailing source, before CLIF.
@@ -334,6 +339,9 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if first == b'!' {
+            // Bang invocation is not a runtime scalar call.
+            return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
         } else if b"()+-*{};:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -543,6 +551,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(kind) = unsupported_kind {
+            if kind == "singleton" {
+                return Err("DECL_KIND_UNSUPPORTED: ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and guarded unique-owner RW lowering; scalar Cranelift cannot provide it".into());
+            }
             return Err(format!(
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
@@ -714,6 +725,15 @@ impl<'a> Parser<'a> {
             return Err(
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
             );
+        }
+        // Scan only already-invalid trailing source, preserving compiler-only
+        // macro diagnostics without accepting anything after scalar main.
+        if self.current != Token::End {
+            let at = self.pos;
+            while self.current != Token::End {
+                self.next()?;
+            }
+            return Err(format!("unexpected token at byte {at}"));
         }
         self.expect(Token::End)?;
         Ok(Program {
