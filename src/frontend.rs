@@ -1973,6 +1973,12 @@ mod tests {
                 let result = parse(&source).unwrap_or_else(|err| panic!("{source}: {err}"));
                 assert_eq!(result.parameters, baseline.parameters);
                 assert_eq!(result.result, baseline.result);
+                // Parsing/evaluator equivalence is not machine-code parity:
+                // compile each of the 12 variants into real Cranelift code
+                // and execute the emitted native entrypoint in the test lane.
+                let compiled = crate::backend::compile(&result)
+                    .expect("return-first i64 Cranelift native codegen");
+                assert_eq!(compiled.run(&[]), Ok(42), "{source}");
             }
         }
     }
