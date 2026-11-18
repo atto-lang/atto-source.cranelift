@@ -151,6 +151,7 @@ fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
     params: &[cranelift_codegen::ir::Value],
+    locals: &[Value],
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
@@ -159,11 +160,12 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        Local(i) => locals[*i],
         ShiftRight8(x) => {
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte
             // extraction for 0..i31::MAX without float narrowing.
-            let input = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let input = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
         }
@@ -171,8 +173,8 @@ fn emit(
             // Native signed-i64 bitwise primitives, not host-side emulation.
             // Emit and check each operand in lexical order before the bitwise
             // instruction; a checked arithmetic failure cannot be skipped.
-            let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
                 BitAnd(_, _) => b.ins().band(lhs, rhs),
@@ -181,8 +183,8 @@ fn emit(
             }
         }
         NamedRem(x, y) | NamedMod(x, y) => {
-            let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let right = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
                 rem
@@ -198,30 +200,30 @@ fn emit(
             }
         }
         NamedPow(x, y) => {
-            let base = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let exponent = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let base = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let exponent = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
-                    let rhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
                 Add(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -243,7 +245,41 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
+// Defend the native emitter against manually assembled, malformed Program
+// objects. Parsed locals only reference earlier bindings and never form cycles.
+fn validate_local_references(expr: &Expr, admitted: usize) -> Result<(), String> {
+    let mut stack = vec![expr];
+    while let Some(node) = stack.pop() {
+        match node {
+            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Local(index) if *index < admitted => {}
+            Expr::Local(_) => return Err("invalid or forward local reference".into()),
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => stack.push(inner),
+            Expr::Add(left, right)
+            | Expr::Sub(left, right)
+            | Expr::Mul(left, right)
+            | Expr::BitXor(left, right)
+            | Expr::BitAnd(left, right)
+            | Expr::BitOr(left, right)
+            | Expr::NamedRem(left, right)
+            | Expr::NamedMod(left, right)
+            | Expr::NamedPow(left, right) => {
+                stack.push(right);
+                stack.push(left);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn compile(source: &Program) -> Result<Compiled, String> {
+    if source.locals.len() > 64 {
+        return Err("immutable local count exceeds 64".into());
+    }
+    for (index, initializer) in source.locals.iter().enumerate() {
+        validate_local_references(initializer, index)?;
+    }
+    validate_local_references(&source.result, source.locals.len())?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
@@ -271,10 +307,26 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     b.switch_to_block(entry);
     b.seal_block(entry);
     let p = b.block_params(entry).to_vec();
+    let mut locals = Vec::with_capacity(source.locals.len());
+    for initializer in &source.locals {
+        // Every initializer eagerly executes exactly once, in lexical order.
+        // Checked failures return through status blocks before output writes.
+        let value = emit(
+            initializer,
+            &mut b,
+            &p[..4],
+            &locals,
+            failure,
+            divisor_error,
+            negative_exponent_error,
+        );
+        locals.push(value);
+    }
     let value = emit(
         &source.result,
         &mut b,
         &p[..4],
+        &locals,
         failure,
         divisor_error,
         negative_exponent_error,
