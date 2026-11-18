@@ -22,5 +22,8 @@ jobs:
           test -n "${RUNNER_NAME:-}"
           test "${RUNNER_OS:-}" = "Linux"
           test "${CI:-}" = "true"
+          # This job has NO repository checkout and NO elevated permissions.
+          # A run with steps=[] is strictly a runner/admission failure.
+          test -n "${GITHUB_EVENT_NAME:-}"
           printf 'SOURCE_FREE_RUNNER_ADMITTED run=%s attempt=%s os=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_OS"
