@@ -44,6 +44,8 @@ Named `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` also lower 
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
+The 128-level bound applies to the constructed AST, including left-associative
+operator chains, not only parser recursion. Over-depth input is denied before CLIF.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
 classes, actors, heaps, ownership, recursion, async, control flow, division, operator remainder expressions,
@@ -118,8 +120,11 @@ sandbox**. Actor/tenant constructs remain rejected in both `run` and
 
 Before loading source or compiling any native code, `run` rejects more
 than four runtime arguments (the fixed native entry ABI); `ir` rejects
-all runtime arguments. This argument-vector admission is not a resource
-quota on the host process and does not authorize hostile source execution.
+all runtime arguments. Numeric guest arguments are checked before source
+file access; invalid Unicode OS argument encodings reject deterministically
+rather than panicking. The source filename remains a platform-native path.
+This argument-vector admission is not a resource quota on the host process
+and does not authorize hostile source execution.
 
 ## Unix source file admission
 
@@ -184,3 +189,20 @@ or parity with Java, LLVM, WASM, Forge or .NET.
 
 
 Experimental `isolate` mode applies a two-argument trusted scalar JIT to two separate tenant states. This is host lifecycle bookkeeping, not an untrusted native sandbox or source actor lowering. See docs/VM_ISOLATE_CONTRACT.md.
+
+## Repository ownership and migration (2026-11-08)
+
+**Present home:** `ores-truffle-oreslang/oreslang-source.cranelift` in the legacy Oreslang organization; the public language name is **AttoLang**. Preserve existing `oreslang-*` project, package and command names and `.ores` fixtures until explicitly verified migration steps are approved.
+
+- **Belongs here:** Independent Cranelift lowering/compiler backend and native JIT experiments.
+- **Does not belong here:** Treating oreslang-source.rs as the same compiler or guaranteeing parity with LLVM. Shared language semantics and portable core/std should be implemented as canonical `.atto` code rather than copied into per-host adapters.
+- **Organization separation:** [atto-lang](https://github.com/atto-lang) governs language/compiler/runtime/tooling/conformance and portable ecosystem code. [atto-co](https://github.com/atto-co) governs commercial cloud deployments, billing, identity, tenancy and hosted services. A similarly named pre-existing `atto-*` repository is not proof of an executed Git transfer or parity.
+- **Proposed migration:** this legacy repository may first transfer to `atto-lang/oreslang-source.cranelift` under its **existing name and stable GitHub repository ID**. No direct `atto-co` move is currently authorized; product carve-outs require a later independent plan.
+
+**Transfer gate:** claim coordination in [legacy issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and use [review-only transfer runbook #25](https://github.com/ores-truffle-oreslang/.github/pull/25). Record exact head SHA/tree and ID, independent security and source/target admin approval, destination rules/visibility, PRs, Actions, app credentials, packages, releases, webhooks, Pages, dependents and rollback owner. Do **not** mirror private sources or overwrite existing `atto-*` repos. Recheck unchanged ID/tree and controls after real GitHub ownership transfer; execute exact-head CI at destination. `steps=[]` or `steps=null` is `NOT_EXECUTED`; host-only or source-free tests do not prove compiled AttoLang guest features. Do not mix repository transfers with forced syntax renames or AOT/zero-GC claims.
+
+## Canonical browser integration and native actor parity gap
+
+The browser Wasm/ESM compiler is staged in the still-open `oreslang-source.rs` [PR #52](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/52), not yet merged into `main`. Its intended checked-IR emission and downstream source.js/source.wasm artifact consumption remain separate verification obligations. This independent native Cranelift compiler is a separate backend and does not become browser-capable by renaming native machine code to Wasm.
+
+`tests/canonical-browser/actor-state.atto` has the same Git blob SHA (`41a5abf398bb025639c5e190ee1c93e569a9b035`) as `browser/tests/fixtures/pass/61-actor-state.atto` at source.rs PR #52 head `9b40edd07e78c69f541408ad41d7349f34725f1c`; this establishes fixture identity, not executed browser parity. The regression invokes this backend's actual `run` and `ir` commands and requires an explicit unsupported-actor diagnostic with no output. This records the gap; it does not count as successful actor guest execution. Native nominal actors, ActorMail receive, owned linear-memory domains, mailbox scheduling and supervision must be lowered before the same source can pass here. Browser Wasm/ESM evidence cannot certify this backend.
