@@ -3,6 +3,8 @@ mod backend;
 pub mod critical_gate;
 mod frontend;
 mod isolate;
+#[allow(dead_code)]
+mod actor_isolation_access_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
@@ -12,13 +14,9 @@ use std::io::Read;
 fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
-    let mode = argv
-        .next()
-        .ok_or(
-            "usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities",
-        )?
-        .into_string()
-        .map_err(|_| "invalid command mode encoding")?;
+    let mode = argv.next().ok_or(
+        "usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+    )?.into_string().map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
             return Err("hotload-capabilities accepts no source or guest arguments".into());
@@ -36,23 +34,20 @@ fn run() -> Result<(), String> {
     if mode != "run" && mode != "ir" && mode != "isolate" {
         return Err("usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
-    // Preserve platform-native source filenames without treating a non-UTF-8
-    // path as an invalid guest integer or crashing argument iteration.
     let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
     // argv BEFORE opening files, parsing source or allocating executable
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
-    let supplied: Vec<String> = argv.by_ref().take(5).collect();
+    let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
     if mode == "ir" && !supplied.is_empty() {
         return Err("ir mode does not accept arguments".into());
     }
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
     }
-    // A malformed guest argument must not trigger any source descriptor open,
-    // filesystem access, parser work or native JIT allocation. args_os also
-    // prevents std::env::args from panicking on non-UTF-8 OS arguments.
+    // Parse all guest numeric values before reading source or allocating JIT
+    // memory; OsString rejects non-UTF-8 without panicking the CLI iterator.
     let values = supplied
         .into_iter()
         .map(|v| {
