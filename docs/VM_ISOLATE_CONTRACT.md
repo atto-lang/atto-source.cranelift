@@ -1,4 +1,6 @@
-# OresVM / IsolateVM contract v0 (backend admission)
+# OresVM / TenantVM contract v0 (legacy IsolateVM backend admission)
+
+**Canonical naming (2026-11-11): TenantVM** describes the isolated tenant execution unit. `src/isolate.rs` and its existing exported host identifiers remain unchanged for compatibility. Trusted Cranelift scalar JIT does not prove adversarial isolation. See [TenantVM naming](TENANT_VM_NAMING_V1.md).
 
 **Status: experimental host substrate.** Not full actor VM execution,
 complete cross-backend parity, per-tenant physical resource enforcement or
