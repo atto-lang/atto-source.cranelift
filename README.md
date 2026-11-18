@@ -116,8 +116,11 @@ sandbox**. Actor/tenant constructs remain rejected in both `run` and
 
 Before loading source or compiling any native code, `run` rejects more
 than four runtime arguments (the fixed native entry ABI); `ir` rejects
-all runtime arguments. This argument-vector admission is not a resource
-quota on the host process and does not authorize hostile source execution.
+all runtime arguments. Numeric guest arguments are checked before source
+file access; invalid Unicode OS argument encodings reject deterministically
+rather than panicking. The source filename remains a platform-native path.
+This argument-vector admission is not a resource quota on the host process
+and does not authorize hostile source execution.
 
 ## Unix source file admission
 
