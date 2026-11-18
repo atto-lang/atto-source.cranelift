@@ -254,6 +254,17 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
+            // Match requires a typed CFG and exhaustive pattern lowering.
+            if self.current == Token::Word("match") {
+                return Err(format!(
+                    "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
+                ));
+            }
+            // Macro declarations require compiler-time AST expansion.
+            // Stage-0 must reject before CLIF/JIT, including unused macros.
+            if self.current == Token::Word("macro") {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: define macro requires compiler-only typed AST expansion and AOT semantic re-admission; no runtime/JIT fallback".into());
+            }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
             // lexically, including in unconsumed trailing source, before CLIF.
@@ -285,6 +296,20 @@ impl<'a> Parser<'a> {
                     | Token::Word("trap")
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
+            }
+            // Collection and borrow syntax are not represented by scalar
+            // stage-0 MIR. Reserve these names before CLIF/JIT output; a
+            // parser syntax error is not a verified semantic borrow denial.
+            // This prevents a future generic extension from accidentally
+            // interpreting them as plain i64 parameters or functions.
+            if matches!(
+                self.current,
+                Token::Word(
+                    "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
+                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                )
+            ) {
+                return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
             // cpu/gpu/quantum are execution-domain words reserved by every
             // backend (Java and LLVM reject them as identifiers). This JIT
@@ -320,7 +345,14 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
-        } else if b"()+-*{};:,>.".contains(&first) {
+        } else if first == b'~' {
+            return Err(format!(
+                "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
+            ));
+        } else if first == b'!' {
+            // Bang invocation is not a runtime scalar call.
+            return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
+        } else if b"()+-*{}[];:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -499,7 +531,37 @@ impl<'a> Parser<'a> {
         }
         Ok(lhs)
     }
+    // Stage-0 can export only the compiled scalar main. No package linker or
+    // nominal descriptors are available, and exports convey no guest authority.
+    fn file_export(&mut self) -> Result<(), String> {
+        self.expect(Token::Word("export"))?;
+        self.expect(Token::Word("pub"))?;
+        if self.take(Token::Punct(b'['))? {
+            if self.current != Token::Word("pkg") {
+                return Err(format!("unexpected token at byte {}", self.pos));
+            }
+            self.next()?;
+            self.expect(Token::Punct(b']'))?;
+            return Err("EXPORT_PACKAGE_LINKER_UNSUPPORTED: package-private native entrypoint".into());
+        }
+        if self.take(Token::Word("class"))? {
+            return Err("EXPORT_KIND_UNSUPPORTED: nominal class descriptors not lowered".into());
+        }
+        self.take(Token::Word("fnc"))?;
+        if self.current != Token::Word("main") {
+            return Err(format!("unexpected token at byte {}", self.pos));
+        }
+        self.next()?;
+        self.expect(Token::Punct(b';'))?;
+        Ok(())
+    }
     fn program(mut self) -> Result<Program, String> {
+        let mut seen_export = false;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         let mut seen_define = false;
         let mut seen_pub = false;
         loop {
@@ -529,6 +591,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(kind) = unsupported_kind {
+            if kind == "singleton" {
+                return Err("DECL_KIND_UNSUPPORTED: ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and guarded unique-owner RW lowering; scalar Cranelift cannot provide it".into());
+            }
             return Err(format!(
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
@@ -696,10 +761,24 @@ impl<'a> Parser<'a> {
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
             return Err(
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
             );
+        }
+        // Scan only already-invalid trailing source, preserving compiler-only
+        // macro diagnostics without accepting anything after scalar main.
+        if self.current != Token::End {
+            let at = self.pos;
+            while self.current != Token::End {
+                self.next()?;
+            }
+            return Err(format!("unexpected token at byte {at}"));
         }
         self.expect(Token::End)?;
         Ok(Program {
@@ -891,8 +970,8 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
-    // Reject Trojan Source bidi formatting controls before any token/comment
-    // processing or machine-code emission. This is not a Unicode ban.
+    // Reject bidirectional source-format controls in original UTF-8 text,
+    // even inside ignored comments, before tokenizing or emitting CLIF.
     if text.chars().any(|c| matches!(c,
         '\u{061c}' | '\u{200e}' | '\u{200f}' |
         '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) {

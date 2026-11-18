@@ -5,7 +5,10 @@ fn native_generated_scalar_step_is_tenant_private() {
         crate::frontend::parse("fnc main(old:int,delta:int):int{return old+delta;}").unwrap();
     let compiled = crate::backend::compile(&program).unwrap();
     let vm = OresVM::new(2).unwrap();
-    let a = vm.create_isolate("tenant-a", 2, 2).unwrap();
+    let a: TenantVMHandle = vm.create_tenant_vm("tenant-a", 2, 2).unwrap();
+    for invalid in [".", "..", "../escape", "bad:tenant", "bad/tenant"] {
+        assert!(vm.create_tenant_vm(invalid, 1, 1).is_err());
+    }
     let b = vm.create_isolate("tenant-b", 2, 2).unwrap();
     vm.start(&a).unwrap();
     vm.start(&b).unwrap();
