@@ -4,6 +4,8 @@ pub mod critical_gate;
 mod frontend;
 mod isolate;
 pub mod layout;
+#[allow(dead_code)]
+mod owned_region;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;

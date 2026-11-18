@@ -7,6 +7,8 @@
 /// These are plain scalar storage widths, not source-language type identities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarField {
+    /// Canonical one-byte 0/1 boolean in guest storage.
+    Bool,
     U8,
     U16,
     U32,
@@ -19,7 +21,7 @@ pub enum ScalarField {
 impl ScalarField {
     pub const fn bytes(self) -> u64 {
         match self {
-            Self::U8 => 1,
+            Self::Bool | Self::U8 => 1,
             Self::U16 => 2,
             Self::U32 | Self::F32 => 4,
             Self::U64 | Self::I64 | Self::F64 => 8,
@@ -56,6 +58,7 @@ impl AddressWidth {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldPlacement {
+    pub kind: ScalarField,
     pub offset: u64,
     pub element_stride: u64,
     pub bytes: u64,
@@ -122,6 +125,7 @@ pub fn plan_layout(
             for field in fields {
                 cursor = align_up(cursor, field.alignment())?;
                 placements.push(FieldPlacement {
+                    kind: *field,
                     offset: cursor,
                     element_stride: 0,
                     bytes: field.bytes(),
@@ -145,6 +149,7 @@ pub fn plan_layout(
             for field in fields {
                 cursor = align_up(cursor, field.alignment())?;
                 placements.push(FieldPlacement {
+                    kind: *field,
                     offset: cursor,
                     element_stride: field.bytes(),
                     bytes: field.bytes(),
@@ -234,11 +239,33 @@ pub struct AccessCounts {
 }
 
 impl AccessCounts {
+    /// Advisory for an explicitly declared automatic store only.
     pub fn suggested_layout(self) -> LayoutMode {
         if self.field_major > self.object_major {
             LayoutMode::Soa
         } else {
             LayoutMode::Aos
+        }
+    }
+}
+
+/// A typed, compile-time declaration decides whether hints are permitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutIntent {
+    OrdinaryArray,
+    InvertedArray,
+    ExplicitAos,
+    ExplicitSoa,
+    Auto,
+}
+
+impl LayoutIntent {
+    /// Explicit source layouts cannot be changed by profile feedback.
+    pub fn resolve(self, samples: AccessCounts) -> LayoutMode {
+        match self {
+            Self::OrdinaryArray | Self::ExplicitAos => LayoutMode::Aos,
+            Self::InvertedArray | Self::ExplicitSoa => LayoutMode::Soa,
+            Self::Auto => samples.suggested_layout(),
         }
     }
 }
@@ -362,6 +389,45 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn declared_layouts_cannot_be_overridden_by_trace_hints() {
+        let field_heavy = AccessCounts {
+            object_major: 1,
+            field_major: 100,
+        };
+        let object_heavy = AccessCounts {
+            object_major: 100,
+            field_major: 1,
+        };
+        for counts in [field_heavy, object_heavy] {
+            assert_eq!(LayoutIntent::OrdinaryArray.resolve(counts), LayoutMode::Aos);
+            assert_eq!(LayoutIntent::InvertedArray.resolve(counts), LayoutMode::Soa);
+            assert_eq!(LayoutIntent::ExplicitAos.resolve(counts), LayoutMode::Aos);
+            assert_eq!(LayoutIntent::ExplicitSoa.resolve(counts), LayoutMode::Soa);
+        }
+        assert_eq!(LayoutIntent::Auto.resolve(field_heavy), LayoutMode::Soa);
+        assert_eq!(LayoutIntent::Auto.resolve(object_heavy), LayoutMode::Aos);
+    }
+
+    #[test]
+    fn canonical_boolean_byte_is_one_wide_and_one_aligned() {
+        assert_eq!(ScalarField::Bool.bytes(), 1);
+        assert_eq!(ScalarField::Bool.alignment(), 1);
+        for mode in [LayoutMode::Aos, LayoutMode::Soa] {
+            let plan = plan_layout(
+                &[ScalarField::I64, ScalarField::Bool, ScalarField::F64],
+                3,
+                mode,
+                AddressWidth::Bits32,
+                80,
+            )
+            .unwrap();
+            assert_eq!(plan.fields()[1].kind, ScalarField::Bool);
+            assert_eq!(plan.allocation_alignment(), 8);
+            assert_eq!(plan.field_offset(0, 3), Err(LayoutError::UnknownElement));
         }
     }
 
