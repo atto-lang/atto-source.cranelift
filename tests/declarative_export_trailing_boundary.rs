@@ -1,4 +1,6 @@
-use orescranelift::frontend::parse;
+#[path = "../src/frontend.rs"]
+mod frontend;
+use frontend::parse;
 
 const MAIN: &str = "fnc main(): int { return 42; }";
 
