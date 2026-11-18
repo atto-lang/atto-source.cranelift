@@ -245,16 +245,32 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
-// Defend the native emitter against manually assembled, malformed Program
-// objects. Parsed locals only reference earlier bindings and never form cycles.
-fn validate_local_references(expr: &Expr, admitted: usize) -> Result<(), String> {
-    let mut stack = vec![expr];
-    while let Some(node) = stack.pop() {
+// A caller may construct Program directly, bypassing parser admission.
+// Validate *all* indices and structural budgets before allocating JIT code.
+fn validate_guest_expression(
+    expr: &Expr,
+    admitted_locals: usize,
+    admitted_params: usize,
+    nodes: &mut usize,
+) -> Result<(), String> {
+    let mut stack = vec![(expr, 1_usize)];
+    while let Some((node, depth)) = stack.pop() {
+        *nodes += 1;
+        if *nodes > 4096 {
+            return Err("AST node budget exceeded before JIT".into());
+        }
+        if depth > 128 {
+            return Err("expression depth budget exceeded before JIT".into());
+        }
         match node {
-            Expr::Literal(_) | Expr::Param(_) => {}
-            Expr::Local(index) if *index < admitted => {}
+            Expr::Literal(_) => {}
+            Expr::Param(index) if *index < admitted_params => {}
+            Expr::Param(_) => return Err("invalid parameter reference before JIT".into()),
+            Expr::Local(index) if *index < admitted_locals => {}
             Expr::Local(_) => return Err("invalid or forward local reference".into()),
-            Expr::Neg(inner) | Expr::ShiftRight8(inner) => stack.push(inner),
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+                stack.push((inner, depth + 1));
+            }
             Expr::Add(left, right)
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
@@ -264,8 +280,8 @@ fn validate_local_references(expr: &Expr, admitted: usize) -> Result<(), String>
             | Expr::NamedRem(left, right)
             | Expr::NamedMod(left, right)
             | Expr::NamedPow(left, right) => {
-                stack.push(right);
-                stack.push(left);
+                stack.push((right, depth + 1));
+                stack.push((left, depth + 1));
             }
         }
     }
@@ -273,13 +289,22 @@ fn validate_local_references(expr: &Expr, admitted: usize) -> Result<(), String>
 }
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
+    if source.parameters.len() > 4 {
+        return Err("parameter count exceeds four before JIT".into());
+    }
     if source.locals.len() > 64 {
         return Err("immutable local count exceeds 64".into());
     }
+    let mut nodes = 0;
     for (index, initializer) in source.locals.iter().enumerate() {
-        validate_local_references(initializer, index)?;
+        validate_guest_expression(initializer, index, source.parameters.len(), &mut nodes)?;
     }
-    validate_local_references(&source.result, source.locals.len())?;
+    validate_guest_expression(
+        &source.result,
+        source.locals.len(),
+        source.parameters.len(),
+        &mut nodes,
+    )?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
@@ -634,6 +659,70 @@ mod local_binding_native_invariants {
             result: Expr::Literal(42),
         };
         assert!(compile(&source).err().expect("malformed Program must fail").contains("invalid or forward local reference"));
+    }
+
+    #[test]
+    fn malformed_parameter_and_excess_arity_fail_before_jit() {
+        let invalid = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: Expr::Param(0),
+        };
+        assert!(
+            compile(&invalid)
+                .err()
+                .expect("invalid parameter must be rejected")
+                .contains("invalid parameter reference")
+        );
+        let excess = Program {
+            parameters: (0..5).map(|i| format!("p{i}")).collect(),
+            locals: vec![],
+            result: Expr::Literal(42),
+        };
+        assert!(
+            compile(&excess)
+                .err()
+                .expect("excess native ABI arity must be rejected")
+                .contains("parameter count exceeds four")
+        );
+    }
+
+    #[test]
+    fn manually_assembled_oversized_ast_fails_before_native_recursion() {
+        let mut deep = Expr::Literal(42);
+        for _ in 0..129 {
+            deep = Expr::Neg(Box::new(deep));
+        }
+        let deep_program = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: deep,
+        };
+        assert!(
+            compile(&deep_program)
+                .err()
+                .expect("deep manual AST must be denied")
+                .contains("expression depth budget exceeded")
+        );
+
+        fn balanced(depth: usize) -> Expr {
+            if depth == 0 {
+                Expr::Literal(1)
+            } else {
+                Expr::Add(Box::new(balanced(depth - 1)), Box::new(balanced(depth - 1)))
+            }
+        }
+        let wide_program = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: balanced(12),
+        };
+        assert!(
+            compile(&wide_program)
+                .err()
+                .expect("oversized manual AST must be denied")
+                .contains("AST node budget exceeded")
+        );
     }
 
     #[test]
