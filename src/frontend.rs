@@ -251,8 +251,40 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            // Typed ownership bangs must never be interpreted as scalar
+            // identifiers or a runtime macro call. Detect the contiguous
+            // operator before scalar AST admission, including borrow! mut.
+            if matches!(
+                self.current,
+                Token::Word("copy" | "take" | "borrow" | "share")
+            ) && b.get(self.pos) == Some(&b'!') {
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+            }
+            // The 'mut borrow!' form also must fail with an ownership-specific
+            // diagnostic: without lookahead the parser would reject 'mut'
+            // generically before advancing to the borrow token.
+            if self.current == Token::Word("mut") {
+                let mut at = self.pos;
+                while b.get(at).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
+                    at += 1;
+                }
+                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..]) {
+                    return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                }
+            }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
+            }
+            // Match requires a typed CFG and exhaustive pattern lowering.
+            if self.current == Token::Word("match") {
+                return Err(format!(
+                    "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
+                ));
+            }
+            // Macro declarations require compiler-time AST expansion.
+            // Stage-0 must reject before CLIF/JIT, including unused macros.
+            if self.current == Token::Word("macro") {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: define macro requires compiler-only typed AST expansion and AOT semantic re-admission; no runtime/JIT fallback".into());
             }
             // Stage-0 has no actor runtime, supervisory CONTROL channel, or
             // minted ActorRef capability. Reject reserved authority syntax
@@ -285,6 +317,20 @@ impl<'a> Parser<'a> {
                     | Token::Word("trap")
             ) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
+            }
+            // Collection and borrow syntax are not represented by scalar
+            // stage-0 MIR. Reserve these names before CLIF/JIT output; a
+            // parser syntax error is not a verified semantic borrow denial.
+            // This prevents a future generic extension from accidentally
+            // interpreting them as plain i64 parameters or functions.
+            if matches!(
+                self.current,
+                Token::Word(
+                    "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
+                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                )
+            ) {
+                return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
             // cpu/gpu/quantum are execution-domain words reserved by every
             // backend (Java and LLVM reject them as identifiers). This JIT
@@ -320,7 +366,14 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
-        } else if b"()+-*{};:,>.".contains(&first) {
+        } else if first == b'~' {
+            return Err(format!(
+                "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
+            ));
+        } else if first == b'!' {
+            // Bang invocation is not a runtime scalar call.
+            return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
+        } else if b"()+-*{}[];:,>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -499,7 +552,37 @@ impl<'a> Parser<'a> {
         }
         Ok(lhs)
     }
+    // Stage-0 can export only the compiled scalar main. No package linker or
+    // nominal descriptors are available, and exports convey no guest authority.
+    fn file_export(&mut self) -> Result<(), String> {
+        self.expect(Token::Word("export"))?;
+        self.expect(Token::Word("pub"))?;
+        if self.take(Token::Punct(b'['))? {
+            if self.current != Token::Word("pkg") {
+                return Err(format!("unexpected token at byte {}", self.pos));
+            }
+            self.next()?;
+            self.expect(Token::Punct(b']'))?;
+            return Err("EXPORT_PACKAGE_LINKER_UNSUPPORTED: package-private native entrypoint".into());
+        }
+        if self.take(Token::Word("class"))? {
+            return Err("EXPORT_KIND_UNSUPPORTED: nominal class descriptors not lowered".into());
+        }
+        self.take(Token::Word("fnc"))?;
+        if self.current != Token::Word("main") {
+            return Err(format!("unexpected token at byte {}", self.pos));
+        }
+        self.next()?;
+        self.expect(Token::Punct(b';'))?;
+        Ok(())
+    }
     fn program(mut self) -> Result<Program, String> {
+        let mut seen_export = false;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         let mut seen_define = false;
         let mut seen_pub = false;
         loop {
@@ -529,6 +612,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(kind) = unsupported_kind {
+            if kind == "singleton" {
+                return Err("DECL_KIND_UNSUPPORTED: ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and guarded unique-owner RW lowering; scalar Cranelift cannot provide it".into());
+            }
             return Err(format!(
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
@@ -696,12 +782,28 @@ impl<'a> Parser<'a> {
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
+        while self.current == Token::Word("export") {
+            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            self.file_export()?;
+            seen_export = true;
+        }
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
             return Err(
                 "actor and supervisor capabilities are unsupported in Cranelift stage-0".into(),
             );
         }
+        // Scan only already-invalid trailing source, preserving compiler-only
+        // macro diagnostics without accepting anything after scalar main.
+        if self.current != Token::End {
+            let at = self.pos;
+            while self.current != Token::End {
+                self.next()?;
+            }
+            return Err(format!("unexpected token at byte {at}"));
+        }
         self.expect(Token::End)?;
+        // Bound the constructed left-associative AST before recursive CLIF lowering.
+        validate_ast_depth(&result)?;
         Ok(Program {
             parameters: self.parameters,
             result,
@@ -887,10 +989,66 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     false
 }
 
+// The parser recursion budget does not bound a long left-associative chain.
+// This bounded, iterative traversal rejects an oversized constructed AST.
+fn validate_ast_depth(root: &Expr) -> Result<(), String> {
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, level)) = pending.pop() {
+        if level > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        match expr {
+            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+                pending.push((inner.as_ref(), level + 1));
+            }
+            Expr::Add(left, right)
+            | Expr::Sub(left, right)
+            | Expr::Mul(left, right)
+            | Expr::BitXor(left, right)
+            | Expr::NamedRem(left, right)
+            | Expr::NamedMod(left, right)
+            | Expr::NamedPow(left, right) => {
+                pending.push((left.as_ref(), level + 1));
+                pending.push((right.as_ref(), level + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Admit source bytes only when visual order and line breaks cannot disagree
+/// between editor display and the actual lexer. Check ignored comments too.
+fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
+    for (offset, ch) in text.char_indices() {
+        let cp = ch as u32;
+        // Check the original UTF-8 source in byte order. Neither quotes nor
+        // comments may conceal control bytes before compiler admission.
+        if cp == 0 {
+            return Err(format!("source_nul at byte {offset}"));
+        }
+        if matches!(cp, 0x001b | 0x007f) {
+            return Err(format!(
+                "source_terminal_control at byte {offset}; source contains terminal control"
+            ));
+        }
+        if matches!(cp, 0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029)
+            || (0x202a..=0x202e).contains(&cp)
+            || (0x2066..=0x2069).contains(&cp)
+        {
+            return Err(format!(
+                "source contains bidirectional Unicode control; source_unicode_control at byte {offset}: U+{cp:04X}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
+    reject_source_unicode_controls(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -903,6 +1061,71 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("fnc main():int{{/*{control}*/return 42;}}"),
+                format!("fnc main():int{{return 42;}}//{control}"),
+            ] {
+                assert!(parse(&source).unwrap_err().contains("terminal control"));
+            }
+        }
+        assert!(parse("fnc main():int{\r\n\treturn 42;\r\n}").is_ok());
+    }
+    #[test]
+    fn rejects_raw_terminal_controls_in_comments_and_literals() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("/* hidden{control} */ fnc main():int{{return 42;}}"),
+                format!("// hidden{control}\nfnc main():int{{return 42;}}"),
+                format!("\"hidden{control}\""),
+                format!("/* café 😀 */{control}"),
+            ] {
+                let at = source.find(control).unwrap();
+                let err = parse(&source).expect_err("terminal control admitted");
+                assert!(
+                    err.contains(&format!("source_terminal_control at byte {at}")),
+                    "incorrect source location or category: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn first_offender_is_reported_even_with_unicode_prefix() {
+        for (source, expected) in [
+            ("\0\u{001b}", "source_nul at byte 0"),
+            ("\u{007f}\0", "source_terminal_control at byte 0"),
+            ("/* café 😀 */\u{001b}", "source_terminal_control at byte 16"),
+        ] {
+            let err = parse(source).expect_err("invalid source admitted");
+            assert!(err.starts_with(expected), "expected {expected}, got {err}");
+        }
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
+    }
+
+    #[test]
+    fn rejects_deceptive_unicode_controls_before_comment_scanning() {
+        let baseline = "fnc main():int{return 42;}";
+        for cp in [0x0085, 0x061c, 0x200e, 0x200f, 0x2028, 0x2029,
+                   0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+                   0x2066, 0x2067, 0x2068, 0x2069] {
+            let control = char::from_u32(cp).unwrap();
+            for source in [
+                format!("/* hidden{control} */ {baseline}"),
+                format!("// hidden{control}\n{baseline}"),
+                format!("{baseline} // {control}"),
+            ] {
+                let offset = source.find(control).unwrap();
+                let error = parse(&source).expect_err("forbidden source control admitted");
+                assert!(error.contains(&format!("source_unicode_control at byte {offset}")),
+                    "wrong diagnostic for U+{cp:04X}: {error}");
+            }
+        }
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
+    }
+
     #[test]
     fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
         assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
