@@ -28,6 +28,7 @@ const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_PARAMS: usize = 4;
+const MAX_LOCALS: usize = 64;
 
 // Historical Java v1 Lexer.java keyword inventory (93 spellings), pinned to
 // Git blob bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a.
@@ -154,6 +155,8 @@ fn integer_digits(token: &str) -> Result<String, String> {
 pub enum Expr {
     Literal(i64),
     Param(usize),
+    // Lexically earlier immutable signed-i64 SSA binding.
+    Local(usize),
     Neg(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
@@ -170,6 +173,7 @@ pub enum Expr {
 #[derive(Debug)]
 pub struct Program {
     pub parameters: Vec<String>,
+    pub locals: Vec<Expr>,
     pub result: Expr,
 }
 
@@ -187,10 +191,13 @@ struct Parser<'a> {
     input: &'a str,
     pos: usize,
     current: Token<'a>,
-    // Byte offset of the currently lexed token, after trivia/comments.
+    // Byte offset of the currently lexed token after trivia/comments.
     current_start: usize,
     nodes: usize,
     parameters: Vec<String>,
+    local_names: Vec<String>,
+    local_initializers: Vec<Expr>,
+    const_values: Vec<Option<i64>>,
 }
 
 impl<'a> Parser<'a> {
@@ -208,6 +215,9 @@ impl<'a> Parser<'a> {
             current_start: 0,
             nodes: 0,
             parameters: Vec::new(),
+            local_names: Vec::new(),
+            local_initializers: Vec::new(),
+            const_values: Vec::new(),
         };
         p.next()?;
         Ok(p)
@@ -420,7 +430,7 @@ impl<'a> Parser<'a> {
         {
             self.pos += 2;
             self.current = Token::ReturnFirstBullet;
-        } else if b"()+-*{}[];:,>.<".contains(&first) {
+        } else if b"()+-*{}[];:,>.=<".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -547,13 +557,17 @@ impl<'a> Parser<'a> {
                 Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
-                let index = self
-                    .parameters
-                    .iter()
-                    .position(|p| p == s)
-                    .ok_or_else(|| format!("unbound or unsupported identifier: {s}"))?;
+                // Local names are published only after an initializer completes,
+                // so self and forward references cannot be compiled.
+                let resolved = if let Some(index) = self.parameters.iter().position(|p| p == s) {
+                    Expr::Param(index)
+                } else if let Some(index) = self.local_names.iter().position(|p| p == s) {
+                    Expr::Local(index)
+                } else {
+                    return Err(format!("unbound or unsupported identifier: {s}"));
+                };
                 self.next()?;
-                self.node(Expr::Param(index))
+                self.node(resolved)
             }
             _ => Err(format!("expected scalar expression at byte {}", self.pos)),
         }
@@ -574,6 +588,11 @@ impl<'a> Parser<'a> {
                 self.next()?;
                 if !self.take(Token::Word("int"))? {
                     return Err("unsupported checked cast target (only int is supported)".into());
+                }
+                // An identity cast still consumes frontend complexity budget.
+                self.nodes += 1;
+                if self.nodes > MAX_NODES {
+                    return Err("AST node budget exceeded".into());
                 }
                 continue;
             }
@@ -877,6 +896,50 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
+        // Only scalar, immutable local bindings are admitted. No implicit
+        // assignment, shadowing, nested blocks or mutable actor state.
+        // Runtime-readonly `int` and `val` can use prior locals or parameters;
+        // `const` is compile-time-only, never runtime-dependent.
+        loop {
+            let kind = match self.current {
+                Token::Word("const") => "const",
+                Token::Word("int") => "int",
+                Token::Word("val") => "val",
+                _ => break,
+            };
+            self.next()?;
+            let typed = kind == "int" || self.take(Token::Word("int"))?;
+            let name = self.name()?;
+            if is_java_v1_reserved_parameter_name(&name)
+                || matches!(name.as_str(), "Integer" | "main" | "int")
+                || self.parameters.contains(&name)
+                || self.local_names.contains(&name)
+            {
+                return Err("invalid or duplicate immutable local".into());
+            }
+            if !typed && self.take(Token::Punct(b':'))? {
+                self.expect(Token::Word("int"))?;
+            }
+            if self.local_names.len() >= MAX_LOCALS {
+                return Err("immutable local count exceeds 64".into());
+            }
+            self.expect(Token::Punct(b'='))?;
+            let initializer = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            validate_ast_depth(&initializer)?;
+            let const_value = if kind == "const" {
+                Some(
+                    constant_scalar_value(&initializer, &self.const_values)?
+                        .ok_or("const requires a compile-time signed-i64 expression")?,
+                )
+            } else {
+                None
+            };
+            // Publish after checking: no forward/self reference or shadowing.
+            self.local_names.push(name);
+            self.local_initializers.push(initializer);
+            self.const_values.push(const_value);
+        }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
@@ -912,6 +975,7 @@ impl<'a> Parser<'a> {
         validate_ast_depth(&result)?;
         Ok(Program {
             parameters: self.parameters,
+            locals: self.local_initializers,
             result,
         })
     }
@@ -1095,7 +1159,7 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             return Err("expression depth budget exceeded".into());
         }
         match expr {
-            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Literal(_) | Expr::Param(_) | Expr::Local(_) => {}
             Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
@@ -1103,6 +1167,8 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
             | Expr::BitXor(left, right)
+            | Expr::BitAnd(left, right)
+            | Expr::BitOr(left, right)
             | Expr::NamedRem(left, right)
             | Expr::NamedMod(left, right)
             | Expr::NamedPow(left, right) => {
@@ -1141,6 +1207,47 @@ fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+// No guest effects, authority access or numeric coercions are allowed in a
+// compile-time const initializer. Only earlier *const* values are admissible.
+fn constant_scalar_value(expr: &Expr, known: &[Option<i64>]) -> Result<Option<i64>, String> {
+    match expr {
+        Expr::Literal(value) => Ok(Some(*value)),
+        Expr::Local(index) => Ok(known.get(*index).copied().flatten()),
+        Expr::Param(_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _)
+        | Expr::NamedPow(_, _) => Ok(None),
+        Expr::Neg(expr) => match constant_scalar_value(expr, known)? {
+            Some(value) => value.checked_neg().map(Some)
+                .ok_or_else(|| "compile-time i64 overflow".into()),
+            None => Ok(None),
+        },
+        Expr::ShiftRight8(expr) => Ok(constant_scalar_value(expr, known)?.map(|v| v >> 8)),
+        Expr::Add(left, right)
+        | Expr::Sub(left, right)
+        | Expr::Mul(left, right)
+        | Expr::BitXor(left, right)
+        | Expr::BitAnd(left, right)
+        | Expr::BitOr(left, right) => {
+            let l = constant_scalar_value(left, known)?;
+            let r = constant_scalar_value(right, known)?;
+            match (l, r) {
+                (Some(a), Some(b)) => {
+                    let result = match expr {
+                        Expr::Add(_, _) => a.checked_add(b),
+                        Expr::Sub(_, _) => a.checked_sub(b),
+                        Expr::Mul(_, _) => a.checked_mul(b),
+                        Expr::BitXor(_, _) => Some(a ^ b),
+                        Expr::BitAnd(_, _) => Some(a & b),
+                        Expr::BitOr(_, _) => Some(a | b),
+                        _ => unreachable!(),
+                    };
+                    result.map(Some).ok_or_else(|| "compile-time i64 overflow".into())
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
@@ -1158,6 +1265,69 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_immutable_scalar_locals_and_const_binding_kinds() {
+        for (source, locals) in [
+            ("fnc main():int{int x=7;return x*6;}", 1),
+            ("fnc main(a:int):int{val x=a+1;return x*2;}", 1),
+            ("fnc main():int{const x=7;const y=x*6;return y;}", 2),
+            ("fnc main():int{const int x=7;return x;}", 1),
+            ("fnc main():int{const x:int=7;return x;}", 1),
+            ("fnc main(a:int):int{int x=a;val int y=x+1;return y;}", 2),
+            ("fnc main():int{int x=Integer.rem(9,4);return x;}", 1),
+            ("fnc main():int{val x=7 as int;return x;}", 1),
+        ] {
+            let p = parse(source).expect("immutable scalar syntax must parse");
+            assert_eq!(p.locals.len(), locals, "{source}");
+        }
+        let empty = parse("fnc main():int{return 42;}").unwrap();
+        assert!(empty.locals.is_empty());
+        let full = (0..MAX_LOCALS)
+            .map(|i| format!("int x{i}={i};"))
+            .collect::<String>();
+        assert!(parse(&format!("fnc main():int{{{full}return x63;}}")).is_ok());
+    }
+
+    #[test]
+    fn immutable_locals_fail_closed_on_invalid_binding_or_const() {
+        for (source, why) in [
+            ("fnc main():int{int x=x;return x;}", "unbound"),
+            ("fnc main():int{int a=b;int b=1;return a;}", "unbound"),
+            ("fnc main():int{int x=1;val x=2;return x;}", "duplicate"),
+            ("fnc main(x:int):int{int x=2;return x;}", "duplicate"),
+            ("fnc main():int{const c=7;val c=8;return c;}", "duplicate"),
+            ("fnc main(x:int):int{const c=x;return c;}", "compile-time"),
+            ("fnc main(x:int):int{val y=x;const c=y;return c;}", "compile-time"),
+            ("fnc main():int{int y=7;const c=y;return c;}", "compile-time"),
+            ("fnc main():int{const c=Integer.rem(9,4);return c;}", "compile-time"),
+            ("fnc main():int{const c=9223372036854775807+1;return c;}", "compile-time i64 overflow"),
+            ("fnc main():int{int x=7;x=8;return x;}", "unexpected"),
+            ("fnc main():int{let x=7;return x;}", "unexpected"),
+            ("fnc main():int{int x=7;return x+missing;}", "unbound"),
+        ] {
+            let error = parse(source).expect_err("invalid binding was accepted");
+            assert!(error.contains(why), "{source}: {error}");
+        }
+        let too_many = (0..=MAX_LOCALS)
+            .map(|i| format!("int x{i}={i};"))
+            .collect::<String>();
+        let error = parse(&format!("fnc main():int{{{too_many}return 1;}}"))
+            .expect_err("more than 64 local bindings");
+        assert!(error.contains("exceeds 64"), "{error}");
+    }
+
+    #[test]
+    fn locals_retain_ast_depth_and_identity_cast_budgets() {
+        let deep = format!("fnc main():int{{int x={};return x;}}",
+            "1+".repeat(MAX_DEPTH + 1) + "1");
+        assert!(parse(&deep).unwrap_err().contains("depth budget"));
+        let casts = format!("fnc main():int{{int x=7{};return x;}}",
+            " as int".repeat(MAX_NODES + 1));
+        assert!(parse(&casts).unwrap_err().contains("AST node budget"));
+        // Comment text cannot be mistaken for a local declaration.
+        assert!(parse("fnc main():int{// const x=999;\nreturn 42;}").is_ok());
+    }
+
     #[test]
     fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
         for control in ['\u{001b}', '\u{007f}'] {
@@ -1418,6 +1588,7 @@ mod tests {
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
+            Expr::Local(_) => Err("local evaluation requires SSA bindings"),
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
@@ -1963,7 +2134,6 @@ mod tests {
             "// runtime_pubsub.publish\rfnc main():int{return 1;}"
         ));
     }
-
     #[test]
     fn return_first_scalar_main_matches_legacy_ast_for_all_four_spellings() {
         let baseline = parse("fnc main():int{return 42;}").unwrap();
@@ -1972,6 +2142,7 @@ mod tests {
                 let source = format!("{header}\nbegin\n  return 42;\n{ending}\n");
                 let result = parse(&source).unwrap_or_else(|err| panic!("{source}: {err}"));
                 assert_eq!(result.parameters, baseline.parameters);
+                assert_eq!(result.locals.len(), baseline.locals.len());
                 assert_eq!(result.result, baseline.result);
                 // Parsing/evaluator equivalence is not machine-code parity:
                 // compile each of the 12 variants into real Cranelift code
@@ -2012,4 +2183,19 @@ mod tests {
             assert!(parse(invalid).is_err(), "must reject boundary: {invalid:?}");
         }
     }
+    #[test]
+    fn return_first_and_scalar_immutable_locals_compose_before_jit() {
+        let accepted = parse(
+            "int <- main(value:int)\nbegin\n  const base=7;\n  val total=base*6+value;\n  return total;\nend.\n",
+        ).expect("return-first and immutable locals compose");
+        assert_eq!(accepted.locals.len(), 2);
+        let native = crate::backend::compile(&accepted).expect("compiled scalar locals");
+        assert_eq!(native.run(&[0]), Ok(42));
+
+        let denied = parse(
+            "fnc int• main(value:int)\nbegin\n  const invalid=value;\n  return invalid;\nend;\n",
+        ).expect_err("runtime parameter cannot initialize standalone const");
+        assert!(denied.contains("compile-time"), "{denied}");
+    }
+
 }

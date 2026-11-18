@@ -151,6 +151,7 @@ fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
     params: &[cranelift_codegen::ir::Value],
+    locals: &[Value],
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
@@ -159,11 +160,12 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        Local(i) => locals[*i],
         ShiftRight8(x) => {
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte
             // extraction for 0..i31::MAX without float narrowing.
-            let input = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let input = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
         }
@@ -171,8 +173,8 @@ fn emit(
             // Native signed-i64 bitwise primitives, not host-side emulation.
             // Emit and check each operand in lexical order before the bitwise
             // instruction; a checked arithmetic failure cannot be skipped.
-            let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
                 BitAnd(_, _) => b.ins().band(lhs, rhs),
@@ -181,8 +183,8 @@ fn emit(
             }
         }
         NamedRem(x, y) | NamedMod(x, y) => {
-            let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let right = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
                 rem
@@ -198,30 +200,30 @@ fn emit(
             }
         }
         NamedPow(x, y) => {
-            let base = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let exponent = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let base = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let exponent = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
-                    let rhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
                 Add(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -243,7 +245,66 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
+// A caller may construct Program directly, bypassing parser admission.
+// Validate *all* indices and structural budgets before allocating JIT code.
+fn validate_guest_expression(
+    expr: &Expr,
+    admitted_locals: usize,
+    admitted_params: usize,
+    nodes: &mut usize,
+) -> Result<(), String> {
+    let mut stack = vec![(expr, 1_usize)];
+    while let Some((node, depth)) = stack.pop() {
+        *nodes += 1;
+        if *nodes > 4096 {
+            return Err("AST node budget exceeded before JIT".into());
+        }
+        if depth > 128 {
+            return Err("expression depth budget exceeded before JIT".into());
+        }
+        match node {
+            Expr::Literal(_) => {}
+            Expr::Param(index) if *index < admitted_params => {}
+            Expr::Param(_) => return Err("invalid parameter reference before JIT".into()),
+            Expr::Local(index) if *index < admitted_locals => {}
+            Expr::Local(_) => return Err("invalid or forward local reference".into()),
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+                stack.push((inner, depth + 1));
+            }
+            Expr::Add(left, right)
+            | Expr::Sub(left, right)
+            | Expr::Mul(left, right)
+            | Expr::BitXor(left, right)
+            | Expr::BitAnd(left, right)
+            | Expr::BitOr(left, right)
+            | Expr::NamedRem(left, right)
+            | Expr::NamedMod(left, right)
+            | Expr::NamedPow(left, right) => {
+                stack.push((right, depth + 1));
+                stack.push((left, depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn compile(source: &Program) -> Result<Compiled, String> {
+    if source.parameters.len() > 4 {
+        return Err("parameter count exceeds four before JIT".into());
+    }
+    if source.locals.len() > 64 {
+        return Err("immutable local count exceeds 64".into());
+    }
+    let mut nodes = 0;
+    for (index, initializer) in source.locals.iter().enumerate() {
+        validate_guest_expression(initializer, index, source.parameters.len(), &mut nodes)?;
+    }
+    validate_guest_expression(
+        &source.result,
+        source.locals.len(),
+        source.parameters.len(),
+        &mut nodes,
+    )?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
@@ -271,10 +332,26 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     b.switch_to_block(entry);
     b.seal_block(entry);
     let p = b.block_params(entry).to_vec();
+    let mut locals = Vec::with_capacity(source.locals.len());
+    for initializer in &source.locals {
+        // Every initializer eagerly executes exactly once, in lexical order.
+        // Checked failures return through status blocks before output writes.
+        let value = emit(
+            initializer,
+            &mut b,
+            &p[..4],
+            &locals,
+            failure,
+            divisor_error,
+            negative_exponent_error,
+        );
+        locals.push(value);
+    }
     let value = emit(
         &source.result,
         &mut b,
         &p[..4],
+        &locals,
         failure,
         divisor_error,
         negative_exponent_error,
@@ -566,5 +643,100 @@ mod native_named_signed64_differential {
                 "native large exponent pow({base},{exponent})"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod local_binding_native_invariants {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn malformed_local_reference_is_rejected_without_jit() {
+        let source = Program {
+            parameters: vec![],
+            locals: vec![Expr::Local(0)],
+            result: Expr::Literal(42),
+        };
+        assert!(compile(&source).err().expect("malformed Program must fail").contains("invalid or forward local reference"));
+    }
+
+    #[test]
+    fn malformed_parameter_and_excess_arity_fail_before_jit() {
+        let invalid = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: Expr::Param(0),
+        };
+        assert!(
+            compile(&invalid)
+                .err()
+                .expect("invalid parameter must be rejected")
+                .contains("invalid parameter reference")
+        );
+        let excess = Program {
+            parameters: (0..5).map(|i| format!("p{i}")).collect(),
+            locals: vec![],
+            result: Expr::Literal(42),
+        };
+        assert!(
+            compile(&excess)
+                .err()
+                .expect("excess native ABI arity must be rejected")
+                .contains("parameter count exceeds four")
+        );
+    }
+
+    #[test]
+    fn manually_assembled_oversized_ast_fails_before_native_recursion() {
+        let mut deep = Expr::Literal(42);
+        for _ in 0..129 {
+            deep = Expr::Neg(Box::new(deep));
+        }
+        let deep_program = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: deep,
+        };
+        assert!(
+            compile(&deep_program)
+                .err()
+                .expect("deep manual AST must be denied")
+                .contains("expression depth budget exceeded")
+        );
+
+        fn balanced(depth: usize) -> Expr {
+            if depth == 0 {
+                Expr::Literal(1)
+            } else {
+                Expr::Add(Box::new(balanced(depth - 1)), Box::new(balanced(depth - 1)))
+            }
+        }
+        let wide_program = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: balanced(12),
+        };
+        assert!(
+            compile(&wide_program)
+                .err()
+                .expect("oversized manual AST must be denied")
+                .contains("AST node budget exceeded")
+        );
+    }
+
+    #[test]
+    fn failed_unused_initializer_preserves_output_abi_sentinel() {
+        let source = parse(
+            "fnc main(x:int):int{int unused=x+1;return 42;}"
+        ).unwrap();
+        let native = compile(&source).expect("real native CLIF/JIT lowering");
+        type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
+        let function: Entry =
+            unsafe { std::mem::transmute(native.module.get_finalized_function(native.id)) };
+        let mut output = 0x1122_3344_5566_7788_i64;
+        let status = unsafe { function(i64::MAX, 0, 0, 0, &mut output) };
+        assert_eq!(status, 1);
+        assert_eq!(output, 0x1122_3344_5566_7788_i64);
     }
 }

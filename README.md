@@ -44,6 +44,17 @@ Named `Integer.rem(a,b)`, `Integer.mod(a,b)`, and `Integer.pow(a,b)` also lower 
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
+
+Candidate scalar immutable locals in `main` may use `int name = expression;`
+or `val name = expression;` with one-time eager checked initialization.
+`const name = expression;`, `const int name = expression;`, and
+`const name: int = expression;` require compile-time evaluable signed-i64
+initializers (only earlier `const` bindings may be referenced). Each binding
+is unique within the scalar function, cannot shadow a parameter, and cannot
+be reassigned; the profile is capped at **64 locals**. This is *not* an actor,
+ownership, global configuration or general AttoLang variable implementation.
+The immutable-local changes on PR #21 require **actual source-head native CI**
+before any new execution or language-wide parity claim.
 The 128-level bound applies to the constructed AST, including left-associative
 operator chains, not only parser recursion. Over-depth input is denied before CLIF.
 
