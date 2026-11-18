@@ -529,6 +529,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(kind) = unsupported_kind {
+            if kind == "singleton" {
+                return Err("DECL_KIND_UNSUPPORTED: ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and guarded unique-owner RW lowering; scalar Cranelift cannot provide it".into());
+            }
             return Err(format!(
                 "DECL_KIND_UNSUPPORTED: {kind} requires nominal/ownership lowering; Cranelift stage-0 supports only scalar fnc main"
             ));
