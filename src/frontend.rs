@@ -1,4 +1,29 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
+#[path = "quoted_source.rs"]
+mod quoted_source;
+// Use the same line boundaries as the Java/Rust source lexer and the
+// quoted-template scanner. Keep byte offsets stable for all diagnostics.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2).copied(), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
+fn whitespace_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b' ' | b'\t' | b'\x0b' | b'\x0c') => 1,
+        _ => line_break_width(bytes, at),
+    }
+}
+
 const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
@@ -152,6 +177,7 @@ pub struct Program {
 enum Token<'a> {
     Word(&'a str),
     Number(&'a str),
+    Quoted(&'a str),
     Punct(u8),
     End,
 }
@@ -189,11 +215,14 @@ impl<'a> Parser<'a> {
         let b = self.input.as_bytes();
         let mut at = self.pos;
         loop {
-            while at < b.len() && b" \t\r\n\x0b\x0c".contains(&b[at]) {
-                at += 1;
+            while at < b.len() {
+                let width = whitespace_width(b, at);
+                if width == 0 { break; }
+                at += width;
             }
             if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
-                while at < b.len() && b[at] != b'\n' {
+                at += 2;
+                while at < b.len() && line_break_width(b, at) == 0 {
                     at += 1;
                 }
                 continue;
@@ -205,14 +234,16 @@ impl<'a> Parser<'a> {
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
         loop {
-            while self.pos < b.len() && b" \t\r\n\x0b\x0c".contains(&b[self.pos]) {
-                self.pos += 1;
+            while self.pos < b.len() {
+                let width = whitespace_width(b, self.pos);
+                if width == 0 { break; }
+                self.pos += width;
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
                 self.pos += 2;
-                // CR-only files are legal source input, so a line comment
-                // must not swallow the following model declaration.
-                while self.pos < b.len() && b[self.pos] != b'\n' && b[self.pos] != b'\r' {
+                // CR/LF/NEL/Unicode line separators all terminate // comments.
+                // A comment must not swallow the following source declaration.
+                while self.pos < b.len() && line_break_width(b, self.pos) == 0 {
                     self.pos += 1;
                 }
                 continue;
@@ -346,6 +377,9 @@ impl<'a> Parser<'a> {
             if matches!(self.current, Token::Word("task" | "nb")) && self.next_opens_block() {
                 return Err("EXECUTION_DOMAIN_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
             }
+        } else if matches!(first, b'\'' | b'"' | b'`') {
+            self.pos = quoted_source::scan_quoted(self.input, start)?;
+            self.current = Token::Quoted(&self.input[start..self.pos]);
         } else if first.is_ascii_digit() {
             while self.pos < b.len() && (b[self.pos].is_ascii_digit() || b[self.pos] == b'_') {
                 self.pos += 1;
@@ -439,6 +473,9 @@ impl<'a> Parser<'a> {
             return Ok(e);
         }
         match self.current {
+            Token::Quoted(_) => Err(format!(
+                "STRING_BACKEND_UNSUPPORTED: typed String IR and native template interpolation lowering required at byte {}", self.pos
+            )),
             Token::Number(n) => {
                 let value = integer_digits(n)?
                     .parse::<i64>()
@@ -853,14 +890,15 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     while index < bytes.len() {
         let byte = bytes[index];
 
-        if byte.is_ascii_whitespace() {
-            index += 1;
+        let whitespace = whitespace_width(bytes, index);
+        if whitespace != 0 {
+            index += whitespace;
             continue;
         }
 
         if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
             index += 2;
-            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+            while index < bytes.len() && line_break_width(bytes, index) == 0 {
                 index += 1;
             }
             continue;
@@ -887,20 +925,10 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         }
 
         if matches!(byte, b'"' | b'\'' | b'`') {
-            let quote = byte;
-            index += 1;
-            let mut escaped = false;
-            while index < bytes.len() {
-                let current = bytes[index];
-                index += 1;
-                if escaped {
-                    escaped = false;
-                } else if current == b'\\' {
-                    escaped = true;
-                } else if current == quote {
-                    break;
-                }
-            }
+            // Shared nested-template grammar keeps source-only actor/security
+            // preflight from treating interpolation string contents as code.
+            // Any malformed literal is rejected by the actual parser below.
+            index = quoted_source::scan_quoted(text, index).unwrap_or(bytes.len());
             continue;
         }
 
@@ -1131,6 +1159,117 @@ mod tests {
             }
         }
         assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
+    }
+
+    #[test]
+    fn quoted_strings_and_nested_templates_are_atomic_and_fail_closed() {
+        let positives = [
+            "'single'",
+            "\"double\"",
+            r#"'opposite "quotes"'"#,
+            r#""opposite 'quotes'""#,
+            r#"'escaped \' quote'"#,
+            r#""escaped \" quote""#,
+            r#"'unicode \u0041'"#,
+            "'raw\nnewline'",
+            r#"'\q'"#,
+            r#"'\x0G'"#,
+            r#"'\uD83D\uDE00'"#,
+            "`raw\nmultiline`",
+            r#"`escaped \${not_interpolation}`"#,
+            r#"`outer ${call({a: "}", b: 1}, /* { */ `inner ${value}`)} end`"#,
+            r#"`outer ${fnc({a: "}"} /* outer /* inner */ outer */)} end`"#,
+        ];
+        for literal in positives {
+            assert_eq!(
+                quoted_source::scan_quoted(literal, 0),
+                Ok(literal.len()),
+                "literal incorrectly scanned: {literal}"
+            );
+            let code = format!("fnc main():int{{return {literal};}}");
+            let reason = parse(&code).expect_err("Cranelift cannot lower String yet");
+            assert!(reason.contains("STRING_BACKEND_UNSUPPORTED"),
+                "unexpected source denial for {literal}: {reason}");
+        }
+        for (literal, reason) in [
+            ("'unclosed", "unterminated string/template"),
+            (r#"'\u12X4'"#, "invalid Unicode escape"),
+            (r#"'\uD800'"#, "invalid Unicode escape"),
+            (r#"'\uDFFF'"#, "invalid Unicode escape"),
+            (r#"'\u{1f600}'"#, "invalid Unicode escape"),
+            (r#"`invalid \q`"#, "invalid template escape"),
+            (r#"`invalid \x41`"#, "invalid template escape"),
+            (r#"`invalid \u{1f600}`"#, "invalid Unicode escape"),
+            ("`invalid \\\nnewline`", "invalid template escape"),
+            (r#"`only comments ${/* comment */}`"#, "empty template interpolation"),
+            (r#"`line comments ${// comment
+}`"#, "empty template interpolation"),
+            (r#"`bad ${ }`"#, "empty template interpolation"),
+            (r#"`bad ${ /* unterminated}`"#, "unterminated interpolation comment"),
+        ] {
+            let error = quoted_source::scan_quoted(literal, 0).unwrap_err();
+            assert!(error.contains(reason), "wrong error for {literal}: {error}");
+            let code = format!("fnc main():int{{return {literal};}}");
+            assert!(parse(&code).is_err(), "malformed literal accepted: {literal}");
+        }
+        let many = |n: usize| {
+            let literal = format!("`{}`", "${'x'}".repeat(n));
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&many(1024), 0), Ok(many(1024).len()));
+        assert!(quoted_source::scan_quoted(&many(1025), 0)
+            .unwrap_err().contains("template substitution limit"));
+        let braces = |n: usize| {
+            let mut literal = String::from("`${");
+            literal.push_str(&"{".repeat(n));
+            literal.push('x');
+            literal.push_str(&"}".repeat(n));
+            literal.push('}');
+            literal.push('`');
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&braces(255), 0), Ok(braces(255).len()));
+        assert!(quoted_source::scan_quoted(&braces(256), 0)
+            .unwrap_err().contains("interpolation brace limit"));
+        let nested = |n: usize| {
+            let mut literal = String::from("`");
+            literal.push_str(&"${`".repeat(n));
+            literal.push('x');
+            literal.push_str(&"`}".repeat(n));
+            literal.push('`');
+            literal
+        };
+        assert_eq!(quoted_source::scan_quoted(&nested(16), 0), Ok(nested(16).len()));
+        assert!(quoted_source::scan_quoted(&nested(17), 0)
+            .unwrap_err().contains("nesting limit"));
+        let nested_comments = |count: usize| {
+            let mut source = String::from("`${");
+            source.push_str(&"/*".repeat(count));
+            source.push_str("ignored");
+            source.push_str(&"*/".repeat(count));
+            source.push_str("x}`");
+            source
+        };
+        assert_eq!(
+            quoted_source::scan_quoted(&nested_comments(128), 0),
+            Ok(nested_comments(128).len())
+        );
+        assert!(quoted_source::scan_quoted(&nested_comments(129), 0)
+            .unwrap_err().contains("comment nesting limit"));
+
+        // Next Line is Unicode whitespace: it cannot count as code.
+        for body in ["\u{0085}", "\u{0085}/* comment */", "\u{0085}\n",
+                     "\u{0085}\u{2028}\u{2029}"] {
+            let template = format!("`x ${{{body}}}`");
+            assert!(quoted_source::scan_quoted(&template, 0)
+                .unwrap_err().contains("empty template interpolation"));
+        }
+        let valid_nel = "`x ${\u{0085}x}`";
+        assert_eq!(quoted_source::scan_quoted(valid_nel, 0), Ok(valid_nel.len()));
+
+        // Code-like source inside comments remains non-executable.
+        assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
+        assert!(parse("fnc main():int{// 'actor' \nreturn 42;}").is_ok());
     }
 
     #[test]
@@ -1703,6 +1842,55 @@ mod tests {
             parse("fnc main(pipe:int):int{return pipe+1;}").is_ok(),
             "a contextual pipe operator must not ban scalar parameters named pipe"
         );
+    }
+
+
+    #[test]
+    fn unicode_line_boundaries_align_scalar_lexer_and_actor_preflight() {
+        for separator in ["\r", "\n"] {
+            let scalar = format!("// inert{separator}fnc main():int{{return 42;}}");
+            let p = parse(&scalar).expect("line comment must end at separator");
+            assert_eq!(eval(&p.result, &[]), Ok(42), "{separator:?}");
+            let inline = format!("fnc{separator}main():int{{return 42;}}");
+            assert!(parse(&inline).is_ok(), "whitespace {separator:?}");
+
+            let pubsub = format!("// inert{separator}runtime_pubsub.publish");
+            assert!(has_actor_pubsub_surface(&pubsub), "pubsub hidden after {separator:?}");
+            assert!(
+                parse(&pubsub).unwrap_err().contains("native ActorGroup/Topic"),
+                "actor preflight denied with wrong class after {separator:?}"
+            );
+            let inert = format!(
+                "// runtime_pubsub.publish{separator}fnc main():int{{return 42;}}"
+            );
+            assert!(!has_actor_pubsub_surface(&inert), "comment was active");
+            assert!(parse(&inert).is_ok(), "comment was not inert");
+
+            let pipe = format!("// inert{separator}first pipe second");
+            assert!(has_actor_pipe_surface(&pipe), "actor pipe hidden after {separator:?}");
+
+            let task = format!(
+                "fnc main():int{{return task // inert{separator}{{ 42 }};}}"
+            );
+            assert!(
+                parse(&task).unwrap_err().contains("EXECUTION_DOMAIN_UNSUPPORTED"),
+                "task block was not recognized after {separator:?}"
+            );
+        }
+    }
+    #[test]
+    fn unicode_security_preflight_rejects_control_separators_even_in_literals() {
+        for control in ["\u{0085}", "\u{2028}", "\u{2029}"] {
+            for source in [
+                format!("// comment{control}\nfnc main():int{{return 42;}}"),
+                format!("fnc main():int{{return \"quoted{control}\";}}"),
+            ] {
+                assert!(
+                    parse(&source).unwrap_err().contains("source_unicode_control"),
+                    "Unicode security control must fail before quote/comment admission"
+                );
+            }
+        }
     }
 
     #[test]
