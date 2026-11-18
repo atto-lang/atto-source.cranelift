@@ -1022,6 +1022,16 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
 fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
     for (offset, ch) in text.char_indices() {
         let cp = ch as u32;
+        // Check the original UTF-8 source in byte order. Neither quotes nor
+        // comments may conceal control bytes before compiler admission.
+        if cp == 0 {
+            return Err(format!("source_nul at byte {offset}"));
+        }
+        if matches!(cp, 0x001b | 0x007f) {
+            return Err(format!(
+                "source_terminal_control at byte {offset}; source contains terminal control"
+            ));
+        }
         if matches!(cp, 0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029)
             || (0x202a..=0x202e).contains(&cp)
             || (0x2066..=0x2069).contains(&cp)
@@ -1037,11 +1047,6 @@ fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
-    }
-    // Reject terminal control bytes in ignored comments or source before
-    // parsing or machine-code emission, without forbidding CR/LF/TAB.
-    if let Some((offset, _)) = text.char_indices().find(|(_, c)| *c == '\u{001b}' || *c == '\u{007f}') {
-        return Err(format!("source contains terminal control at byte {offset}"));
     }
     reject_source_unicode_controls(text)?;
     if has_actor_pubsub_surface(text) {
@@ -1069,6 +1074,38 @@ mod tests {
         assert!(parse("fnc main():int{\r\n\treturn 42;\r\n}").is_ok());
     }
     #[test]
+    fn rejects_raw_terminal_controls_in_comments_and_literals() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("/* hidden{control} */ fnc main():int{{return 42;}}"),
+                format!("// hidden{control}\nfnc main():int{{return 42;}}"),
+                format!("\"hidden{control}\""),
+                format!("/* café 😀 */{control}"),
+            ] {
+                let at = source.find(control).unwrap();
+                let err = parse(&source).expect_err("terminal control admitted");
+                assert!(
+                    err.contains(&format!("source_terminal_control at byte {at}")),
+                    "incorrect source location or category: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn first_offender_is_reported_even_with_unicode_prefix() {
+        for (source, expected) in [
+            ("\0\u{001b}", "source_nul at byte 0"),
+            ("\u{007f}\0", "source_terminal_control at byte 0"),
+            ("/* café 😀 */\u{001b}", "source_terminal_control at byte 16"),
+        ] {
+            let err = parse(source).expect_err("invalid source admitted");
+            assert!(err.starts_with(expected), "expected {expected}, got {err}");
+        }
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
+    }
+
+    #[test]
     fn rejects_deceptive_unicode_controls_before_comment_scanning() {
         let baseline = "fnc main():int{return 42;}";
         for cp in [0x0085, 0x061c, 0x200e, 0x200f, 0x2028, 0x2029,
@@ -1086,7 +1123,7 @@ mod tests {
                     "wrong diagnostic for U+{cp:04X}: {error}");
             }
         }
-        assert!(parse("/* café */ fnc main():int{return 42;}").is_ok());
+        assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
     }
 
     #[test]
