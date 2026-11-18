@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout exact PR head without persisted credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -26,8 +26,9 @@ jobs:
           set -euo pipefail
           [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          # Check cleanliness before producing untracked evidence files.
-          test -z "$(git status --porcelain)"
+          # Index identity does not invoke untrusted Git clean filters.
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git ls-files --others --exclude-standard)"
           mkdir -p target/borrow-mir-v1-evidence
           git rev-parse HEAD > target/borrow-mir-v1-evidence/head.txt
           git rev-parse "HEAD^{tree}" > target/borrow-mir-v1-evidence/root-tree.txt
@@ -38,6 +39,7 @@ jobs:
           test "$(git rev-parse HEAD:contracts/borrow-mir-v1/semantic-cases.json)" = "$(git hash-object --no-filters contracts/borrow-mir-v1/semantic-cases.json)"
           test "$(git rev-parse HEAD:tests/borrow-mir-v1-contract.test.mjs)" = "$(git hash-object --no-filters tests/borrow-mir-v1-contract.test.mjs)"
           test "$(git rev-parse HEAD:contracts/borrow-mir-v1/README.md)" = "$(git hash-object --no-filters contracts/borrow-mir-v1/README.md)"
+          test "$(git rev-parse HEAD:.github/workflows/borrow-mir-v1-contract.yml)" = "$(git hash-object --no-filters .github/workflows/borrow-mir-v1-contract.yml)"
       - name: Install pinned Node.js 22.16.0
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
