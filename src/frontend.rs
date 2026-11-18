@@ -251,6 +251,27 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            // Typed ownership bangs must never be interpreted as scalar
+            // identifiers or a runtime macro call. Detect the contiguous
+            // operator before scalar AST admission, including borrow! mut.
+            if matches!(
+                self.current,
+                Token::Word("copy" | "take" | "borrow" | "share")
+            ) && b.get(self.pos) == Some(&b'!') {
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+            }
+            // The 'mut borrow!' form also must fail with an ownership-specific
+            // diagnostic: without lookahead the parser would reject 'mut'
+            // generically before advancing to the borrow token.
+            if self.current == Token::Word("mut") {
+                let mut at = self.pos;
+                while b.get(at).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
+                    at += 1;
+                }
+                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..]) {
+                    return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                }
+            }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
