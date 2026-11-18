@@ -183,6 +183,7 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    ReturnFirstBullet,
     End,
 }
 
@@ -190,6 +191,8 @@ struct Parser<'a> {
     input: &'a str,
     pos: usize,
     current: Token<'a>,
+    // Byte offset of the currently lexed token after trivia/comments.
+    current_start: usize,
     nodes: usize,
     parameters: Vec<String>,
     local_names: Vec<String>,
@@ -209,6 +212,7 @@ impl<'a> Parser<'a> {
             input,
             pos: 0,
             current: Token::End,
+            current_start: 0,
             nodes: 0,
             parameters: Vec::new(),
             local_names: Vec::new(),
@@ -261,10 +265,12 @@ impl<'a> Parser<'a> {
             break;
         }
         if self.pos == b.len() {
+            self.current_start = self.pos;
             self.current = Token::End;
             return Ok(());
         }
         let start = self.pos;
+        self.current_start = start;
         let first = b[self.pos];
         self.pos += 1;
         // Stage-0 cannot bind injected state lifetimes or borrow authority.
@@ -419,7 +425,12 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.=".contains(&first) {
+        } else if first == 0xe2
+            && b.get(self.pos..self.pos.saturating_add(2)) == Some(&[0x80, 0xa2][..])
+        {
+            self.pos += 2;
+            self.current = Token::ReturnFirstBullet;
+        } else if b"()+-*{}[];:,>.=<".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -755,7 +766,25 @@ impl<'a> Parser<'a> {
         if self.current == Token::Word("await") {
             return Err("E_SUSPENDS_UNSUPPORTED: await requires continuation lowering".into());
         }
-        self.expect(Token::Word("fnc"))?;
+        let explicit_fnc = self.take(Token::Word("fnc"))?;
+        let return_first = if self.take(Token::Word("int"))? {
+            if self.take(Token::ReturnFirstBullet)? {
+                true
+            } else if self.current == Token::Punct(b'<')
+                && self.input.as_bytes().get(self.pos) == Some(&b'-')
+            {
+                self.expect(Token::Punct(b'<'))?;
+                self.expect(Token::Punct(b'-'))?;
+                true
+            } else {
+                return Err("return-first scalar declaration requires adjacent <- or •".into());
+            }
+        } else {
+            if !explicit_fnc {
+                return Err("expected scalar fnc or int <-/• declaration".into());
+            }
+            false
+        };
         if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
             return Err(
                 "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
@@ -764,7 +793,7 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
-        if !self.take(Token::Punct(b')'))? {
+        if self.current != Token::Punct(b')') {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
@@ -824,14 +853,40 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            self.expect(Token::Punct(b')'))?;
         }
-        if !self.take(Token::Punct(b':'))? {
-            self.expect(Token::Punct(b'-'))?;
-            self.expect(Token::Punct(b'>'))?;
+        // Capture the exact ')' offset before advancing through trivia.
+        let header_end = self.pos;
+        self.expect(Token::Punct(b')'))?;
+        if return_first {
+            // Check exact lexer token boundaries, not cursor arithmetic or a
+            // guessed keyword width. Trivia can contain comments and CRLF.
+            let begin_start = self.current_start;
+            if self.current != Token::Word("begin")
+                || begin_start < header_end
+                || !self.input.as_bytes()[header_end..begin_start]
+                    .iter()
+                    .any(|b| *b == b'\n' || *b == b'\r')
+            {
+                return Err("return-first declaration requires begin on the next line".into());
+            }
+            let begin_end = self.pos;
+            self.expect(Token::Word("begin"))?;
+            let next_start = self.current_start;
+            if next_start < begin_end
+                || !self.input.as_bytes()[begin_end..next_start]
+                    .iter()
+                    .any(|b| *b == b'\n' || *b == b'\r')
+            {
+                return Err("begin must be alone on its line".into());
+            }
+        } else {
+            if !self.take(Token::Punct(b':'))? {
+                self.expect(Token::Punct(b'-'))?;
+                self.expect(Token::Punct(b'>'))?;
+            }
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'{'))?;
         }
-        self.expect(Token::Word("int"))?;
-        self.expect(Token::Punct(b'{'))?;
         if self.current == Token::Word("critical")
             || self.current == Token::Word("try")
             || self.current == Token::Word("await")
@@ -888,7 +943,14 @@ impl<'a> Parser<'a> {
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
-        self.expect(Token::Punct(b'}'))?;
+        if return_first {
+            self.expect(Token::Word("end"))?;
+            if !self.take(Token::Punct(b'.'))? {
+                self.take(Token::Punct(b';'))?;
+            }
+        } else {
+            self.expect(Token::Punct(b'}'))?;
+        }
         while self.current == Token::Word("export") {
             if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
             self.file_export()?;
@@ -2072,4 +2134,68 @@ mod tests {
             "// runtime_pubsub.publish\rfnc main():int{return 1;}"
         ));
     }
+    #[test]
+    fn return_first_scalar_main_matches_legacy_ast_for_all_four_spellings() {
+        let baseline = parse("fnc main():int{return 42;}").unwrap();
+        for header in ["int <- main()", "int• main()", "fnc int <- main()", "fnc int• main()"] {
+            for ending in ["end", "end.", "end;"] {
+                let source = format!("{header}\nbegin\n  return 42;\n{ending}\n");
+                let result = parse(&source).unwrap_or_else(|err| panic!("{source}: {err}"));
+                assert_eq!(result.parameters, baseline.parameters);
+                assert_eq!(result.locals.len(), baseline.locals.len());
+                assert_eq!(result.result, baseline.result);
+                // Parsing/evaluator equivalence is not machine-code parity:
+                // compile each of the 12 variants into real Cranelift code
+                // and execute the emitted native entrypoint in the test lane.
+                let compiled = crate::backend::compile(&result)
+                    .expect("return-first i64 Cranelift native codegen");
+                assert_eq!(compiled.run(&[]), Ok(42), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn return_first_rejects_inline_begin_invalid_closers_and_nominal_methods() {
+        for source in [
+            "int <- main() begin return 42; end",
+            "int <- main()\nbegin return 42;\nend",
+            "int <- main()\nbegin\nreturn 42;",
+            "int <- main()\nbegin\nreturn 42;\nend..",
+            "int <- main()\nbegin\nreturn 42;\nend; garbage",
+            "int < - main()\nbegin\nreturn 42;\nend",
+            "int <- main() -> int\nbegin\nreturn 42;\nend",
+            "define actor Worker as\nint <- receive()\nbegin\nreturn 42;\nend\nend",
+        ] {
+            assert!(parse(source).is_err(), "should reject {source:?}");
+        }
+        assert!(parse("int <- main()\nbegin // opener\nreturn 42;\nend. // closer").is_ok());
+        // Comments may occur between header and opener, but line separation
+        // is mandatory. A vertical tab is whitespace, not a line break.
+        assert!(parse("int <- main() // header\r\nbegin // opener\r\n  return 42;\r\nend.").is_ok());
+        assert!(parse("int• main()\rbegin\r  return 42;\rend;").is_ok());
+        for invalid in [
+            "int <- main()\u{000b}begin\nreturn 42;\nend",
+            "int <- main()\nbegin\u{000b}return 42;\nend",
+            "int <- main() // no begin\nreturn 42;\nend",
+            "int <- main()\nbegin return 42;\nend",
+            "int <- main()\nbegin\nreturn 42;\nend. end",
+        ] {
+            assert!(parse(invalid).is_err(), "must reject boundary: {invalid:?}");
+        }
+    }
+    #[test]
+    fn return_first_and_scalar_immutable_locals_compose_before_jit() {
+        let accepted = parse(
+            "int <- main(value:int)\nbegin\n  const base=7;\n  val total=base*6+value;\n  return total;\nend.\n",
+        ).expect("return-first and immutable locals compose");
+        assert_eq!(accepted.locals.len(), 2);
+        let native = crate::backend::compile(&accepted).expect("compiled scalar locals");
+        assert_eq!(native.run(&[0]), Ok(42));
+
+        let denied = parse(
+            "fnc int• main(value:int)\nbegin\n  const invalid=value;\n  return invalid;\nend;\n",
+        ).expect_err("runtime parameter cannot initialize standalone const");
+        assert!(denied.contains("compile-time"), "{denied}");
+    }
+
 }
