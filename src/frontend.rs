@@ -769,8 +769,7 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
-        let mut header_end = self.pos;
-        if !self.take(Token::Punct(b')'))? {
+        if self.current != Token::Punct(b')') {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
@@ -830,21 +829,15 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            // pos is already one byte beyond the RParen token
-            // before the scanner consumes trivia for the next token.
-            self.expect(Token::Punct(b')'))?;
         }
-        // Start of the actual header terminator is recovered from the
-        // next significant token. Compare against a known region just after
-        // the name/parameters, not a type or comment's inner punctuation.
+        // Capture the exact ')' offset before advancing through trivia.
+        let header_end = self.pos;
+        self.expect(Token::Punct(b')'))?;
         if return_first {
             // When the current token is 'begin', pos points to its final byte.
             // Require a newline after the header and after the opener itself.
             let begin_start = self.pos.checked_sub(5).unwrap_or(0);
-            // The last ')' before begin closes the scalar parameter list.
-            let header_end = self.input[..begin_start]
-                .rfind(')').map_or(header_end, |at| at + 1);
-            if self.current != Token::Word("begin")
+             if self.current != Token::Word("begin")
                 || !self.input.as_bytes()[header_end..begin_start]
                     .iter().any(|b| *b == b'\n' || *b == b'\r')
             {
