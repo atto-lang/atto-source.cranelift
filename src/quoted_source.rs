@@ -20,7 +20,7 @@ impl Scanner<'_> {
             Some(b'\n') => 1,
             Some(0xc2) if self.bytes.get(i + 1) == Some(&0x85) => 2,
             Some(0xe2) if self.bytes.get(i + 1) == Some(&0x80) &&
-                matches!(self.bytes.get(i + 2), Some(0xa8 | 0xa9)) => 3,
+                matches!(self.bytes.get(i + 2).copied(), Some(0xa8 | 0xa9)) => 3,
             _ => 0,
         }
     }
