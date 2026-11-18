@@ -1,5 +1,6 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
 use crate::frontend::{Expr, Program};
+use crate::isolate::{IsolateHandle, OresVM};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::instructions::BlockArg;
 use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlagsData, Value, types};
@@ -10,6 +11,7 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
+    arity: usize,
     pub clif: String,
 }
 
@@ -157,12 +159,26 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
-        BitXor(x, y) => {
-            // Both operands are emitted in lexical order. bxor is an actual
-            // native Cranelift instruction, not a host-side reference oracle.
+        ShiftRight8(x) => {
+            // Signed Cranelift arithmetic shift of i64, preserving sign.
+            // The parser admits only the constant 8, matching ODB1 byte
+            // extraction for 0..i31::MAX without float narrowing.
+            let input = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let eight = b.ins().iconst(types::I64, 8);
+            b.ins().sshr(input, eight)
+        }
+        BitXor(x, y) | BitAnd(x, y) | BitOr(x, y) => {
+            // Native signed-i64 bitwise primitives, not host-side emulation.
+            // Emit and check each operand in lexical order before the bitwise
+            // instruction; a checked arithmetic failure cannot be skipped.
             let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
             let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
-            b.ins().bxor(lhs, rhs)
+            match e {
+                BitXor(_, _) => b.ins().bxor(lhs, rhs),
+                BitAnd(_, _) => b.ins().band(lhs, rhs),
+                BitOr(_, _) => b.ins().bor(lhs, rhs),
+                _ => unreachable!(),
+            }
         }
         NamedRem(x, y) | NamedMod(x, y) => {
             let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
@@ -219,12 +235,21 @@ fn emit(
     }
 }
 
+fn validate_ir(
+    func: &cranelift_codegen::ir::Function,
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+) -> Result<(), String> {
+    cranelift_codegen::verify_function(func, isa)
+        .map_err(|e| format!("CLIF verification failed: {e}"))
+}
+
 pub fn compile(source: &Program) -> Result<Compiled, String> {
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
     // Stable internal entry ABI: four i64 values + output pointer -> i32 status.
-    // 0 is success; 1 is *checked arithmetic overflow*, output unchanged.
+    // 0 succeeds; 1 is checked overflow, 2 divisor zero, 3 negative exponent.
+    // All failures leave output unchanged.
     for _ in 0..4 {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -268,16 +293,39 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     b.ins().return_(&[negative]);
     b.seal_all_blocks();
     b.finalize(module.target_config());
+    // Unconditional SSA, CFG, type and ABI verification before native emission.
+    // This must not depend on Cranelift's optional enable_verifier setting.
+    validate_ir(&ctx.func, module.isa())?;
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
         .map_err(|e| e.to_string())?;
     module.clear_context(&mut ctx);
     module.finalize_definitions().map_err(|e| e.to_string())?;
-    Ok(Compiled { module, id, clif })
+    Ok(Compiled {
+        module,
+        id,
+        arity: source.parameters.len(),
+        clif,
+    })
 }
 
 impl Compiled {
+    // This is a trusted, host-mediated tenant step, not a native pointer ABI.
+    // The same compiled machine code is reused for multiple IsolateVMs while
+    // mutable scalar state remains owned by the OresVM tenant host.
+    pub fn run_for_isolate(
+        &self,
+        vm: &OresVM,
+        handle: &IsolateHandle,
+        delta: i64,
+    ) -> Result<i64, String> {
+        if self.arity != 2 {
+            return Err("isolate scalar entry requires (old, delta)".into());
+        }
+        vm.invoke_trusted_step(handle, delta, |old, change| self.run(&[old, change]))
+    }
+
     pub fn run(&self, args: &[i64]) -> Result<i64, String> {
         if args.len() > 4 {
             return Err("too many runtime arguments".into());
@@ -303,6 +351,220 @@ impl Compiled {
             Err("negative integer exponent".into())
         } else {
             Err("invalid generated native status".into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_clif_is_rejected_before_native_codegen() {
+        let builder = JITBuilder::new(default_libcall_names()).unwrap();
+        let module = JITModule::new(builder);
+        let mut func = cranelift_codegen::ir::Function::new();
+        // A signature requiring an i64 return cannot legally return zero values.
+        func.signature.returns.push(AbiParam::new(types::I64));
+        let mut fbctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut func, &mut fbctx);
+        let entry = b.create_block();
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        b.ins().return_(&[]);
+        b.finalize(module.target_config());
+
+        let error = validate_ir(&func, module.isa())
+            .expect_err("malformed CLIF must fail independently of codegen settings");
+        assert!(error.starts_with("CLIF verification failed:"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod native_named_signed64_differential {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn native_composed_named_i64_matches_java_net_and_llvm_reference() {
+        // These expressions execute native code generated from guest source.
+        // The same guest compositions are expected by Java and .NET; the
+        // LLVM reference and C-generated WASM ABI tests check equivalent math.
+        for (expr, expected) in [
+            ("Integer.bitXor(Integer.mod(-9,4),Integer.pow(2,3))", 11_i64),
+            ("Integer.rem(Integer.bitXor(5,3),Integer.pow(2,2))", 2),
+            ("Integer.pow(Integer.rem(-9,4)+3,3)", 8),
+            ("Integer.mod(Integer.pow(-2,3),5)", 2),
+            ("Integer.pow(-2,63)", i64::MIN),
+            ("Integer.pow(-1,9223372036854775807)", -1),
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            let parsed = parse(&source).expect("composed typed i64 guest");
+            let compiled = compile(&parsed).expect("native Cranelift machine code");
+            assert_eq!(compiled.run(&[]), Ok(expected), "guest {source}");
+        }
+    }
+
+    #[test]
+    fn failed_native_arithmetic_never_publishes_partial_output() {
+        // Exercise the real generated entry ABI directly. Rejected guest
+        // calls must return an error status and leave the caller's output
+        // sentinel unchanged; no host-only evaluator can prove this.
+        type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
+        for (source, args, expected_status) in [
+            (
+                "fnc main(a:int,b:int):int{return Integer.rem(a,b);}",
+                [9_i64, 0, 0, 0],
+                2_i32,
+            ),
+            (
+                "fnc main(a:int,b:int):int{return Integer.mod(a+1,b);}",
+                [i64::MAX, 0, 0, 0],
+                1_i32,
+            ),
+            (
+                "fnc main(a:int,b:int):int{return Integer.pow(a,b);}",
+                [2, 63, 0, 0],
+                1_i32,
+            ),
+            (
+                "fnc main(a:int,b:int):int{return Integer.pow(a,b);}",
+                [2, -1, 0, 0],
+                3_i32,
+            ),
+        ] {
+            let parsed = parse(source).expect("typed scalar expression");
+            let native = compile(&parsed).expect("actual native code");
+            let function: Entry =
+                unsafe { std::mem::transmute(native.module.get_finalized_function(native.id)) };
+            let mut output = 0x1122_3344_5566_7788_i64;
+            let status = unsafe { function(args[0], args[1], args[2], args[3], &mut output) };
+            assert_eq!(status, expected_status, "error status for {source}");
+            assert_eq!(
+                output, 0x1122_3344_5566_7788_i64,
+                "failed native arithmetic published a partial value: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_dynamic_rem_mod_match_independent_i128_oracle() {
+        // Actual compiled Cranelift entry points, with dynamic signed64
+        // numerator AND denominator. The expected results are calculated
+        // with wider signed i128, not the frontend or a production helper.
+        let divisors = [i64::MIN, i64::MIN + 1, -17, -4, -1, 0, 1, 3, 17, i64::MAX];
+        let numerators = [
+            i64::MIN,
+            i64::MIN + 1,
+            -i64::MAX,
+            -99,
+            -9,
+            -1,
+            0,
+            1,
+            9,
+            99,
+            i64::MAX - 1,
+            i64::MAX,
+        ];
+        for op in ["rem", "mod"] {
+            let source = format!("fnc main(a:int,b:int):int{{return Integer.{op}(a,b);}}");
+            let program = parse(&source).expect("dynamic named arithmetic parses");
+            let compiled = compile(&program).expect("native named arithmetic compiles");
+            for divisor in divisors {
+                let mut seed = 0x9e37_79b9_7f4a_7c15_u64 ^ (divisor as u64);
+                let random = (0..128).map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as i64
+                });
+                for numerator in numerators.into_iter().chain(random) {
+                    let actual = compiled.run(&[numerator, divisor]);
+                    if divisor == 0 {
+                        assert_eq!(
+                            actual.as_ref().map(|_| ()).map_err(String::as_str),
+                            Err("integer divisor zero"),
+                            "{op}({numerator},{divisor})"
+                        );
+                        continue;
+                    }
+                    let rem = (numerator as i128) % (divisor as i128);
+                    let expected = if op == "mod" && rem < 0 {
+                        rem + (divisor as i128).abs()
+                    } else {
+                        rem
+                    };
+                    let expected = i64::try_from(expected).expect("signed64 result");
+                    assert_eq!(
+                        actual,
+                        Ok(expected),
+                        "Cranelift native {op}({numerator},{divisor})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_pow_matches_checked_i128_oracle_and_error_precedence() {
+        // A finite bounded matrix includes nonnegative exponents, negative
+        // exponents, exact MIN, and early checked overflow. This executes
+        // generated pow control flow, not the frontend-only evaluator.
+        let program =
+            parse("fnc main(base:int,exponent:int):int{return Integer.pow(base,exponent);}")
+                .expect("named pow source");
+        let compiled = compile(&program).expect("native pow JIT");
+        for base in [i64::MIN, -17, -3, -2, -1, 0, 1, 2, 3, 17, i64::MAX] {
+            for exponent in [-3_i64, -1, 0, 1, 2, 3, 5, 16, 31, 63, 64, 127] {
+                let actual = compiled.run(&[base, exponent]);
+                if exponent < 0 {
+                    assert_eq!(
+                        actual.as_ref().map(|_| ()).map_err(String::as_str),
+                        Err("negative integer exponent"),
+                        "native pow({base},{exponent})"
+                    );
+                    continue;
+                }
+                let mut expected = 1_i128;
+                let mut failure = false;
+                for _ in 0..exponent {
+                    // Stop when the signed64 result is no longer representable:
+                    // continue squaring would not add any relevant evidence.
+                    if let Some(result) = expected.checked_mul(base as i128) {
+                        if result < i64::MIN as i128 || result > i64::MAX as i128 {
+                            failure = true;
+                            break;
+                        }
+                        expected = result;
+                    } else {
+                        failure = true;
+                        break;
+                    }
+                }
+                if failure {
+                    assert_eq!(
+                        actual.as_ref().map(|_| ()).map_err(String::as_str),
+                        Err("i64 arithmetic overflow"),
+                        "native pow({base},{exponent})"
+                    );
+                } else {
+                    assert_eq!(actual, Ok(expected as i64), "native pow({base},{exponent})");
+                }
+            }
+        }
+        for (base, exponent, expected) in [
+            (0, i64::MAX, 0),
+            (1, i64::MAX, 1),
+            (-1, i64::MAX, -1),
+            (-1, i64::MAX - 1, 1),
+            (-2, 63, i64::MIN),
+        ] {
+            assert_eq!(
+                compiled.run(&[base, exponent]),
+                Ok(expected),
+                "native large exponent pow({base},{exponent})"
+            );
         }
     }
 }
