@@ -996,17 +996,28 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
     Ok(())
 }
 
+/// Admit source bytes only when visual order and line breaks cannot disagree
+/// between editor display and the actual lexer. Check ignored comments too.
+fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
+    for (offset, ch) in text.char_indices() {
+        let cp = ch as u32;
+        if matches!(cp, 0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029)
+            || (0x202a..=0x202e).contains(&cp)
+            || (0x2066..=0x2069).contains(&cp)
+        {
+            return Err(format!(
+                "source contains bidirectional Unicode control; source_unicode_control at byte {offset}: U+{cp:04X}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
-    // Reject bidirectional source-format controls in original UTF-8 text,
-    // even inside ignored comments, before tokenizing or emitting CLIF.
-    if text.chars().any(|c| matches!(c,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' |
-        '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) {
-        return Err("source contains bidirectional Unicode control".into());
-    }
+    reject_source_unicode_controls(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -1019,6 +1030,27 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_deceptive_unicode_controls_before_comment_scanning() {
+        let baseline = "fnc main():int{return 42;}";
+        for cp in [0x0085, 0x061c, 0x200e, 0x200f, 0x2028, 0x2029,
+                   0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+                   0x2066, 0x2067, 0x2068, 0x2069] {
+            let control = char::from_u32(cp).unwrap();
+            for source in [
+                format!("/* hidden{control} */ {baseline}"),
+                format!("// hidden{control}\n{baseline}"),
+                format!("{baseline} // {control}"),
+            ] {
+                let offset = source.find(control).unwrap();
+                let error = parse(&source).expect_err("forbidden source control admitted");
+                assert!(error.contains(&format!("source_unicode_control at byte {offset}")),
+                    "wrong diagnostic for U+{cp:04X}: {error}");
+            }
+        }
+        assert!(parse("/* café */ fnc main():int{return 42;}").is_ok());
+    }
+
     #[test]
     fn pinned_java_v1_reserved_parameter_identifiers_fail_closed() {
         assert_eq!(JAVA_V1_RESERVED_PARAMETER_NAMES.len(), 93);
