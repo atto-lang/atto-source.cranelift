@@ -187,6 +187,8 @@ struct Parser<'a> {
     input: &'a str,
     pos: usize,
     current: Token<'a>,
+    // Byte offset of the currently lexed token, after trivia/comments.
+    current_start: usize,
     nodes: usize,
     parameters: Vec<String>,
 }
@@ -203,6 +205,7 @@ impl<'a> Parser<'a> {
             input,
             pos: 0,
             current: Token::End,
+            current_start: 0,
             nodes: 0,
             parameters: Vec::new(),
         };
@@ -252,10 +255,12 @@ impl<'a> Parser<'a> {
             break;
         }
         if self.pos == b.len() {
+            self.current_start = self.pos;
             self.current = Token::End;
             return Ok(());
         }
         let start = self.pos;
+        self.current_start = start;
         let first = b[self.pos];
         self.pos += 1;
         // Stage-0 cannot bind injected state lifetimes or borrow authority.
@@ -834,19 +839,24 @@ impl<'a> Parser<'a> {
         let header_end = self.pos;
         self.expect(Token::Punct(b')'))?;
         if return_first {
-            // When the current token is 'begin', pos points to its final byte.
-            // Require a newline after the header and after the opener itself.
-            let begin_start = self.pos.checked_sub(5).unwrap_or(0);
-             if self.current != Token::Word("begin")
+            // Check exact lexer token boundaries, not cursor arithmetic or a
+            // guessed keyword width. Trivia can contain comments and CRLF.
+            let begin_start = self.current_start;
+            if self.current != Token::Word("begin")
+                || begin_start < header_end
                 || !self.input.as_bytes()[header_end..begin_start]
-                    .iter().any(|b| *b == b'\n' || *b == b'\r')
+                    .iter()
+                    .any(|b| *b == b'\n' || *b == b'\r')
             {
                 return Err("return-first declaration requires begin on the next line".into());
             }
             let begin_end = self.pos;
             self.expect(Token::Word("begin"))?;
-            if !self.input.as_bytes()[begin_end..self.pos]
-                .iter().any(|b| *b == b'\n' || *b == b'\r')
+            let next_start = self.current_start;
+            if next_start < begin_end
+                || !self.input.as_bytes()[begin_end..next_start]
+                    .iter()
+                    .any(|b| *b == b'\n' || *b == b'\r')
             {
                 return Err("begin must be alone on its line".into());
             }
@@ -1982,5 +1992,18 @@ mod tests {
             assert!(parse(source).is_err(), "should reject {source:?}");
         }
         assert!(parse("int <- main()\nbegin // opener\nreturn 42;\nend. // closer").is_ok());
+        // Comments may occur between header and opener, but line separation
+        // is mandatory. A vertical tab is whitespace, not a line break.
+        assert!(parse("int <- main() // header\r\nbegin // opener\r\n  return 42;\r\nend.").is_ok());
+        assert!(parse("int• main()\rbegin\r  return 42;\rend;").is_ok());
+        for invalid in [
+            "int <- main()\u{000b}begin\nreturn 42;\nend",
+            "int <- main()\nbegin\u{000b}return 42;\nend",
+            "int <- main() // no begin\nreturn 42;\nend",
+            "int <- main()\nbegin return 42;\nend",
+            "int <- main()\nbegin\nreturn 42;\nend. end",
+        ] {
+            assert!(parse(invalid).is_err(), "must reject boundary: {invalid:?}");
+        }
     }
 }
