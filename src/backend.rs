@@ -633,7 +633,7 @@ mod local_binding_native_invariants {
             locals: vec![Expr::Local(0)],
             result: Expr::Literal(42),
         };
-        assert!(compile(&source).unwrap_err().contains("invalid or forward local reference"));
+        assert!(compile(&source).err().expect("malformed Program must fail").contains("invalid or forward local reference"));
     }
 
     #[test]

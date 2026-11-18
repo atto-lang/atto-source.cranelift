@@ -1105,6 +1105,8 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
             | Expr::BitXor(left, right)
+            | Expr::BitAnd(left, right)
+            | Expr::BitOr(left, right)
             | Expr::NamedRem(left, right)
             | Expr::NamedMod(left, right)
             | Expr::NamedPow(left, right) => {
