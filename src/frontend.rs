@@ -781,6 +781,8 @@ impl<'a> Parser<'a> {
             return Err(format!("unexpected token at byte {at}"));
         }
         self.expect(Token::End)?;
+        // Bound the constructed left-associative AST before recursive CLIF lowering.
+        validate_ast_depth(&result)?;
         Ok(Program {
             parameters: self.parameters,
             result,
@@ -964,6 +966,34 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     }
 
     false
+}
+
+// The parser recursion budget does not bound a long left-associative chain.
+// This bounded, iterative traversal rejects an oversized constructed AST.
+fn validate_ast_depth(root: &Expr) -> Result<(), String> {
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, level)) = pending.pop() {
+        if level > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        match expr {
+            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+                pending.push((inner.as_ref(), level + 1));
+            }
+            Expr::Add(left, right)
+            | Expr::Sub(left, right)
+            | Expr::Mul(left, right)
+            | Expr::BitXor(left, right)
+            | Expr::NamedRem(left, right)
+            | Expr::NamedMod(left, right)
+            | Expr::NamedPow(left, right) => {
+                pending.push((left.as_ref(), level + 1));
+                pending.push((right.as_ref(), level + 1));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {

@@ -40,6 +40,8 @@ native `bxor` instruction; caret operators remain rejected. Named `Integer.rem(a
 Both return syntax variants `:int` and `->int` are accepted. Precedence and
 arithmetic overflow match the checked-i64 scalar contract, not floating
 point division. Source budget 1 MiB; AST 4096 nodes; nesting 128.
+The 128-level bound applies to the constructed AST, including left-associative
+operator chains, not only parser recursion. Over-depth input is denied before CLIF.
 
 Rejected: **everything else**, including imports, helper functions, user-defined calls,
 classes, actors, heaps, ownership, recursion, async, control flow, division, operator remainder expressions,
