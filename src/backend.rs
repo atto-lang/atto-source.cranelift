@@ -243,7 +243,7 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
-pub fn compile(source: &Program) -> Result<Compiled, String> {
+fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context, cranelift_module::FuncId), String> {
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
@@ -296,6 +296,18 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     // Unconditional SSA, CFG, type and ABI verification before native emission.
     // This must not depend on Cranelift's optional enable_verifier setting.
     validate_ir(&ctx.func, module.isa())?;
+    Ok((module, ctx, id))
+}
+
+// Constructs and verifies the same CLIF as the native compiler without
+// define_function, finalize_definitions, or executable-code allocation.
+pub fn render_ir(source: &Program) -> Result<String, String> {
+    let (_module, ctx, _id) = prepare_ir(source)?;
+    Ok(ctx.func.display().to_string())
+}
+
+pub fn compile(source: &Program) -> Result<Compiled, String> {
+    let (mut module, mut ctx, id) = prepare_ir(source)?;
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -358,6 +370,20 @@ impl Compiled {
 #[cfg(test)]
 mod verification_tests {
     use super::*;
+
+    #[test]
+    fn ir_render_does_not_require_native_finalization_and_matches_compiled_clif() {
+        let parsed = crate::frontend::parse(
+            "fnc main(a:int):int{return Integer.bitXor(a+40,2);}"
+        ).expect("valid typed scalar");
+        let emitted_only = render_ir(&parsed).expect("verified non-executable CLIF");
+        assert!(emitted_only.contains("function"));
+        let native = compile(&parsed).expect("Cranelift executable output");
+        assert_eq!(emitted_only, native.clif);
+        assert_eq!(native.run(&[0]), Ok(42));
+        let bad = crate::frontend::parse("fnc main():int{return 5 ^ 3;}");
+        assert!(bad.is_err(), "unsupported operator must fail before IR");
+    }
 
     #[test]
     fn malformed_clif_is_rejected_before_native_codegen() {
