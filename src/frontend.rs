@@ -1052,6 +1052,8 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
             | Expr::BitXor(left, right)
+            | Expr::BitAnd(left, right)
+            | Expr::BitOr(left, right)
             | Expr::NamedRem(left, right)
             | Expr::NamedMod(left, right)
             | Expr::NamedPow(left, right) => {
@@ -1107,6 +1109,23 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_bitand_bitor_depth_is_checked_like_all_other_expr_variants() {
+        for (op, expected) in [("bitAnd", 2_i64), ("bitOr", 47_i64)] {
+            let valid = format!("fnc main(a:int):int{{return Integer.{op}(a,42);}}");
+            let parsed = parse(&valid).expect("named bitwise scalar must remain admitted");
+            assert_eq!(eval(&parsed.result, &[7]), Ok(expected));
+            let mut nested = String::from("0");
+            for _ in 0..(MAX_DEPTH + 5) {
+                nested = format!("Integer.{op}({nested},1)");
+            }
+            // May be caught either by the parser's own limit or the iterative
+            // constructed-AST gate; it must never enter recursive native IR.
+            let invalid = format!("fnc main():int{{return {nested};}}");
+            assert!(parse(&invalid).is_err(), "nested {op} expression bypassed AST depth budget");
+        }
+    }
+
     #[test]
     fn rejects_terminal_control_in_comments_and_literals_before_lowering() {
         for control in ['\u{001b}', '\u{007f}'] {
