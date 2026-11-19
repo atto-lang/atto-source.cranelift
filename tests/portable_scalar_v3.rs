@@ -14,7 +14,7 @@ impl Fixture {
     fn new() -> Self {
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
         let directory =
-            std::env::temp_dir().join(format!("orescranelift-v3-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("atto-cranelift-v3-{}-{nonce}", std::process::id()));
         fs::create_dir(&directory).expect("cannot create isolated fixture directory");
         Self(directory)
     }
@@ -33,7 +33,7 @@ fn run_one(fixture: &Fixture, id: &str, expression: &str) -> std::process::Outpu
         MANIFEST.contains(&binding),
         "manifest ID/expression binding drift for {id}"
     );
-    let path = fixture.0.join(format!("{id}.ores"));
+    let path = fixture.0.join(format!("{id}.atto"));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
