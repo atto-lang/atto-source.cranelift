@@ -69,7 +69,7 @@ fn check_pinned_contract(case: &Case) {
     assert_eq!(MANIFEST.matches(marker.as_str()).count(), 1, "missing or duplicated contract id");
     let start = MANIFEST.find(marker.as_str()).expect("case ID must exist");
     let slice = &MANIFEST[start..];
-    let end = slice.find("\n    },").expect("missing JSON case terminator");
+    let end = slice.find("\n    }").expect("missing JSON case terminator");
     let record = &slice[..end];
     assert!(record.contains(&format!("\"kind\": \"{}\"", case.kind)), "kind drift: {}", case.id);
     assert!(record.contains(&format!("\"source\": {}", case.json_source)), "source drift: {}", case.id);
@@ -107,4 +107,15 @@ fn scalar_positive_control_and_proposed_blocks_ranges_reject_before_jit() {
             assert!(!diagnostic.contains("panicked at"), "{} panicked rather than rejecting: {}", case.id, diagnostic);
         }
     }
+}
+
+#[test]
+fn final_manifest_case_is_pinned_without_a_trailing_comma() {
+    // Regression: the last object in JSON arrays ends in "}" not "},".
+    let final_case = UNSUPPORTED.last().expect("nonempty contract inventory");
+    assert_eq!(final_case.id, "range_bounds_eval_once");
+    check_pinned_contract(final_case);
+    let marker = format!("\"id\": \"{}\"", final_case.id);
+    let tail = &MANIFEST[MANIFEST.find(&marker).unwrap()..];
+    assert!(tail.contains("\n    }\n  ],"), "terminal JSON case must end before the cases array");
 }
