@@ -807,11 +807,22 @@ impl<'a> Parser<'a> {
             }
             self.expect(Token::Punct(b')'))?;
         }
-        if !self.take(Token::Punct(b':'))? {
+        // Scalar entry has one proven result type: signed i64. `infer`
+        // therefore infers i64 here; it does not admit nominal types or
+        // general type inference. All supported return spellings are equivalent.
+        let colon_form = self.take(Token::Punct(b':'))?;
+        if !colon_form {
             self.expect(Token::Punct(b'-'))?;
             self.expect(Token::Punct(b'>'))?;
         }
-        self.expect(Token::Word("int"))?;
+        if !self.take(Token::Word("infer"))? {
+            self.expect(Token::Word("int"))?;
+        }
+        // Allow the explicit return/body separator only for colon-form
+        // declarations: `: int -> { ... }` and `: infer -> { ... }`.
+        if colon_form && self.take(Token::Punct(b'-'))? {
+            self.expect(Token::Punct(b'>'))?;
+        }
         self.expect(Token::Punct(b'{'))?;
         if self.current == Token::Word("critical")
             || self.current == Token::Word("try")
