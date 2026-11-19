@@ -139,4 +139,18 @@ for selector in --stage --ignored --exclude-standard; do
   pass=$((pass+1))
 done
 rm -rf "$shim"
+# A parent process must not select a forged index, worktree or object store.
+for override in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG_COUNT \
+  GIT_CONFIG_PARAMETERS; do
+  output="$(env "$override=forged" bash "$verify" "$head" 2>&1)" && {
+    echo "FAIL: $override override was admitted" >&2
+    exit 1
+  }
+  [[ "$output" == *"Git environment override forbidden: $override"* ]] || {
+    echo "FAIL: wrong rejection for $override: $output" >&2
+    exit 1
+  }
+  pass=$((pass+1))
+done
 printf 'PASS: %s source-integrity self-checks (1 positive, %s negative)\n' "$pass" "$((pass-1))"

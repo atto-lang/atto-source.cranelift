@@ -4,6 +4,13 @@ set -euo pipefail
 fail() { printf 'SOURCE_INTEGRITY_FAIL: %s\n' "$*" >&2; exit 1; }
 expected="${1:-}"
 [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || fail 'expected SHA must be 40 lowercase hex characters'
+# Do not let caller-supplied Git plumbing redirect this trust check to a
+# substitute index, worktree, object store or injected configuration.
+for git_override in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG_COUNT \
+  GIT_CONFIG_PARAMETERS; do
+  [[ -z "${!git_override-}" ]] || fail "Git environment override forbidden: $git_override"
+done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail 'not a Git worktree'
 root="$(git rev-parse --show-toplevel)"
 [[ "$(pwd -P)" == "$(cd "$root" && pwd -P)" ]] || fail 'must run at repository root'
