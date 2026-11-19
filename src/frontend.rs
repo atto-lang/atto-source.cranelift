@@ -449,7 +449,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.".contains(&first) {
+        } else if b"()+-*{}[];:,>.^".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -610,6 +610,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
+                Token::Punct(b'^') => (0, 1, b'^'),
                 Token::Punct(b'>') => (0, 1, b'>'),
                 _ => break,
             };
@@ -625,6 +626,7 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'^' => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -1565,8 +1567,22 @@ mod tests {
         assert_eq!(eval(&edge.result, &[]), Ok(-1));
     }
     #[test]
+    fn infix_integer_bitxor_matches_spec_and_rejects_boolean_xor_on_int() {
+        for (source, value) in [
+            ("fnc main():int{return 11 ^ 4;}", 15i64),
+            ("fnc main():int{return 5 + 6 ^ 4;}", 15),
+            ("fnc main():int{return -1 ^ 9223372036854775807;}", i64::MIN),
+        ] {
+            let parsed = parse(source).expect("int XOR source must compile");
+            assert_eq!(eval(&parsed.result, &[]), Ok(value));
+        }
+        assert!(parse("fnc main():int{return 11 ^^ 4;}").is_err());
+        assert!(parse("fnc main():int{return 11 % 4;}").is_err());
+    }
+    #[test]
     fn removed_remainder_operator_is_rejected_before_lowering() {
-        // The language contract removed %, ^ and ^^. The tokenizer must
+        // The historical scalar-v3 contract removed %, ^ and ^^; the current
+        // Atto bitwise-v1 contract reinstates ^ as integer XOR. The tokenizer must
         // reject all forms of % rather than accepting a restricted subset.
         for source in [
             "fnc main():int{return -7%3;}",
