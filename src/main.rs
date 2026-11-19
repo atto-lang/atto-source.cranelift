@@ -14,6 +14,65 @@ mod supervisor_stop;
 pub mod uhl1;
 use std::io::Read;
 
+// Resolve source paths through openat directory descriptors with O_NOFOLLOW at
+// EVERY component, not just the leaf. A symlink swap between path validation
+// and open must not redirect compiler input outside the expected tree.
+#[cfg(unix)]
+fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut directory = std::fs::File::open(if path.is_absolute() { "/" } else { "." })
+        .map_err(|e| format!("source root: {e}"))?;
+    let mut segments = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => segments.push(name),
+            // No ambiguous escape or normalization through ".." is accepted.
+            Component::ParentDir | Component::Prefix(_) =>
+                return Err("source parent traversal is unsupported".into()),
+        }
+    }
+    if segments.is_empty() {
+        return Err("source file path is empty".into());
+    }
+
+    for (index, segment) in segments.iter().enumerate() {
+        let name = CString::new(segment.as_bytes())
+            .map_err(|_| "source path contains NUL")?;
+        let final_component = index + 1 == segments.len();
+        let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW
+            | if final_component { libc::O_NONBLOCK } else { libc::O_DIRECTORY };
+        // SAFETY: directory is an owned live descriptor; name is a valid NUL-
+        // terminated segment. File::from_raw_fd takes ownership of successful fd.
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(format!("source path component denied: {}", std::io::Error::last_os_error()));
+        }
+        directory = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    if !directory.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("source must be a regular file".into());
+    }
+    Ok(directory)
+}
+
+#[cfg(not(unix))]
+fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    if std::fs::symlink_metadata(path).map_err(|e| e.to_string())?
+        .file_type().is_symlink() {
+        return Err("source symlinks forbidden".into());
+    }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("source must be a regular file".into());
+    }
+    Ok(file)
+}
+
 fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
@@ -60,31 +119,7 @@ fn run() -> Result<(), String> {
                 .map_err(|_| "invalid i64 argument".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // Nonblocking admission is essential before descriptor-level validation:
-    // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Reject a symlink leaf to prevent a caller-controlled source path from
-        // resolving to a different file (or a special device) at open time.
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    }
-    // Reject a final-component symlink before opening. On Unix O_NOFOLLOW
-    // closes the check/open race, including a symlink swapped in afterward.
-    // Intermediate path-component symlinks remain outside this boundary.
-    if std::fs::symlink_metadata(&path)
-        .map_err(|e| e.to_string())?
-        .file_type()
-        .is_symlink()
-    {
-        return Err("source must be a regular file (symlinks forbidden)".into());
-    }
-    let file = options.open(&path).map_err(|e| e.to_string())?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-        return Err("source must be a regular file".into());
-    }
+    let file = open_source_file(&path)?;
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1)
         .read_to_end(&mut bytes)
