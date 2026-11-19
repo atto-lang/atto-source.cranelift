@@ -77,7 +77,7 @@ fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
     let mode = argv.next().ok_or(
-        "usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+        "usage: orescranelift run|ir|isolate|check <file.atto|file.ores> [i64 args...] or hotload-capabilities",
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
@@ -93,8 +93,8 @@ fn run() -> Result<(), String> {
     if mode == "aot" || mode == "full-aot" {
         return Err("full AOT object/executable emission is not implemented by the Cranelift scalar backend; refusing JIT fallback".into());
     }
-    if mode != "run" && mode != "ir" && mode != "isolate" {
-        return Err("usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
+    if mode != "run" && mode != "ir" && mode != "isolate" && mode != "check" {
+        return Err("usage: orescranelift run|ir|isolate|check <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
@@ -102,8 +102,8 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if mode == "ir" && !supplied.is_empty() {
-        return Err("ir mode does not accept arguments".into());
+    if (mode == "ir" || mode == "check") && !supplied.is_empty() {
+        return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
@@ -129,6 +129,11 @@ fn run() -> Result<(), String> {
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
     let parsed = frontend::parse(source)?;
+    // Parser-only admission: never create a JIT module, write CLIF or execute.
+    // A successful check is NOT a native compilation or guest-execution receipt.
+    if mode == "check" {
+        return Ok(());
+    }
     if mode == "run" && values.len() != parsed.parameters.len() {
         return Err("runtime argument count mismatch".into());
     }
