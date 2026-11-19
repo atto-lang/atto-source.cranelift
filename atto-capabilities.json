@@ -2,11 +2,12 @@
   "schema": "atto.repository-capabilities.v1",
   "repository": "atto-lang/atto-source.cranelift",
   "role": "compiler",
-  "source_state": "scaffold",
+  "source_state": "implementation",
   "feature_status": {
     "source_compilation": "not_executed",
     "guest_execution": "not_executed",
-    "actor_isolation": "not_executed"
+    "actor_isolation": "not_executed",
+    "native_scalar_jit": "not_executed"
   },
   "certification": "NOT_CERTIFIED",
   "evidence": []
