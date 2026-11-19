@@ -176,4 +176,31 @@ for permission in o+w g+w; do
     g+w) chmod g-w nested ;;
   esac
 done
+# A file rewritten immediately AFTER its first successful physical hash must
+# still be denied. A one-shot Git wrapper reproduces the mid-audit race.
+shim="$(mktemp -d)"
+cat > "$shim/git" <<'GIT_SHIM'
+#!/usr/bin/env bash
+if [[ "$1" == hash-object && " $* " == *" tracked.txt "* && ! -e "$TAMPER_ONCE" ]]; then
+  touch "$TAMPER_ONCE"
+  "$REAL_GIT" "$@"
+  printf 'mutated after initial hash\n' > tracked.txt
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+GIT_SHIM
+chmod +x "$shim/git"
+real_git="$(command -v git)"
+output="$(env REAL_GIT="$real_git" TAMPER_ONCE="$shim/once" PATH="$shim:$PATH" \
+  bash "$verify" "$head" 2>&1)" && {
+  echo 'FAIL: mid-audit source mutation was admitted' >&2
+  exit 1
+}
+[[ "$output" == *'physical source changed during verification'* ]] || {
+  echo "FAIL: unexpected mid-audit mutation diagnostic: $output" >&2
+  exit 1
+}
+pass=$((pass+1))
+rm -rf "$shim"
+git reset -q --hard HEAD
 printf 'PASS: %s source-integrity self-checks (1 positive, %s negative)\n' "$pass" "$((pass-1))"
