@@ -102,6 +102,11 @@ fn run() -> Result<(), String> {
             "isolate mode expects a two-argument (old, delta) entry and two tenant deltas".into(),
         );
     }
+    // IR inspection must not allocate/finalize executable JIT memory.
+    if mode == "ir" {
+        print!("{}", backend::render_ir(&parsed)?);
+        return Ok(());
+    }
     let compiled = backend::compile(&parsed)?;
     if mode == "isolate" {
         // Experimental *trusted* native scalar VM entry. The source must
@@ -146,8 +151,6 @@ fn run() -> Result<(), String> {
         vm.complete_shutdown(&b)?;
         vm.destroy(&b)?;
         println!("{left} {right}");
-    } else if mode == "ir" {
-        print!("{}", compiled.clif);
     } else {
         println!("{}", compiled.run(&values)?);
     }
