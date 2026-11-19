@@ -46,6 +46,11 @@ while IFS= read -r -d '' entry; do
   if [[ "$parent" != "$path" ]]; then
     while :; do
       [[ -d "$parent" && ! -L "$parent" ]] || fail "symlinked or missing tracked ancestor: $parent ($path)"
+      # A writable ancestor lets another principal replace source files after
+      # verification, even when each current leaf is immutable and byte-exact.
+      ancestor_mode="$(stat -c %a -- "$parent" 2>/dev/null || stat -f %Lp "$parent" 2>/dev/null)" || fail "cannot inspect source directory permissions: $parent"
+      [[ "$ancestor_mode" =~ ^[0-7]{3,4}$ ]] || fail "invalid source directory permissions: $parent"
+      (( (8#$ancestor_mode & 8#0022) == 0 )) || fail "writable tracked source directory: $parent"
       [[ "$parent" == */* ]] || break
       parent="${parent%/*}"
     done
