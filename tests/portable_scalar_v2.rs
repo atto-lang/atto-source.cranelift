@@ -131,7 +131,8 @@ fn portable_scalar_v2_native_signed_i64_values() {
 fn portable_scalar_v2_compiler_negative_sources() {
     for (id, expression) in [
         ("removed-percent", "7 % 3"),
-        ("removed-caret", "7 ^ 3"),
+        // The historical removed-caret negative is superseded: ^ is now
+        // defined as integer XOR by the canonical bitwise language contract.
         ("removed-double-caret", "7 ^^ 3"),
         ("out-of-range-positive", "9223372036854775808"),
     ] {
