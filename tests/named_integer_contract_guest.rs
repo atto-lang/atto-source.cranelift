@@ -75,8 +75,8 @@ impl Drop for Fixture {
 
 fn contract_case(case: &Case) {
     let marker = format!("\"id\": \"{}\"", case.id);
-    assert_eq!(CONTRACT.matches(&marker).count(), 1, "missing or duplicate contract ID");
-    let start = CONTRACT.find(&marker).expect("id exists");
+    assert_eq!(CONTRACT.matches(marker.as_str()).count(), 1, "missing or duplicate contract ID");
+    let start = CONTRACT.find(marker.as_str()).expect("id exists");
     let after = &CONTRACT[start..];
     let end = after.find("\n    }").expect("case boundary not found");
     let record = &after[..end];
@@ -85,13 +85,13 @@ fn contract_case(case: &Case) {
         ("left", case.left),
         ("right", case.right),
     ] {
-        assert!(record.contains(&format!("\"{name}\": \"{value}\"")), "contract drift at {}.{name}", case.id);
+        assert!(record.contains(format!("\"{name}\": \"{value}\"").as_str()), "contract drift at {}.{name}", case.id);
     }
     let expectation = match case.expected {
         Expected::Value(value) => format!("\"value\": \"{value}\""),
         Expected::Error(error) => format!("\"error\": \"{error}\""),
     };
-    assert!(record.contains(&expectation), "contract result drift at {}", case.id);
+    assert!(record.contains(expectation.as_str()), "contract result drift at {}", case.id);
 }
 
 #[test]
