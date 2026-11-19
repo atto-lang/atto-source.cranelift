@@ -166,4 +166,14 @@ for permission in o+w g+w u+s g+s +t; do
     +t) chmod -t tracked.txt ;;
   esac
 done
+# Directory mode is absent from Git tree objects: a writable tracked-path
+# ancestor is a checkout replacement boundary, even if tracked leaves match.
+for permission in o+w g+w; do
+  chmod "$permission" nested
+  reject "writable tracked source ancestor: $permission"
+  case "$permission" in
+    o+w) chmod o-w nested ;;
+    g+w) chmod g-w nested ;;
+  esac
+done
 printf 'PASS: %s source-integrity self-checks (1 positive, %s negative)\n' "$pass" "$((pass-1))"
