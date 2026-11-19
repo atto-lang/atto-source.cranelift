@@ -153,4 +153,17 @@ for override in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
   }
   pass=$((pass+1))
 done
+# Git tracks an executable bit only: exact bytes and index state do not
+# authorize world/group writable or privileged physical checkout modes.
+for permission in o+w g+w u+s g+s +t; do
+  chmod "$permission" tracked.txt
+  reject "unsafe tracked file permissions: $permission"
+  case "$permission" in
+    o+w) chmod o-w tracked.txt ;;
+    g+w) chmod g-w tracked.txt ;;
+    u+s) chmod u-s tracked.txt ;;
+    g+s) chmod g-s tracked.txt ;;
+    +t) chmod -t tracked.txt ;;
+  esac
+done
 printf 'PASS: %s source-integrity self-checks (1 positive, %s negative)\n' "$pass" "$((pass-1))"
