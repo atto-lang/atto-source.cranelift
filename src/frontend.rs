@@ -607,11 +607,13 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
-                Token::Punct(b'+') => (1, 2, b'+'),
-                Token::Punct(b'-') => (1, 2, b'-'),
-                Token::Punct(b'*') => (3, 4, b'*'),
+                // Low to high: XOR, shift, additive, multiplicative.
+                // Signed >> 8 is the stage-0 slice of the full shift grammar.
                 Token::Punct(b'^') => (0, 1, b'^'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                Token::Punct(b'>') => (1, 2, b'>'),
+                Token::Punct(b'+') => (2, 3, b'+'),
+                Token::Punct(b'-') => (2, 3, b'-'),
+                Token::Punct(b'*') => (4, 5, b'*'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -1571,6 +1573,7 @@ mod tests {
         for (source, value) in [
             ("fnc main():int{return 11 ^ 4;}", 15i64),
             ("fnc main():int{return 5 + 6 ^ 4;}", 15),
+            ("fnc main():int{return 1 ^ 256 >> 8;}", 0),
             ("fnc main():int{return -1 ^ 9223372036854775807;}", i64::MIN),
         ] {
             let parsed = parse(source).expect("int XOR source must compile");
