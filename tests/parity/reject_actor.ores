@@ -1,0 +1,4 @@
+define actor Probe as
+  receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 1; }
