@@ -289,7 +289,7 @@ impl<'a> Parser<'a> {
             // operator before scalar AST admission, including borrow! mut.
             if matches!(
                 self.current,
-                Token::Word("copy" | "take" | "borrow" | "share")
+                Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
             ) && b.get(self.pos) == Some(&b'!') {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
             }
@@ -1109,6 +1109,29 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pin_and_drop_bang_are_owned_operations_not_scalar_intrinsics() {
+        for operation in ["pin!", "drop!", "copy!!"] {
+            for expression in [
+                format!("{operation} value"),
+                format!("{operation}(value)"),
+            ] {
+                let source = format!("fnc main(value:int):int{{return {expression};}}");
+                let error = parse(&source).expect_err("unsupported owner instruction entered scalar IR");
+                assert!(
+                    error.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
+                    "wrong error for {source}: {error}"
+                );
+            }
+        }
+        // The bare words are not keywords. Only the bang operators require
+        // typed ownership and a proven native lowering.
+        let scalar = parse(
+            "fnc main(pin:int,drop:int):int{return pin+drop;} // pin! drop! copy!!"
+        ).expect("inert comment/bare identifiers must stay available");
+        assert_eq!(eval(&scalar.result, &[19, 23]), Ok(42));
+    }
+
     #[test]
     fn native_bitand_bitor_depth_is_checked_like_all_other_expr_variants() {
         for (op, expected) in [("bitAnd", 2_i64), ("bitOr", 47_i64)] {
