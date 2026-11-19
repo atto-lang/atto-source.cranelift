@@ -51,6 +51,11 @@ while IFS= read -r -d '' entry; do
     done
   fi
   [[ -f "$path" && ! -L "$path" ]] || fail "missing or symlinked tracked file: $path"
+  # Git only records executability; unsafe writable or privileged mode bits
+  # can survive an otherwise clean index and exact physical byte hash.
+  physical_mode="$(stat -c %a -- "$path" 2>/dev/null || stat -f %Lp "$path" 2>/dev/null)" || fail "cannot inspect tracked file permissions: $path"
+  [[ "$physical_mode" =~ ^[0-7]{3,4}$ ]] || fail "invalid physical permissions: $path"
+  (( (8#$physical_mode & 8#7022) == 0 )) || fail "unsafe tracked file permissions: $path"
   # Git does not record hardlink identity; an external alias can mutate a verified file.
   link_count="$(stat -c %h -- "$path" 2>/dev/null || stat -f %l "$path" 2>/dev/null)" || fail "cannot inspect tracked file link count: $path"
   [[ "$link_count" == "1" ]] || fail "tracked file has an unexpected hardlink: $path"
