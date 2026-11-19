@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const MAX_COMPRESSED32_SPAN: u64 = (u32::MAX as u64) * 8;
+// Bounded actor-local bookkeeping: guest-reachable grants never grow without
+// a per-actor cap, independently of the compressed32 memory span.
+pub const MAX_LIVE_GRANTS: usize = 65_536;
 
 #[derive(Clone, Debug)]
 pub struct AllocationGrant {
@@ -47,6 +50,9 @@ impl ActorIsolationAccessV1 {
         -> Result<AllocationGrant, &'static str>
     {
         if self.retired { return Err("retired actor"); }
+        if self.live.len() >= MAX_LIVE_GRANTS {
+            return Err("actor allocation grant budget exhausted");
+        }
         if start % 8 != 0 || length == 0 || start > self.span ||
             length > self.span - start {
             return Err("invalid actor allocation bounds");
@@ -123,6 +129,34 @@ mod tests {
         assert!(first.checked_offset(&g, 1, 8).is_err());
         assert!(first.issue_allocation(0, 8).is_err());
     }
+    #[test]
+    fn live_grant_count_is_bounded_and_released_capacity_can_be_reused() {
+        let mut gate = ActorIsolationAccessV1::new(
+            1, 2, 3, MAX_COMPRESSED32_SPAN
+        ).unwrap();
+        // Fill bookkeeping directly to exercise the cap without 65K
+        // quadratic overlap scans. These simulated ranges do not overlap.
+        for id in 1..=MAX_LIVE_GRANTS as u64 {
+            let start = id * 8;
+            gate.live.insert(id, Range { start, end: start + 8 });
+        }
+        gate.next_id = MAX_LIVE_GRANTS as u64 + 1;
+        let unchanged_id = gate.next_id;
+        assert!(matches!(
+            gate.issue_allocation(0, 8),
+            Err("actor allocation grant budget exhausted")
+        ));
+        assert_eq!(gate.next_id, unchanged_id);
+        assert_eq!(gate.live.len(), MAX_LIVE_GRANTS);
+        gate.live.remove(&1);
+        let fresh = gate.issue_allocation(0, 8).unwrap();
+        assert_eq!(gate.checked_offset(&fresh, 1, 8), Ok(0));
+        assert_eq!(gate.live.len(), MAX_LIVE_GRANTS);
+        assert!(gate.issue_allocation(8, 8).is_err());
+        gate.release(&fresh).unwrap();
+        assert!(gate.checked_offset(&fresh, 1, 8).is_err());
+    }
+
     #[test]
     fn compressed32_last_word_has_no_wraparound() {
         let mut gate = ActorIsolationAccessV1::new(1, 1, 1, MAX_COMPRESSED32_SPAN).unwrap();
