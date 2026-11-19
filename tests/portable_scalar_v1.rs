@@ -123,7 +123,8 @@ fn portable_shared_scalar_negatives_fail_closed_without_guest_stdout() {
     let fixture = Fixture::new();
     for (id, expr) in [
         ("div-int", "7 / 2"),
-        ("forbidden-caret", "7 ^ 3"),
+        // The historical v1 corpus forbade ^, but bitwise-v1 now defines
+        // integer XOR; old negative is deliberately superseded by scalar-v4.
         ("forbidden-double-caret", "7 ^^ 3"),
         ("forbidden-remainder", "7 % 3"),
         ("i64-overflow-literal", "9223372036854775808"),
