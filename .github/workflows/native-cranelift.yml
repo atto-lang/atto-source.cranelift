@@ -47,6 +47,13 @@ jobs:
             and (.feature_status | length > 0)
             and (.feature_status | [.[]] | all(. == "not_executed"))
           ' atto-capabilities.json > /dev/null
+      - name: Run offline Rust receipt verifier's negative and positive tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked --all-targets
+          cargo run --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked -- --cases > /tmp/atto-cranelift-required-receipts.tsv
+          test "$(wc -l < /tmp/atto-cranelift-required-receipts.tsv)" -eq 6
       - name: Compile Rust and execute native positive and negative guest tests
         shell: bash
         run: |
