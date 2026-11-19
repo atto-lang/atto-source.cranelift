@@ -1,0 +1,78 @@
+name: Native Atto Cranelift scalar JIT (guest evidence)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-scalar-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify commit and source tree
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD_SHA"
+          SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          test "$(git cat-file -t "$SOURCE_TREE")" = tree
+          test "$(git write-tree)" = "$SOURCE_TREE"
+          echo "SOURCE_COMMIT=$EXPECTED_HEAD_SHA"
+          echo "SOURCE_TREE=$SOURCE_TREE"
+          {
+            echo "Exact source commit: \`$EXPECTED_HEAD_SHA\`"
+            echo "Exact source tree: \`$SOURCE_TREE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail closed on uncertified capability claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .schema == "atto.repository-capabilities.v1"
+            and .repository == "atto-lang/atto-source.cranelift"
+            and .role == "compiler"
+            and .source_state == "implementation"
+            and .certification == "NOT_CERTIFIED"
+            and .evidence == []
+            and (.feature_status | length > 0)
+            and (.feature_status | [.[]] | all(. == "not_executed"))
+          ' atto-capabilities.json > /dev/null
+      - name: Compile Rust and execute native positive and negative guest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-targets
+      - name: Execute native compiled Atto scalar smoke and inspect CLIF
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE=tests/fixtures/clients-scalar-v1/01-precedence.ores
+          test "$(cargo run --locked --quiet -- run "$SOURCE")" = "14"
+          cargo run --locked --quiet -- ir "$SOURCE" > /tmp/atto-cranelift.clif
+          test -s /tmp/atto-cranelift.clif
+          grep -q 'function' /tmp/atto-cranelift.clif
+      - name: Ensure unsupported source never produces a guest value
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          cargo run --locked --quiet -- run tests/fixtures/clients-scalar-v1/07-unknown-reject.ores > /tmp/atto-rejected-stdout 2> /tmp/atto-rejected-stderr
+          result=$?
+          set -e
+          test "$result" = 1
+          test ! -s /tmp/atto-rejected-stdout
+          grep -q 'unbound or unsupported identifier' /tmp/atto-rejected-stderr
+      - name: Record narrow evidence boundary
+        if: success()
+        run: |
+          echo 'Native stage-0 scalar guest tests executed on this exact head; this is not actor or full-language parity and does not automatically certify the repository capability manifest.' >> "$GITHUB_STEP_SUMMARY"

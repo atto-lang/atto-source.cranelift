@@ -48,3 +48,20 @@ This README describes the repository's intended responsibilities. Feature suppor
 AttoLang is the canonical project identity. Use `.atto` source and `atto-*` naming for all new documentation and portable library code. This README defines scope, not feature readiness.
 
 **Acceptance:** name exact source SHA/tree, runtime/toolchain, positive and negative checks and execution receipt before claiming support. Host-only tests and empty CI steps do not prove guest execution.
+
+
+## Imported executable stage-0 scalar compiler (not complete AttoLang)
+
+The canonical repository now contains the original **Rust/Cranelift** experimental signed-64-bit scalar JIT copied from [oreslang-source.cranelift](https://github.com/ores-truffle-oreslang/oreslang-source.cranelift) at source commit `d4acaf1dc36117b09d6a765665c17d55bea6c18b`. The copied compiler and Rust tests retain historical `orescranelift` binary identifiers and `.ores` fixture bytes for compatibility; `.atto` scalar compilation is exercised by Rust tests. The portable language contract is [atto-spec](https://github.com/atto-lang/atto-spec).
+
+To attempt the exact-head native checks on a Rust-enabled host:
+
+```sh
+cargo test --locked --all-targets
+cargo run --locked -- run tests/fixtures/clients-scalar-v1/01-precedence.ores
+cargo run --locked -- ir tests/fixtures/clients-scalar-v1/01-precedence.ores
+```
+
+**Evidence status:** these commands are test instructions, not a claim they ran successfully in this canonical repository. The [native GitHub Actions workflow](.github/workflows/native-cranelift.yml) must show assigned jobs, nonzero executed steps, native guest results and an exact source SHA before recording any capability as passed. A mirror in another private organization requires the same blob SHA proof and explicit runner logs. The repository inventory remains `NOT_CERTIFIED` with `not_executed` statuses until then.
+
+This compiler does **not** currently support full AOT, actor-language compilation, untrusted-isolate sandboxing, ownership-bang lowering, the complete Atto parser, or five-backend parity. It is a stage-0 **trusted** scalar JIT, not a substitute for LLVM/Forge/Java backend verification. No Python scripts or test harnesses are imported.
