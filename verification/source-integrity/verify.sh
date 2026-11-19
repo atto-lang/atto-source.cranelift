@@ -80,55 +80,8 @@ done < "$source_listing/staged"
 # This narrows a TOCTOU window; callers must still keep the checkout isolated
 # while executing the compiler and must not treat this as a filesystem snapshot.
 while IFS= read -r -d '' entry; do
-  metadata="${entry%%
-  path="${entry#*
-  rest="${metadata#* }"
-  blob="${rest%% *}"
-  actual_blob="$(git hash-object --no-filters -- "$path")" || fail "cannot rehash tracked file: $path"
-  [[ "$actual_blob" == "$blob" ]] || fail "physical source changed during verification: $path"
-done < "$source_listing/staged"
-[[ "$(git rev-parse HEAD)" == "$expected" ]] || fail 'HEAD changed during verification'
-[[ "$(git write-tree)" == "$expected_tree" ]] || fail 'index changed during verification'
-git ls-files --stage -z > "$source_listing/staged_after" || fail 'cannot re-enumerate tracked files'
-cmp -s "$source_listing/staged" "$source_listing/staged_after" || fail 'tracked file set changed during verification'
-git ls-files --others --exclude-standard -z > "$source_listing/untracked_after" || fail 'cannot re-enumerate untracked files'
-cmp -s "$source_listing/untracked" "$source_listing/untracked_after" || fail 'untracked file set changed during verification'
-git ls-files --others --ignored --exclude-standard -z > "$source_listing/ignored_after" || fail 'cannot re-enumerate ignored files'
-cmp -s "$source_listing/ignored" "$source_listing/ignored_after" || fail 'ignored file set changed during verification'
-printf 'SOURCE_INTEGRITY_OK commit=%s tree=%s\n' "$expected" "$expected_tree"
-\t'*}"
-  path="${entry#*\t'}"
-  rest="${metadata#* }"
-  blob="${rest%% *}"
-  actual_blob="$(git hash-object --no-filters -- "$path")" || fail "cannot rehash tracked file: $path"
-  [[ "$actual_blob" == "$blob" ]] || fail "physical source changed during verification: $path"
-done < "$source_listing/staged"
-[[ "$(git rev-parse HEAD)" == "$expected" ]] || fail 'HEAD changed during verification'
-[[ "$(git write-tree)" == "$expected_tree" ]] || fail 'index changed during verification'
-git ls-files --stage -z > "$source_listing/staged_after" || fail 'cannot re-enumerate tracked files'
-cmp -s "$source_listing/staged" "$source_listing/staged_after" || fail 'tracked file set changed during verification'
-git ls-files --others --exclude-standard -z > "$source_listing/untracked_after" || fail 'cannot re-enumerate untracked files'
-cmp -s "$source_listing/untracked" "$source_listing/untracked_after" || fail 'untracked file set changed during verification'
-git ls-files --others --ignored --exclude-standard -z > "$source_listing/ignored_after" || fail 'cannot re-enumerate ignored files'
-cmp -s "$source_listing/ignored" "$source_listing/ignored_after" || fail 'ignored file set changed during verification'
-printf 'SOURCE_INTEGRITY_OK commit=%s tree=%s\n' "$expected" "$expected_tree"
-\t'}"
-  rest="${metadata#* }"
-  blob="${rest%% *}"
-  actual_blob="$(git hash-object --no-filters -- "$path")" || fail "cannot rehash tracked file: $path"
-  [[ "$actual_blob" == "$blob" ]] || fail "physical source changed during verification: $path"
-done < "$source_listing/staged"
-[[ "$(git rev-parse HEAD)" == "$expected" ]] || fail 'HEAD changed during verification'
-[[ "$(git write-tree)" == "$expected_tree" ]] || fail 'index changed during verification'
-git ls-files --stage -z > "$source_listing/staged_after" || fail 'cannot re-enumerate tracked files'
-cmp -s "$source_listing/staged" "$source_listing/staged_after" || fail 'tracked file set changed during verification'
-git ls-files --others --exclude-standard -z > "$source_listing/untracked_after" || fail 'cannot re-enumerate untracked files'
-cmp -s "$source_listing/untracked" "$source_listing/untracked_after" || fail 'untracked file set changed during verification'
-git ls-files --others --ignored --exclude-standard -z > "$source_listing/ignored_after" || fail 'cannot re-enumerate ignored files'
-cmp -s "$source_listing/ignored" "$source_listing/ignored_after" || fail 'ignored file set changed during verification'
-printf 'SOURCE_INTEGRITY_OK commit=%s tree=%s\n' "$expected" "$expected_tree"
-\t'*}"
-  path="${entry#*\t'}"
+  metadata="${entry%%$'\t'*}"
+  path="${entry#*$'\t'}"
   rest="${metadata#* }"
   blob="${rest%% *}"
   actual_blob="$(git hash-object --no-filters -- "$path")" || fail "cannot rehash tracked file: $path"
