@@ -12,12 +12,21 @@ expected_tree="$(git rev-parse "${expected}^{tree}")"
 [[ "$(git write-tree)" == "$expected_tree" ]] || fail 'staged tree differs from pinned commit'
 git -c core.filemode=true diff --quiet --exit-code -- || fail 'unstaged modifications'
 git diff --cached --quiet --exit-code HEAD -- || fail 'staged modifications'
-if IFS= read -r -d '' stray < <(git ls-files --others --exclude-standard -z); then
+# Bash process substitution hides producer exit codes. Materialize every Git
+# enumeration outside the checkout and check its status before trusting output.
+# A failed ls-files must never look like an empty clean index.
+source_listing="$(mktemp -d)" || fail 'cannot create source listing directory'
+trap 'rm -rf -- "$source_listing"' EXIT
+git ls-files --others --exclude-standard -z > "$source_listing/untracked" || fail 'cannot enumerate untracked files'
+if IFS= read -r -d '' stray < "$source_listing/untracked"; then
   fail "untracked file: $stray"
 fi
-if IFS= read -r -d '' stray < <(git ls-files --others --ignored --exclude-standard -z); then
+git ls-files --others --ignored --exclude-standard -z > "$source_listing/ignored" || fail 'cannot enumerate ignored files'
+if IFS= read -r -d '' stray < "$source_listing/ignored"; then
   fail "ignored file: $stray"
 fi
+git ls-files --stage -z > "$source_listing/staged" || fail 'cannot enumerate tracked files'
+[[ -s "$source_listing/staged" ]] || fail 'tracked index is empty'
 while IFS= read -r -d '' entry; do
   metadata="${entry%%$'\t'*}"
   path="${entry#*$'\t'}"
@@ -48,5 +57,5 @@ while IFS= read -r -d '' entry; do
   else
     [[ ! -x "$path" ]] || fail "unexpected executable bit: $path"
   fi
-done < <(git ls-files --stage -z)
+done < "$source_listing/staged"
 printf 'SOURCE_INTEGRITY_OK commit=%s tree=%s\n' "$expected" "$expected_tree"
