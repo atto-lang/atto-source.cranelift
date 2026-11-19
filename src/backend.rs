@@ -342,6 +342,12 @@ impl Compiled {
         if args.len() > 4 {
             return Err("too many runtime arguments".into());
         }
+        // Enforce source-entry arity at this API boundary too. The CLI checks
+        // count, but direct host / tenant calls must not silently bind absent
+        // parameters to ABI padding zeros or ignore surplus arguments.
+        if args.len() != self.arity {
+            return Err("runtime argument count mismatch".into());
+        }
         let mut padded = [0_i64; 4];
         padded[..args.len()].copy_from_slice(args);
         let code = self.module.get_finalized_function(self.id);
@@ -383,6 +389,22 @@ mod verification_tests {
         assert_eq!(native.run(&[0]), Ok(42));
         let bad = crate::frontend::parse("fnc main():int{return 5 ^ 3;}");
         assert!(bad.is_err(), "unsupported operator must fail before IR");
+    }
+
+    #[test]
+    fn direct_compiled_api_requires_exact_declared_arity() {
+        let program = crate::frontend::parse(
+            "fnc main(a:int,b:int):int{return a*10+b;}"
+        ).expect("two-parameter native scalar");
+        let compiled = compile(&program).expect("compile exact arity fixture");
+        assert_eq!(compiled.run(&[4, 2]), Ok(42));
+        for args in [
+            &[][..], &[4][..], &[4, 2, 0][..], &[4, 2, 0, 0][..],
+        ] {
+            assert_eq!(compiled.run(args), Err("runtime argument count mismatch".into()));
+        }
+        assert_eq!(compiled.run(&[4, 2, 0, 0, 0]), Err("too many runtime arguments".into()));
+        assert_eq!(compiled.run(&[4, 2]), Ok(42), "failed admission cannot corrupt native state");
     }
 
     #[test]
