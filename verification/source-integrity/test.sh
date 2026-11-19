@@ -113,4 +113,30 @@ outside="$(mktemp -d)"
 ln tracked.txt "$outside/alias.txt"
 reject 'tracked physical hardlink escape'
 rm -rf "$outside"
+# An ls-files failure must be rejected, not treated as an empty successful list.
+shim="$(mktemp -d)"
+cat > "$shim/git" <<'GIT_SHIM'
+#!/usr/bin/env bash
+if [[ "$1" == ls-files && " $* " == *" $FAIL_LS_FILES "* ]]; then
+  exit 37
+fi
+exec "$REAL_GIT" "$@"
+GIT_SHIM
+chmod +x "$shim/git"
+real_git="$(command -v git)"
+for selector in --stage --ignored --exclude-standard; do
+  # --exclude-standard appears in both untracked and ignored; either failure
+  # must terminate verification.
+  output="$(env REAL_GIT="$real_git" FAIL_LS_FILES="$selector" PATH="$shim:$PATH" \
+    bash "$verify" "$head" 2>&1)" && {
+    echo "FAIL: Git ls-files failure ($selector) was admitted" >&2
+    exit 1
+  }
+  [[ "$output" == *'cannot enumerate '* ]] || {
+    echo "FAIL: missing explicit enumeration error ($selector)" >&2
+    exit 1
+  }
+  pass=$((pass+1))
+done
+rm -rf "$shim"
 printf 'PASS: %s source-integrity self-checks (1 positive, %s negative)\n' "$pass" "$((pass-1))"
