@@ -190,6 +190,35 @@ struct Parser<'a> {
     parameters: Vec<String>,
 }
 
+// Shared block-comment cursor for the scalar lexer and contextual lookahead.
+// The actor preflight already recognizes nested block comments; the main lexer
+// must not interpret code inside them, and must fail on unterminated/nested bombs.
+fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
+    if bytes.get(start..start.saturating_add(2)) != Some(&b"/*"[..]) {
+        return Err("expected block comment".into());
+    }
+    let mut index = start + 2;
+    let mut depth = 1usize;
+    while index < bytes.len() {
+        if bytes.get(index..index.saturating_add(2)) == Some(&b"/*"[..]) {
+            depth += 1;
+            if depth > 128 {
+                return Err(format!("block comment nesting limit at byte {index}"));
+            }
+            index += 2;
+        } else if bytes.get(index..index.saturating_add(2)) == Some(&b"*/"[..]) {
+            depth -= 1;
+            index += 2;
+            if depth == 0 {
+                return Ok(index);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    Err(format!("unterminated block comment at byte {start}"))
+}
+
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Result<Self, String> {
         if input.len() > MAX_SOURCE {
@@ -227,6 +256,13 @@ impl<'a> Parser<'a> {
                 }
                 continue;
             }
+            if b.get(at..at.saturating_add(2)) == Some(&b"/*"[..]) {
+                at = match skip_block_comment(b, at) {
+                    Ok(end) => end,
+                    Err(_) => return false,
+                };
+                continue;
+            }
             return b.get(at) == Some(&b'{');
         }
     }
@@ -246,6 +282,10 @@ impl<'a> Parser<'a> {
                 while self.pos < b.len() && line_break_width(b, self.pos) == 0 {
                     self.pos += 1;
                 }
+                continue;
+            }
+            if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"/*"[..]) {
+                self.pos = skip_block_comment(b, self.pos)?;
                 continue;
             }
             break;
@@ -1109,6 +1149,23 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_block_comments_are_inert_but_bounded_and_well_terminated() {
+        let guest = "/* define actor Worker */ fnc main(/* ignored */):int { /* outer /* inner */ rest */ return 42; }";
+        let program = parse(guest).expect("nested and mixed-position block comments");
+        assert_eq!(eval(&program.result, &[]), Ok(42));
+        let mixed = "// leading\n/* one */ fnc main():int{return 40 /* two */ +2;} // trailing";
+        assert_eq!(eval(&parse(mixed).unwrap().result, &[]), Ok(42));
+        for malformed in [
+            "fnc main():int{return 42;} /* unfinished",
+            "/* forever /* nested */ fnc main():int{return 42;}",
+        ] {
+            assert!(parse(malformed).unwrap_err().contains("unterminated block comment"));
+        }
+        let excessive = format!("{}fnc main():int{{return 42;}}{}", "/*".repeat(129), "*/".repeat(129));
+        assert!(parse(&excessive).unwrap_err().contains("block comment nesting limit"));
+    }
+
     #[test]
     fn pin_and_drop_bang_are_owned_operations_not_scalar_intrinsics() {
         for operation in ["pin!", "drop!", "copy!!"] {
