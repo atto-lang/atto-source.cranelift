@@ -139,6 +139,82 @@ fn signed_int64_boundary_compiles_into_native_clif_and_executes_without_wraparou
     }
 }
 
+fn edge_fixture(file: &str) -> PathBuf {
+    fixture(&format!("edge/{file}"))
+}
+#[test]
+fn spec_edge_multiarg_reverse_and_signed_min_are_actual_jit_guests() {
+    for (name, expected) in [
+        ("two-argument-61.atto", "61\n"),
+        ("preapplied-grouped-42.atto", "42\n"),
+        ("signed-i64-min.atto", "-9223372036854775808\n"),
+    ] {
+        let source = edge_fixture(name);
+        let checked = invoke("check", &source);
+        assert!(checked.status.success(), "edge {name} check failed: {}",
+            String::from_utf8_lossy(&checked.stderr));
+        assert!(checked.stdout.is_empty(), "{name}: check emitted guest stdout");
+        let clif = invoke("ir", &source);
+        assert!(clif.status.success(), "edge {name} CLIF rejected: {}",
+            String::from_utf8_lossy(&clif.stderr));
+        assert!(String::from_utf8_lossy(&clif.stdout).contains("function"),
+            "{name} produced no native IR");
+        let run = invoke("run", &source);
+        assert_eq!(run.status.code(), Some(0), "edge {name} JIT failed: {}",
+            String::from_utf8_lossy(&run.stderr));
+        assert_eq!(run.stdout, expected.as_bytes(), "edge {name} native value");
+        assert!(run.stderr.is_empty(), "edge {name} JIT stderr");
+    }
+}
+#[test]
+fn spec_edge_checked_overflow_traps_without_wraparound_or_guest_stdout() {
+    let source = edge_fixture("checked-overflow.atto");
+    assert!(invoke("check", &source).status.success());
+    let clif = invoke("ir", &source);
+    assert!(clif.status.success());
+    assert!(String::from_utf8_lossy(&clif.stdout).contains("function"));
+    let run = invoke("run", &source);
+    assert_eq!(run.status.code(), Some(1), "overflow should be a checked native error");
+    assert!(run.stdout.is_empty(), "overflow may not return a wrapped integer");
+    assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
+}
+#[test]
+fn spec_edge_negative_sources_fail_before_native_ir_or_execution() {
+    for (name, expected) in [
+        ("reject-i64-positive-overflow.atto","E_PIPE_LITERAL"),
+        ("reject-i64-negative-underflow.atto","E_PIPE_LITERAL"),
+        ("reject-reserved-unsafe.atto","E_PIPE_NAME"),
+    ] {
+        let source = edge_fixture(name);
+        for mode in ["check","ir","run"] {
+            let rejected = invoke(mode, &source);
+            assert_eq!(rejected.status.code(), Some(1), "{name}: {mode} accepted");
+            assert!(rejected.stdout.is_empty(), "{name}: emitted guest code/result");
+            assert!(String::from_utf8_lossy(&rejected.stderr).contains(expected),
+                "{name}: {mode} missed typed/authority error");
+        }
+    }
+}
+#[test]
+fn seven_spec_edge_guest_blobs_are_pinned_exactly() {
+    for (name,expected) in [
+        ("two-argument-61.atto","4089c524db1d076593994ad65acb5ca7f90eea32"),
+        ("preapplied-grouped-42.atto","9a89ada18865fead0d92a7de75415957fbb5f67f"),
+        ("signed-i64-min.atto","bbc22347d7ccb0a5be1a7c2193f11c5f2f4805cc"),
+        ("checked-overflow.atto","59bb890b54addc1659065ab55cd565771523bfce"),
+        ("reject-i64-positive-overflow.atto","2e584ee01ee74a3a31e282cf0116957f9ff95bd1"),
+        ("reject-i64-negative-underflow.atto","8b63b45e406db3e19aa793e0f7a627914623b9e0"),
+        ("reject-reserved-unsafe.atto","b159def3fa26ca6023395e1c546b95c1b929fd14"),
+    ] {
+        let file=edge_fixture(name);
+        let out=Command::new("git").arg("hash-object").arg(&file)
+            .output().expect("git hash-object canonical edge file");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(),expected,
+            "{name}: canonical edge bytes changed");
+    }
+}
+
 #[test]
 fn copied_spec_fixtures_have_exact_sha_pinned_git_blobs() {
     let pinned = [
