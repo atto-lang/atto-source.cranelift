@@ -1340,6 +1340,14 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
     }
+    // Sweep the complete bounded token stream before choosing a scalar
+    // declaration failure. Security-critical reserved actor/capability tokens
+    // must not be hidden behind an earlier unsupported local binding such as
+    // 'let x = spawn Worker()'. Comments and quotes remain lexically inert.
+    let mut safety_scan = Parser::new(text)?;
+    while safety_scan.current != Token::End {
+        safety_scan.next()?;
+    }
     Parser::new(text)?.program()
 }
 
