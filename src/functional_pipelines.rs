@@ -100,7 +100,8 @@ impl Parser {
                       | "take" | "borrow" | "copy" | "share" | "drop"
                       | "pin" | "rt" | "io" | "stdio" | "process"
                       | "spawn" | "select" | "import" | "module" | "define"
-                      | "namespace" | "use" | "pipe" | "rpipe") {
+                      | "namespace" | "use" | "pipe" | "rpipe" | "sync"
+                      | "task" | "yield") {
             return Err("E_PIPE_NAME".into());
         }
         let name = word.to_owned();
