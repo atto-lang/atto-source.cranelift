@@ -127,36 +127,52 @@ fn load_bounded(path: &Path, max: u64) -> Result<String, String> {
 }
 
 fn manifest_has_package_name(source: &str) -> bool {
+    // Only the minimal explicitly supported package marker format is
+    // admissible. Unknown TOML keys/sections must not silently grant roots.
     let mut in_package = false;
-    let mut named = false;
+    let mut saw_package = false;
+    let mut saw_schema = false;
+    let mut saw_name = false;
     for line in source.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line.starts_with('[') {
-            in_package = line == "[package]";
+        if line == "[package]" && !saw_package && saw_schema {
+            saw_package = true;
+            in_package = true;
             continue;
         }
-        if in_package {
-            if let Some(value) = line.strip_prefix("name") {
-                if let Some(value) = value.trim_start().strip_prefix('=') {
-                    let value = value.trim();
-                    if value.starts_with('"')
-                        && value.ends_with('"')
-                        && value.len() >= 3
-                        && !value[1..value.len() - 1].contains('"')
-                    {
-                        if named {
-                            return false;
-                        }
-                        named = true;
-                    }
-                }
+        if !in_package {
+            if line == r#"schema_version = "1""# && !saw_schema {
+                saw_schema = true;
+                continue;
             }
+            return false;
         }
+        if saw_name {
+            return false;
+        }
+        let Some(value) = line.strip_prefix("name") else {
+            return false;
+        };
+        let Some(value) = value.trim_start().strip_prefix('=') else {
+            return false;
+        };
+        let value = value.trim();
+        let Some(inner) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+            return false;
+        };
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return false;
+        }
+        saw_name = true;
     }
-    named
+    saw_schema && saw_package && saw_name
 }
 
 fn absolute_entry(path: &Path) -> Result<PathBuf, String> {
