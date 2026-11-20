@@ -21,7 +21,9 @@ nested package markers, symlinks, missing sources, private/missing exports,
 duplicate local bindings, late imports, and unsupported source forms
 reject before generating CLIF. The CLI reuses its Unix descriptor-relative
 no-follow opening for imported files, with eight-import, 16-KiB-per-import
-and existing native AST/evaluation budgets. Host package parsing is
+and existing native AST/evaluation budgets. This linked-source subset is
+**Unix-only**: other platforms return `E_LINK_PLATFORM_UNSUPPORTED` until
+a separate ancestor-confinement proof and implementation are available. Host package parsing is
 intentionally restricted; it is **not a general TOML package manager**.
 
 ## Deliberate unsupported features
