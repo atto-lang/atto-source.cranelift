@@ -203,6 +203,15 @@ fn package_root(entry: &Path) -> Result<PathBuf, String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("E_LINK_MANIFEST_LOOKUP {e}")),
         }
+        // A nearer legacy package marker must block inheritance from a
+        // parent modern root. If both exist here, the modern marker above
+        // is authoritative and wins before this legacy check.
+        let legacy = directory.join(".oreslangc.cfg.toml");
+        match std::fs::symlink_metadata(&legacy) {
+            Ok(_) => return Err("E_LINK_LEGACY_PACKAGE_BOUNDARY".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("E_LINK_MANIFEST_LOOKUP {e}")),
+        }
         if !directory.pop() {
             return Err("E_LINK_PACKAGE_ROOT_REQUIRED".into());
         }
