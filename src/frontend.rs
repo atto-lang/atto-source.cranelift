@@ -1019,7 +1019,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                 (
                     Some(Tok::Id("ActorUtils")),
                     Some(Tok::Sym(b'.')),
-                    Tok::Id("pipe")
+                    Tok::Id("pipe" | "rpipe")
                 )
             );
             let static_colon = matches!(
@@ -1028,7 +1028,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                     Some(Tok::Id("ActorUtils")),
                     Some(Tok::Sym(b':')),
                     Some(Tok::Sym(b':')),
-                    Tok::Id("pipe")
+                    Tok::Id("pipe" | "rpipe")
                 )
             );
             let right_start = match current {
@@ -1058,13 +1058,14 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                         | "return"
                         | "spawn"
                         | "pipe"
+                        | "rpipe"
                         | "as"
                         | "case"
                 ),
                 Some(Tok::Sym(b')' | b']' | b'}')) => true,
                 _ => false,
             };
-            pending_pipe = matches!(current, Tok::Id("pipe")) && left_end;
+            pending_pipe = matches!(current, Tok::Id("pipe" | "rpipe")) && left_end;
         }
 
         third_previous = before_previous;
@@ -1931,6 +1932,10 @@ mod tests {
             "return ActorUtils::pipe(spawn Source(), spawn Sink());",
             "return ActorUtils.pipe(spawn Source(), spawn Sink());",
             "return first pipe second;",
+            "return first rpipe second;",
+            "return sink rpipe source;",
+            "return ActorUtils.rpipe(source, sink);",
+            "return ActorUtils::rpipe(source, sink);",
         ] {
             assert!(has_actor_pipe_surface(src), "must reject actor pipe: {src}");
             assert!(
@@ -1943,6 +1948,7 @@ mod tests {
             "fnc pipe(x:int):int{return x;}",
             "fnc main(pipe:int):int{return pipe+1;}",
             "fnc main():int{return 42;} // spawn A() pipe spawn B()",
+            "fnc main():int{return 42;} // sink rpipe source",
             r#"fnc main():int{return 42;} "ActorUtils::pipe(A,B)""#,
             "fnc main(x:int):int{return x |> add_one;}",
         ] {
