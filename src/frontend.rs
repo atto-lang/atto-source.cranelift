@@ -324,14 +324,22 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
-            // Typed ownership bangs must never be interpreted as scalar
-            // identifiers or a runtime macro call. Detect the contiguous
-            // operator before scalar AST admission, including borrow! mut.
+            // Checked-handle aliases are distinct from ordinary borrows:
+            // without validated generations/arena authority, ref!/deref!/unref!
+            // must fail at the lexer boundary, before CLIF or macro emission.
+            // Preserve != and !eq comparisons, including identifier suffixes
+            // such as ref!eqfoo (which ARE contextual bang expressions).
+            let suffix = &self.input[self.pos..];
+            let comparison = suffix.starts_with("!=")
+                || suffix.strip_prefix("!eq").is_some_and(|tail| {
+                    !tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                });
             if matches!(
                 self.current,
-                Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
-            ) && b.get(self.pos) == Some(&b'!') {
-                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop"
+                    | "ref" | "deref" | "unref")
+            ) && b.get(self.pos) == Some(&b'!') && !comparison {
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
             // The 'mut borrow!' form also must fail with an ownership-specific
             // diagnostic: without lookahead the parser would reject 'mut'
