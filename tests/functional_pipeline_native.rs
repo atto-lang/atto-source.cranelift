@@ -236,3 +236,27 @@ fn copied_spec_fixtures_have_exact_sha_pinned_git_blobs() {
             "{name}: canonical source bytes changed");
     }
 }
+
+
+#[test]
+fn authority_and_task_words_are_not_scalar_function_parameter_or_local_names() {
+    for name in ["sync", "task", "yield"] {
+        let samples = [
+            format!("fnc {name}(int x): int -> x; pub fnc main(): int -> 42 |> {name};"),
+            format!("fnc f(int {name}): int -> 42; pub fnc main(): int -> f(1);"),
+            format!("pub fnc main(): int {{ val {name} = 42; return {name}; }}"),
+        ];
+        for source in samples {
+            let file = Source::new(&source);
+            for mode in ["check", "ir", "run"] {
+                let result = invoke(mode, &file.0);
+                assert!(!result.status.success(),
+                    "{name}: reserved binding admitted in {mode}");
+                assert!(result.stdout.is_empty(),
+                    "{name}: rejected scalar source emitted guest artifact/result");
+                assert!(String::from_utf8_lossy(&result.stderr).contains("E_PIPE_NAME"),
+                    "{name}: expected a source-level authority rejection");
+            }
+        }
+    }
+}
