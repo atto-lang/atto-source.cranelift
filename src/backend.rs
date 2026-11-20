@@ -157,6 +157,13 @@ fn emit(
 ) -> Value {
     use Expr::*;
     match e {
+        InlineTask(body) => emit(body, b, params, error, divisor_error, negative_exponent_error),
+        Sequence(prefix, last) => {
+            for part in prefix {
+                let _ = emit(part, b, params, error, divisor_error, negative_exponent_error);
+            }
+            emit(last, b, params, error, divisor_error, negative_exponent_error)
+        }
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         ShiftRight8(x) => {
