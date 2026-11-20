@@ -55,6 +55,11 @@ fn parse_import_line(line: &str) -> Result<NamedImport, String> {
 }
 
 fn split_entry(source: &str) -> Result<(String, Vec<NamedImport>), String> {
+    // This narrow header scanner is line-based, not a general lexer. Do not
+    // let import-looking text in multiline comments become an actual import.
+    if source.contains("/*") || source.contains("*/") {
+        return Err("E_LINK_BLOCK_COMMENT_UNSUPPORTED".into());
+    }
     let mut stripped = String::with_capacity(source.len());
     let mut imports = Vec::new();
     let mut declarations_started = false;
