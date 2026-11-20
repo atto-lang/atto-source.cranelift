@@ -89,8 +89,15 @@ fn early_cli_failure(mode: &str, args: &[&str], expected: &str) {
         .args(args)
         .output()
         .expect("invoke CLI");
-    assert_eq!(result.status.code(), Some(1), "expected normal compiler denial");
-    assert!(result.stdout.is_empty(), "invalid argument printed guest output");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected normal compiler denial"
+    );
+    assert!(
+        result.stdout.is_empty(),
+        "invalid argument printed guest output"
+    );
     assert_eq!(
         String::from_utf8_lossy(&result.stderr),
         format!("orescranelift: {expected}\n"),
@@ -100,7 +107,12 @@ fn early_cli_failure(mode: &str, args: &[&str], expected: &str) {
 
 #[test]
 fn invalid_numeric_arguments_are_rejected_before_source_open() {
-    for argument in ["not-an-int", "9223372036854775808", "-9223372036854775809", "1_0"] {
+    for argument in [
+        "not-an-int",
+        "9223372036854775808",
+        "-9223372036854775809",
+        "1_0",
+    ] {
         early_cli_failure("run", &[argument], "invalid i64 argument");
     }
     early_cli_failure("isolate", &["0", "not-an-int"], "invalid i64 argument");
@@ -109,7 +121,11 @@ fn invalid_numeric_arguments_are_rejected_before_source_open() {
         &["1", "2", "3", "4", "invalid"],
         "too many runtime arguments",
     );
-    early_cli_failure("ir", &["not-an-int"], "ir/check mode does not accept runtime arguments");
+    early_cli_failure(
+        "ir",
+        &["not-an-int"],
+        "ir/check mode does not accept runtime arguments",
+    );
 }
 
 #[cfg(unix)]
