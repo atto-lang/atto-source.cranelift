@@ -57,10 +57,14 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
         // terminated segment. File::from_raw_fd takes ownership of successful fd.
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return Err(format!(
-                "source path component denied: {}",
-                std::io::Error::last_os_error()
-            ));
+            let error = std::io::Error::last_os_error();
+            // Linux openat(O_NOFOLLOW) reports ELOOP for a symlink leaf.
+            // Preserve a stable explicit security rejection across kernels;
+            // never retry without O_NOFOLLOW or follow the target.
+            if final_component && error.raw_os_error() == Some(libc::ELOOP) {
+                return Err("source must be a regular file (symlinks forbidden)".into());
+            }
+            return Err(format!("source path component denied: {error}"));
         }
         directory = unsafe { std::fs::File::from_raw_fd(fd) };
     }

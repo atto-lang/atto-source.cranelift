@@ -1375,10 +1375,12 @@ fn has_leading_type_only_match(text: &str) -> Result<bool, String> {
         break;
     }
     let key = b"match";
-    Ok(bytes.get(at..at.saturating_add(key.len())) == Some(&key[..])
-        && !bytes
-            .get(at.saturating_add(key.len()))
-            .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_'))
+    Ok(
+        bytes.get(at..at.saturating_add(key.len())) == Some(&key[..])
+            && !bytes
+                .get(at.saturating_add(key.len()))
+                .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_'),
+    )
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {
