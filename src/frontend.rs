@@ -1010,7 +1010,8 @@ impl<'a> Parser<'a> {
             for _ in 0..MAX_NODES {
                 match self.next() {
                     Err(message)
-                        if message.contains("actor and supervisor capabilities are unsupported") =>
+                        if message
+                            .contains("actor and supervisor capabilities are unsupported") =>
                     {
                         return Err(message);
                     }
@@ -1347,11 +1348,47 @@ fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+// A source-level type-only ADT match is an unsupported declaration surface,
+// not a nested expression in the scalar `fnc main` profile. Determine only
+// the first significant keyword; do not scan inside a function or reorder
+// existing match/actor/enum diagnostic precedence.
+fn has_leading_type_only_match(text: &str) -> Result<bool, String> {
+    let bytes = text.as_bytes();
+    let mut at = 0usize;
+    loop {
+        let width = whitespace_width(bytes, at);
+        if width != 0 {
+            at += width;
+            continue;
+        }
+        if bytes.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
+            at += 2;
+            while at < bytes.len() && line_break_width(bytes, at) == 0 {
+                at += 1;
+            }
+            continue;
+        }
+        if bytes.get(at..at.saturating_add(2)) == Some(&b"/*"[..]) {
+            at = skip_block_comment(bytes, at)?;
+            continue;
+        }
+        break;
+    }
+    let key = b"match";
+    Ok(bytes.get(at..at.saturating_add(key.len())) == Some(&key[..])
+        && !bytes
+            .get(at.saturating_add(key.len()))
+            .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_'))
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
+    if has_leading_type_only_match(text)? {
+        return Err("native type-only ADT pattern lowering unsupported".into());
+    }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }

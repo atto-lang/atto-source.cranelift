@@ -121,6 +121,8 @@ fn type_only_patterns_refuse_before_ir_or_jit() {
     for source in [
         b"define pattern P as end".as_slice(),
         b"match value over end".as_slice(),
+        b"/* inert leading comment */ match value over end".as_slice(),
+        b"// inert leading comment\nmatch value over end".as_slice(),
     ] {
         for mode in ["run", "ir"] {
             let output = invoke(mode, source);
