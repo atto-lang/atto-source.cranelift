@@ -64,3 +64,32 @@ Cross-backend exact-head tests, formatter alignment (`atto-format`, `oreslang-fo
 The checked-in Atto bitwise-v1 contract and Cranelift target #39 still propose infix `int ^ int` and Boolean `^^`. A newer explicit language decision instead sets `^ expr;` to be **return only**, `^^` to be **integer bitwise XOR**, `Math.pow()` as exponentiation, `<<<` and `>>>` as bitwise shifts, and `<<`/`>>` as directional stream/channel operations. The open `atto-spec#35` caret-return work is a related but not complete operator-contract reconciliation.
 
 Consequences: do not use current main's infix-XOR clause as an authority for new code, do not silently reinterpret existing `^ ` guest fixtures, and keep `atto-source.cranelift#39` on an explicit conflict/integration hold. Source profile/version transition, conformance fixtures and formatter changes require their own coordinated work; this PR neither implements nor tests those operators. Existing Cranelift `>>8` signed-shift stage-0 behavior also must not be misrepresented as current Atto `>>` stream-read semantics.
+
+
+## Consolidation of two competing Cranelift drafts (same-repo, no source export)
+
+This **draft #58** now includes the exact authored fixture/test/doc files
+from `atto-source.cranelift#50` (functional pipelines) and `#52` (scalar `seq`),
+plus explicitly reconciled `src/main.rs`, `src/frontend.rs`, and
+`src/backend.rs`. The pipeline frontend's `Program` constructor now supplies
+`locals: Vec::new()`, which is mandatory after #58's local-binding expansion.
+
+The sequence emitter receives the same runtime-local SSA value slice as ordinary
+expressions, and the host-AST validator checks sequence arity, depth, size and
+local/parameter references **before CLIF**. Its compile-time evaluator consumes
+ALL sequence entries rather than discarding effects/traps from non-final values.
+Runtime locals initialize in declaration order, including unused trapping vals.
+
+**Disposition:** #50/#52 are **incorporated pending actual integration CI**, not
+closed or marked merge-ready; never merge their divergent older changes on top
+without rebasing them onto the consolidated head and rerunning every test.
+
+**Semantic boundary:** pipeline stage-0 works on strictly linear-use, pure int64
+function expansion; ordinary scalar main supports const/val and seq. A single
+guest program containing both pipeline syntax and seq is not promised to compile
+until a shared typed frontend exists; it must reject rather than silently
+reinterpret its source or use the host as an evaluator. The proposed callable
+v1/v2 selector in `atto-spec#86` is not implemented or inferred.
+
+**Test status:** all tests are authored but NOT_EXECUTED on this exact integrated
+head. Require Cargo, Clippy and real native guest run/IR evidence before review.

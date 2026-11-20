@@ -187,6 +187,14 @@ fn validate_guest_expr(
             Expr::Literal(_) => {}
             Expr::Param(index) if *index < admitted_params => {}
             Expr::Local(index) if *index < admitted_locals => {}
+            Expr::Seq(items) => {
+                if items.is_empty() || items.len() > 16 {
+                    return Err("E_SEQ_LIMIT: forged scalar sequence before native codegen".into());
+                }
+                for item in items.iter().rev() {
+                    work.push((item, depth + 1));
+                }
+            }
             Expr::Param(_) => return Err("invalid parameter reference before native codegen".into()),
             Expr::Local(_) => return Err("invalid or forward local reference before native codegen".into()),
             Expr::Neg(x) | Expr::ShiftRight8(x) => work.push((x, depth + 1)),
@@ -215,6 +223,17 @@ fn emit(
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         Local(i) => locals[*i],
+        Seq(parts) => {
+            // The source/host-AST gate guarantees a nonempty bounded list.
+            // Emit every member: checked errors on discarded entries MUST
+            // still branch before the result-store instruction.
+            let (first, rest) = parts.split_first().expect("validated nonempty seq");
+            let mut value = emit(first, b, params, locals, error, divisor_error, negative_exponent_error);
+            for part in rest {
+                value = emit(part, b, params, locals, error, divisor_error, negative_exponent_error);
+            }
+            value
+        }
         ShiftRight8(x) => {
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte

@@ -167,6 +167,8 @@ pub enum Expr {
     NamedMod(Box<Expr>, Box<Expr>),
     NamedPow(Box<Expr>, Box<Expr>),
     ShiftRight8(Box<Expr>),
+    // Source-ordered, bounded scalar sequence; trap checks are not discardable.
+    Seq(Vec<Expr>),
 }
 
 #[derive(Debug)]
@@ -497,6 +499,32 @@ impl<'a> Parser<'a> {
         }
         Ok(x)
     }
+    // Scalar-only expression sequence shared with the separate pipeline branch.
+    // A discarded value may still trap, so every entry is evaluated in order.
+    fn sequence(&mut self, depth: usize) -> Result<Expr, String> {
+        if depth > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        if self.current == Token::Punct(b')') {
+            return Err("E_SEQ_EMPTY: sequence must have at least one expression".into());
+        }
+        let mut items = Vec::new();
+        loop {
+            if items.len() >= 16 {
+                return Err("E_SEQ_LIMIT: at most sixteen scalar sequence expressions".into());
+            }
+            if matches!(self.current, Token::Punct(b',' | b';' | b')') | Token::End) {
+                return Err("E_SEQ_COMMA: missing sequence expression".into());
+            }
+            items.push(self.expr(0, depth + 1)?);
+            if !self.take(Token::Punct(b','))? {
+                break;
+            }
+        }
+        self.expect(Token::Punct(b')'))?;
+        self.node(Expr::Seq(items))
+    }
+
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -515,7 +543,14 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'+'))? {
             return self.atom(depth + 1);
         }
+        if self.take(Token::Word("seq"))? {
+            self.expect(Token::Punct(b'('))?;
+            return self.sequence(depth + 1);
+        }
         if self.take(Token::Punct(b'('))? {
+            if self.take(Token::Punct(b'>'))? {
+                return self.sequence(depth + 1);
+            }
             let e = self.expr(0, depth + 1)?;
             self.expect(Token::Punct(b')'))?;
             return Ok(e);
@@ -851,6 +886,7 @@ impl<'a> Parser<'a> {
                             | "io"
                             | "stdio"
                             | "print"
+                            | "seq"
                     )
                     || self.parameters.contains(&name)
                 {
@@ -919,7 +955,7 @@ impl<'a> Parser<'a> {
             let typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if is_java_v1_reserved_parameter_name(&name)
-                || matches!(name.as_str(), "Integer" | "main" | "int")
+                || matches!(name.as_str(), "Integer" | "main" | "int" | "seq")
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
             {
@@ -1172,6 +1208,14 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
         }
         match expr {
             Expr::Literal(_) | Expr::Param(_) | Expr::Local(_) => {}
+            Expr::Seq(parts) => {
+                if parts.is_empty() || parts.len() > 16 {
+                    return Err("E_SEQ_LIMIT: forged scalar sequence arity".into());
+                }
+                for part in parts.iter().rev() {
+                    pending.push((part, level + 1));
+                }
+            }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
@@ -1198,6 +1242,18 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
 fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
         Expr::Literal(value) => Ok(*value),
+        Expr::Seq(parts) => {
+            // A constexpr sequence is permitted only when EVERY member is
+            // proven constant, even if only its last result is retained.
+            if parts.is_empty() || parts.len() > 16 {
+                return Err("E_SEQ_LIMIT: invalid constexpr sequence".into());
+            }
+            let mut last = 0_i64;
+            for part in parts {
+                last = eval_const_i64(part)?;
+            }
+            Ok(last)
+        }
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
@@ -1607,6 +1663,13 @@ mod tests {
             }
             Expr::NamedPow(a, b) => checked_pow(eval(a, args)?, eval(b, args)?),
             Expr::ShiftRight8(x) => Ok(eval(x, args)? >> 8),
+            Expr::Seq(parts) => {
+                let mut result = None;
+                for part in parts {
+                    result = Some(eval(part, args)?);
+                }
+                result.ok_or("invalid_sequence")
+            }
         }
     }
     #[test]
