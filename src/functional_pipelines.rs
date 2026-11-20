@@ -4,7 +4,7 @@
 //! the stage-0 Expr IR has no let node; this keeps checked evaluation order
 //! and exact-once semantics for the admitted subset.
 use crate::frontend::{Expr, Program};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 const MAX_SOURCE: usize = 16 * 1024;
 const MAX_TOKENS: usize = 512;
@@ -290,9 +290,9 @@ impl Lower<'_> {
         }
         // Every eager val initializer must execute before later val bodies
         // and before the return expression. Enforce order of uses.
-        let locals: HashSet<_> = func.locals.iter().map(|(n,_)| n).collect();
         let observed: Vec<&str> = order.iter()
-            .filter(|n| locals.contains(n)).map(String::as_str).collect();
+            .filter(|n| func.locals.iter().any(|(declared, _)| declared == *n))
+            .map(String::as_str).collect();
         let declared: Vec<&str> = func.locals.iter().map(|(n,_)| n.as_str()).collect();
         if observed != declared { return Err("E_PIPE_LOCAL_ORDER_UNSUPPORTED".into()); }
         Ok(answer)
@@ -310,7 +310,10 @@ pub fn parse(source: &str) -> Result<Program, String> {
     let main = names.get("main").ok_or("E_PIPE_ENTRY")?;
     if !main.params.is_empty() { return Err("E_PIPE_ENTRY".into()); }
     // Also check dormant function bodies; reject errors before CLIF output.
-    for (name,f) in &names {
+    let mut sorted_names: Vec<_> = names.keys().cloned().collect();
+    sorted_names.sort();
+    for name in &sorted_names {
+        let f = &names[name];
         let args = f.params.iter().map(|_| Expr::Literal(0)).collect();
         let mut lower = Lower{functions:&names,budget:MAX_EXPANSION,stack:Vec::new()};
         lower.call(name, args, 0)?;
