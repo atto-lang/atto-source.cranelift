@@ -2,6 +2,8 @@
 mod backend;
 pub mod critical_gate;
 mod frontend;
+#[allow(dead_code)]
+mod result_int_parse_v1;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
