@@ -580,6 +580,11 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // A discarded inline task is a void-only statement: do not erase
+        // nonvoid payload types, even if the task body has no return.
+        if discard && payload == Some(true) {
+            return Err("E_TASK_RETURN_TYPE: do sync task requires void".into());
+        }
         self.expect(Token::Punct(b'{'))?;
         let effects = self.inline_statements(depth + 1)?;
         let value = if self.take(Token::Word("return"))? {
@@ -597,6 +602,9 @@ impl<'a> Parser<'a> {
         if (payload == Some(true) && value.is_none()) || (payload == Some(false) && value.is_some())
         {
             return Err("E_TASK_RETURN_TYPE: inline task payload and return do not agree".into());
+        }
+        if discard && value.is_some() {
+            return Err("E_TASK_RETURN_TYPE: do sync task cannot return a value".into());
         }
         if !discard && value.is_none() {
             return Err("E_TASK_RETURN_TYPE: void inline task cannot be used as int".into());
@@ -626,6 +634,9 @@ impl<'a> Parser<'a> {
                     );
                 }
                 break;
+            }
+            if !do_prefix {
+                return Err("E_SYNTAX: void sync task statement requires do".into());
             }
             effects.push(self.inline_task(depth + 1, true)?);
             // A semicolon after do sync task is optional in the canonical grammar.
@@ -1327,7 +1338,7 @@ mod tests {
     #[test]
     fn inline_sync_task_scalar_semantics_and_fail_closed_admission() {
         for (source, arguments, expected) in [
-            ("fnc main():int { sync task {}; return 42; }", &[][..], 42),
+            ("fnc main():int { do sync task {}; return 42; }", &[][..], 42),
             (
                 "fnc main():int { do sync task<void> { return; }; return 42; }",
                 &[],
@@ -1349,12 +1360,12 @@ mod tests {
                 42,
             ),
             (
-                "fnc main():int { do sync task<int> { return 1+1; }; return 42; }",
+                "fnc main():int { do sync task { do sync task<void> { return; }; return; }; return 42; }",
                 &[],
                 42,
             ),
             (
-                "fnc main():int { do sync task { do sync task {} return 7; } return 42; }",
+                "fnc main():int { do sync task { do sync task {}; return; } return 42; }",
                 &[],
                 42,
             ),
@@ -1367,10 +1378,16 @@ mod tests {
             "fnc main():int { return task /*c*/ <int> { return 42; }; }",
             "fnc main():int { do task<int> { return 42; }; return 0; }",
             "fnc main():int { return await task<int> { return 42; }; }",
+            "fnc main():int { sync task {}; return 42; }",
+            "fnc main():int { sync task<void> {}; return 42; }",
             "fnc main():int { return sync task {}; }",
             "fnc main():int { return sync task<void> { return; }; }",
             "fnc main():int { return sync task<int> {}; }",
             "fnc main():int { return sync task<int> { return; }; }",
+            "fnc main():int { do sync task<int> {}; return 0; }",
+            "fnc main():int { do sync task<int> { return 7; }; return 0; }",
+            "fnc main():int { do sync task { return 7; }; return 0; }",
+            "fnc main():int { do sync task { return sync task<int> { return 7; }; }; return 0; }",
             "fnc main():int { do sync task<void> { return 7; }; return 0; }",
             "fnc main():int { do sync task { await task<int> { return 1; }; } return 0; }",
             "fnc main():int { return sync task<int> { defer 1; return 42; }; }",
@@ -1381,6 +1398,22 @@ mod tests {
                 parse(source).is_err(),
                 "unsupported guest task admitted: {source}"
             );
+        }
+        for source in [
+            "fnc main():int { do sync task<int> {}; return 42; }",
+            "fnc main():int { do sync task<int> { return 1; }; return 42; }",
+            "fnc main():int { do sync task { return 1; }; return 42; }",
+            "fnc main():int { do sync task<void> { return 1; }; return 42; }",
+        ] {
+            let diagnostic = parse(source).expect_err("nonvoid do-sync must be rejected");
+            assert!(diagnostic.contains("E_TASK_RETURN_TYPE"), "{source}: {diagnostic}");
+        }
+        for source in [
+            "fnc main():int { sync task {}; return 42; }",
+            "fnc main():int { sync task<void> {}; return 42; }",
+        ] {
+            let diagnostic = parse(source).expect_err("bare inline-void task must be rejected");
+            assert!(diagnostic.contains("E_SYNTAX"), "{source}: {diagnostic}");
         }
         let e = parse("fnc main(sync:int):int { return sync; }")
             .expect_err("reserved sync cannot be a parameter");

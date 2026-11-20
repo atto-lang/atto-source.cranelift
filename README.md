@@ -70,16 +70,20 @@ This compiler does **not** currently support full AOT, actor-language compilatio
 
 ## Restricted inline `sync task` stage-0 candidate (draft)
 
-The current experimental Cranelift scalar frontend accepts `sync task {}`
-as a sequential empty statement in a synchronous scalar `main`.
-It also accepts `sync task<int> { return <scalar-expression>; }` as
-an expression of type `int`, inferred scalar returns, and
-`do sync task<int> { return <scalar-expression>; }` with discarded
-result. Inline bodies run in lexical order on the caller; they do not
-spawn children or produce `Future<T>`, and checked arithmetic failures
-inside discarded bodies still abort the scalar call without publishing
-a return value. Only signed-i64 arithmetic, parameters and nested
-non-suspending inline tasks are within this experimental subset.
+The experimental Cranelift scalar frontend accepts `do sync task {}`
+and `do sync task<void> { return; }` as sequential **void-only
+inline statements** in synchronous scalar `main`. Omitted do-inline
+type means `void`, never an inferred nonvoid payload.
+`do sync task<int>` or `do sync task { return 42; }` rejects with
+`E_TASK_RETURN_TYPE` before CLIF emission. Bare standalone
+`sync task {};` and `sync task<void> {};` reject with `E_SYNTAX`:
+the `do` keyword is required. Value-producing `sync task<int>
+{ return <scalar-expression>; }` remains an expression of type `int`.
+Inline bodies execute in lexical order on the caller, without spawning
+a child or creating `Future<T>`. Checked arithmetic failures in an
+inline value expression suppress guest result publication. Only
+signed-i64 arithmetic, parameters and nested non-suspending inline
+tasks are within this experimental subset.
 
 **Not supported:** independently scheduled `task<T>`, `await task`,
 suspension, `Future.cancel()`, mutable locals/captures, child TaskScopes,

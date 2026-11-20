@@ -44,12 +44,12 @@ fn call(mode: &str, fixture: &Source, args: &[&str]) -> Output {
 fn inline_scalar_guest_is_sequential_and_emits_real_clif() {
     for (source, args, expected) in [
         (
-            "fnc main():int { sync task {}; return 42; }",
+            "fnc main():int { do sync task {}; return 42; }",
             &[][..],
             "42\n",
         ),
         (
-            "fnc main():int { do sync task<int> { return 8; }; return sync task<int> { return 6*7; }; }",
+            "fnc main():int { do sync task<void> { return; }; return sync task<int> { return 6*7; }; }",
             &[],
             "42\n",
         ),
@@ -90,9 +90,9 @@ fn inline_scalar_guest_is_sequential_and_emits_real_clif() {
 }
 
 #[test]
-fn discarded_inline_expression_must_execute_and_preserve_failure_precedence() {
+fn inline_void_prefix_does_not_mask_checked_value_failure() {
     let fixture = Source::new(
-        "fnc main():int { do sync task<int> { return Integer.rem(5,0); }; return 42; }",
+        "fnc main():int { do sync task {}; return sync task<int> { return Integer.rem(5,0); }; }",
     );
     let checked = call("check", &fixture, &[]);
     assert!(
@@ -103,7 +103,7 @@ fn discarded_inline_expression_must_execute_and_preserve_failure_precedence() {
     assert_eq!(native.status.code(), Some(1));
     assert!(
         native.stdout.is_empty(),
-        "discarded task must not publish 42"
+        "checked failure must not publish a result"
     );
     assert!(String::from_utf8_lossy(&native.stderr).contains("integer divisor zero"));
 }
@@ -114,6 +114,13 @@ fn unverified_spawn_suspend_and_payload_forms_produce_no_guest_artifacts() {
         "fnc main():int { return task<int> { return 42; }; }",
         "fnc main():int { do task<int> { return 42; } return 0; }",
         "fnc main():int { return await task<int> { return 42; }; }",
+        "fnc main():int { sync task {}; return 42; }",
+        "fnc main():int { sync task<void> {}; return 42; }",
+        "fnc main():int { do sync task<int> {}; return 0; }",
+        "fnc main():int { do sync task<int> { return 42; }; return 0; }",
+        "fnc main():int { do sync task { return 42; }; return 0; }",
+        "fnc main():int { do sync task<void> { return 42; }; return 0; }",
+        "fnc main():int { do sync task { do sync task<int> { return 42; }; }; return 0; }",
         "fnc main():int { return sync task {}; }",
         "fnc main():int { return sync task<void> { return; }; }",
         "fnc main():int { return sync task<int> { return; }; }",
@@ -131,6 +138,30 @@ fn unverified_spawn_suspend_and_payload_forms_produce_no_guest_artifacts() {
                 "{mode} emitted guest artifact for {source}"
             );
             assert!(!got.stderr.is_empty(), "{mode} rejected without diagnostic");
+        }
+    }
+}
+
+#[test]
+fn do_inline_void_only_diagnostics_reject_before_clif_or_execution() {
+    for (source, expected) in [
+        ("fnc main():int { do sync task<int> {}; return 42; }", "E_TASK_RETURN_TYPE"),
+        ("fnc main():int { do sync task<int> { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
+        ("fnc main():int { do sync task { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
+        ("fnc main():int { do sync task<void> { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
+        ("fnc main():int { sync task {}; return 42; }", "E_SYNTAX"),
+        ("fnc main():int { sync task<void> {}; return 42; }", "E_SYNTAX"),
+    ] {
+        let fixture = Source::new(source);
+        for mode in ["check", "ir", "run"] {
+            let got = call(mode, &fixture, &[]);
+            assert_eq!(got.status.code(), Some(1), "{mode} admitted {source}");
+            assert!(got.stdout.is_empty(), "{mode} published stdout for {source}");
+            assert!(
+                String::from_utf8_lossy(&got.stderr).contains(expected),
+                "{mode} missing {expected} for {source}: {}",
+                String::from_utf8_lossy(&got.stderr)
+            );
         }
     }
 }
