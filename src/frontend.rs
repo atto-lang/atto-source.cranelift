@@ -1915,7 +1915,6 @@ mod tests {
             "fnc main():float{return 1;}",
             "fnc main():int{return x;}",
             "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/",
             "fnc main():int{return 1.0;}",
             "fnc main(x:int,x:int):int{return x;}",
             "fnc main():int{return 1;} unsafe",
@@ -1929,6 +1928,8 @@ mod tests {
         }
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
+        // Trailing lexical comments contain no statements and are inert.
+        assert!(parse("fnc main():int{return 1;} /*no*/").is_ok());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
         assert!(
             parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
@@ -2149,7 +2150,7 @@ mod tests {
                 "fnc main():int{{return task // inert{separator}{{ 42 }};}}"
             );
             assert!(
-                parse(&task).unwrap_err().contains("EXECUTION_DOMAIN_UNSUPPORTED"),
+                parse(&task).unwrap_err().contains("E_TASK_UNSUPPORTED"),
                 "task block was not recognized after {separator:?}"
             );
         }

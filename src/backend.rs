@@ -12,6 +12,8 @@ pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
     arity: usize,
+    // Exposed for exact CLIF/native comparison in compiler tests, not read by the CLI.
+    #[allow(dead_code)]
     pub clif: String,
 }
 

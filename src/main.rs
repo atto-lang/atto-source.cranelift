@@ -152,8 +152,8 @@ fn run() -> Result<(), String> {
         // Experimental *trusted* native scalar VM entry. The source must
         // accept (old, delta) i64; this is NOT a sandbox or actor scheduler.
         let vm = isolate::OresVM::new(2)?;
-        let a = vm.create_isolate("tenant-a", 1, 1)?;
-        let b = vm.create_isolate("tenant-b", 1, 1)?;
+        let a = vm.create_tenant_vm("tenant-a", 1, 1)?;
+        let b = vm.create_tenant_vm("tenant-b", 1, 1)?;
         vm.start(&a)?;
         vm.start(&b)?;
         let actor_a = vm.register_actor(&a, 1)?;
