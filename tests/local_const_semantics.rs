@@ -9,7 +9,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 fn guest(mode: &str, source: &str, args: &[&str]) -> Output {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "atto-cranelift-local-{}-{n}.atto", std::process::id()
+        "atto-cranelift-local-{}-{n}.atto",
+        std::process::id()
     ));
     // Refuse pre-existing paths and symlink leaves; never truncate someone
     // else's source fixture in a shared temporary directory.
@@ -18,7 +19,8 @@ fn guest(mode: &str, source: &str, args: &[&str]) -> Output {
         .write(true)
         .open(&path)
         .expect("create exclusive local-binding fixture");
-    file.write_all(source.as_bytes()).expect("write source fixture");
+    file.write_all(source.as_bytes())
+        .expect("write source fixture");
     drop(file);
     let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode)
@@ -33,22 +35,68 @@ fn guest(mode: &str, source: &str, args: &[&str]) -> Output {
 #[test]
 fn local_const_and_val_have_distinct_native_semantics() {
     for (source, args, answer) in [
-        ("fnc main():int{const x=40+2;return x;}", &[][..], b"42\n".as_slice()),
-        ("fnc main():int{int x=40+2;return x;}", &[][..], b"42\n".as_slice()),
-        ("fnc main():int{const x: int=40+2;return x;}", &[][..], b"42\n".as_slice()),
-        ("fnc main():int{int a=7;val int b=a+35;return b;}", &[][..], b"42\n".as_slice()),
-        ("fnc main():int{const x=40 as int;const int y=x+2;return y;}", &[][..], b"42\n".as_slice()),
-        ("fnc main():int{const int x=40;const y=x+2;return y;}", &[][..], b"42\n".as_slice()),
-        ("fnc main(a:int):int{val y=a+1;return y;}", &["41"][..], b"42\n".as_slice()),
-        ("fnc main(a:int):int{val int y=a+1;val z=y+1;return z;}", &["40"][..], b"42\n".as_slice()),
-        ("fnc main(a:int):int{val y=a+1;const z=40+2;return z;}", &["0"][..], b"42\n".as_slice()),
+        (
+            "fnc main():int{const x=40+2;return x;}",
+            &[][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main():int{int x=40+2;return x;}",
+            &[][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main():int{const x: int=40+2;return x;}",
+            &[][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main():int{int a=7;val int b=a+35;return b;}",
+            &[][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main():int{const x=40 as int;const int y=x+2;return y;}",
+            &[][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main():int{const int x=40;const y=x+2;return y;}",
+            &[][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main(a:int):int{val y=a+1;return y;}",
+            &["41"][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main(a:int):int{val int y=a+1;val z=y+1;return z;}",
+            &["40"][..],
+            b"42\n".as_slice(),
+        ),
+        (
+            "fnc main(a:int):int{val y=a+1;const z=40+2;return z;}",
+            &["0"][..],
+            b"42\n".as_slice(),
+        ),
     ] {
         let output = guest("run", source, args);
-        assert_eq!(output.status.code(), Some(0), "{source}: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, answer, "{source}");
         assert!(output.stderr.is_empty(), "{source}");
         let ir = guest("ir", source, &[]);
-        assert_eq!(ir.status.code(), Some(0), "{source}: {}", String::from_utf8_lossy(&ir.stderr));
+        assert_eq!(
+            ir.status.code(),
+            Some(0),
+            "{source}: {}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
         assert!(!ir.stdout.is_empty(), "{source}: native CLIF required");
     }
 }
@@ -76,10 +124,17 @@ fn runtime_const_and_type_first_parameter_must_fail_before_ir() {
         "fnc main():int{const x=1;x=2;return x;}",
     ] {
         for mode in ["check", "ir", "run"] {
-            let args = if source.contains("main(a:int)") && mode == "run" { &["41"][..] } else { &[][..] };
+            let args = if source.contains("main(a:int)") && mode == "run" {
+                &["41"][..]
+            } else {
+                &[][..]
+            };
             let out = guest(mode, source, args);
             assert_eq!(out.status.code(), Some(1), "{mode}: {source}");
-            assert!(out.stdout.is_empty(), "{mode}: no CLIF/guest output on rejection");
+            assert!(
+                out.stdout.is_empty(),
+                "{mode}: no CLIF/guest output on rejection"
+            );
             let diag = String::from_utf8_lossy(&out.stderr);
             assert!(diag.starts_with("orescranelift: "), "{source}: {diag}");
             assert!(!diag.contains("panicked at"), "{source}: {diag}");
@@ -91,7 +146,11 @@ fn runtime_const_and_type_first_parameter_must_fail_before_ir() {
 fn discarded_val_overflow_is_runtime_failure_not_compile_time_failure() {
     let source = "fnc main(a:int):int{val unused=a+1;return 42;}";
     let ir = guest("ir", source, &[]);
-    assert_eq!(ir.status.code(), Some(0), "runtime overflow must have valid CLIF");
+    assert_eq!(
+        ir.status.code(),
+        Some(0),
+        "runtime overflow must have valid CLIF"
+    );
     assert!(!ir.stdout.is_empty());
     let safe = guest("run", source, &["0"]);
     assert_eq!(safe.status.code(), Some(0));
@@ -123,14 +182,35 @@ fn binding_budget_and_comment_inertness() {
 #[test]
 fn cross_backend_const_diagnostic_classes_are_stable() {
     let cases = [
-        ("fnc main(a:int):int{const int x=a;return x;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main(a:int):int{int x=a;return x;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main(a:int):int{const x: int=a;return x;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main():int{const x=Integer.pow(2,3);return x;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main():int{const x=9223372036854775807+1;return x;}", "E_CONST_OVERFLOW"),
-        ("fnc main():int{const mut int x=0;return x;}", "E_CONST_MUT_UNSUPPORTED"),
+        (
+            "fnc main(a:int):int{const int x=a;return x;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main(a:int):int{int x=a;return x;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main(a:int):int{const x: int=a;return x;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main():int{const x=Integer.pow(2,3);return x;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main():int{const x=9223372036854775807+1;return x;}",
+            "E_CONST_OVERFLOW",
+        ),
+        (
+            "fnc main():int{const mut int x=0;return x;}",
+            "E_CONST_MUT_UNSUPPORTED",
+        ),
         ("fnc main():int{mut int x=0;return x;}", "E_MUT_QUALIFIER"),
-        ("fnc main():int{val x=0;x=1;return x;}", "E_IMMUTABLE_REBIND"),
+        (
+            "fnc main():int{val x=0;x=1;return x;}",
+            "E_IMMUTABLE_REBIND",
+        ),
     ];
     for (source, diagnostic) in cases {
         for mode in ["check", "ir", "run"] {
@@ -141,7 +221,10 @@ fn cross_backend_const_diagnostic_classes_are_stable() {
             };
             let result = guest(mode, source, args);
             assert_eq!(result.status.code(), Some(1), "{mode}: {source}");
-            assert!(result.stdout.is_empty(), "{mode}: no guest / IR result on rejection");
+            assert!(
+                result.stdout.is_empty(),
+                "{mode}: no guest / IR result on rejection"
+            );
             assert!(
                 String::from_utf8_lossy(&result.stderr).contains(diagnostic),
                 "{mode}/{source} expected {diagnostic}, got {}",

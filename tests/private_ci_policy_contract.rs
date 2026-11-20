@@ -43,7 +43,10 @@ fn rust_policy_classifier_rejects_unapproved_destinations() {
         "# no destinations\n",
         "  \t \n # explanatory comment\n\t# second comment\n",
     ] {
-        assert!(only_comments_or_blank(accepted), "valid disabled policy rejected");
+        assert!(
+            only_comments_or_blank(accepted),
+            "valid disabled policy rejected"
+        );
     }
     for rejected in [
         "other-org/private-repo 123\n",
@@ -62,7 +65,10 @@ fn rust_policy_classifier_rejects_unapproved_destinations() {
 
 #[test]
 fn checked_in_allowlist_matches_rust_deny_default_contract() {
-    assert!(ALLOWLIST.len() <= 65_536, "allowlist exceeds bounded policy size");
+    assert!(
+        ALLOWLIST.len() <= 65_536,
+        "allowlist exceeds bounded policy size"
+    );
     assert!(only_comments_or_blank(ALLOWLIST));
     assert!(!ALLOWLIST.contains('\0'));
     assert!(WORKFLOW.contains("test ! -L \"$file\""));

@@ -256,7 +256,9 @@ impl<'a> Parser<'a> {
         loop {
             while at < b.len() {
                 let width = whitespace_width(b, at);
-                if width == 0 { break; }
+                if width == 0 {
+                    break;
+                }
                 at += width;
             }
             if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
@@ -282,7 +284,9 @@ impl<'a> Parser<'a> {
         loop {
             while self.pos < b.len() {
                 let width = whitespace_width(b, self.pos);
-                if width == 0 { break; }
+                if width == 0 {
+                    break;
+                }
                 self.pos += width;
             }
             if b.get(self.pos..self.pos.saturating_add(2)) == Some(&b"//"[..]) {
@@ -340,7 +344,8 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.current,
                 Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
-            ) && b.get(self.pos) == Some(&b'!') {
+            ) && b.get(self.pos) == Some(&b'!')
+            {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
             }
             // The 'mut borrow!' form also must fail with an ownership-specific
@@ -409,8 +414,17 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.current,
                 Token::Word(
-                    "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
-                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                    "Array"
+                        | "FixedArray"
+                        | "Vector"
+                        | "List"
+                        | "FixedList"
+                        | "Slice"
+                        | "Tuple"
+                        | "Map"
+                        | "Set"
+                        | "ReadLoan"
+                        | "WriteLoan"
                 )
             ) {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
@@ -705,7 +719,9 @@ impl<'a> Parser<'a> {
             }
             self.next()?;
             self.expect(Token::Punct(b']'))?;
-            return Err("EXPORT_PACKAGE_LINKER_UNSUPPORTED: package-private native entrypoint".into());
+            return Err(
+                "EXPORT_PACKAGE_LINKER_UNSUPPORTED: package-private native entrypoint".into(),
+            );
         }
         if self.take(Token::Word("class"))? {
             return Err("EXPORT_KIND_UNSUPPORTED: nominal class descriptors not lowered".into());
@@ -721,7 +737,9 @@ impl<'a> Parser<'a> {
     fn program(mut self) -> Result<Program, String> {
         let mut seen_export = false;
         while self.current == Token::Word("export") {
-            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            if seen_export {
+                return Err("EXPORT_DUPLICATE: main".into());
+            }
             self.file_export()?;
             seen_export = true;
         }
@@ -985,22 +1003,27 @@ impl<'a> Parser<'a> {
             self.bindings.push((name, constant, runtime_slot));
         }
         if self.current == Token::Word("let") {
-            return Err("E_LET_UNSUPPORTED: rebindable locals require typed SSA write lowering".into());
+            return Err(
+                "E_LET_UNSUPPORTED: rebindable locals require typed SSA write lowering".into(),
+            );
         }
         if self.current == Token::Word("mut") {
             return Err("E_MUT_QUALIFIER: bare mut requires an explicit binding qualifier".into());
         }
-        if let Token::Word(name) = self.current {
-            if self.bindings.iter().any(|(declared, _, _)| declared == name) {
-                return Err("E_IMMUTABLE_REBIND: local const/val is not rebindable".into());
-            }
+        if matches!(
+            self.current,
+            Token::Word(name) if self.bindings.iter().any(|(declared, _, _)| declared == name)
+        ) {
+            return Err("E_IMMUTABLE_REBIND: local const/val is not rebindable".into());
         }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         while self.current == Token::Word("export") {
-            if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
+            if seen_export {
+                return Err("EXPORT_DUPLICATE: main".into());
+            }
             self.file_export()?;
             seen_export = true;
         }
@@ -1334,21 +1357,31 @@ mod tests {
             "fnc main():int{return 42;} /* unfinished",
             "/* forever /* nested */ fnc main():int{return 42;}",
         ] {
-            assert!(parse(malformed).unwrap_err().contains("unterminated block comment"));
+            assert!(
+                parse(malformed)
+                    .unwrap_err()
+                    .contains("unterminated block comment")
+            );
         }
-        let excessive = format!("{}fnc main():int{{return 42;}}{}", "/*".repeat(129), "*/".repeat(129));
-        assert!(parse(&excessive).unwrap_err().contains("block comment nesting limit"));
+        let excessive = format!(
+            "{}fnc main():int{{return 42;}}{}",
+            "/*".repeat(129),
+            "*/".repeat(129)
+        );
+        assert!(
+            parse(&excessive)
+                .unwrap_err()
+                .contains("block comment nesting limit")
+        );
     }
 
     #[test]
     fn pin_and_drop_bang_are_owned_operations_not_scalar_intrinsics() {
         for operation in ["pin!", "drop!", "copy!!"] {
-            for expression in [
-                format!("{operation} value"),
-                format!("{operation}(value)"),
-            ] {
+            for expression in [format!("{operation} value"), format!("{operation}(value)")] {
                 let source = format!("fnc main(value:int):int{{return {expression};}}");
-                let error = parse(&source).expect_err("unsupported owner instruction entered scalar IR");
+                let error =
+                    parse(&source).expect_err("unsupported owner instruction entered scalar IR");
                 assert!(
                     error.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
                     "wrong error for {source}: {error}"
@@ -1357,9 +1390,8 @@ mod tests {
         }
         // The bare words are not keywords. Only the bang operators require
         // typed ownership and a proven native lowering.
-        let scalar = parse(
-            "fnc main(pin:int,drop:int):int{return pin+drop;} // pin! drop! copy!!"
-        ).expect("inert comment/bare identifiers must stay available");
+        let scalar = parse("fnc main(pin:int,drop:int):int{return pin+drop;} // pin! drop! copy!!")
+            .expect("inert comment/bare identifiers must stay available");
         assert_eq!(eval(&scalar.result, &[19, 23]), Ok(42));
     }
 
@@ -1376,7 +1408,10 @@ mod tests {
             // May be caught either by the parser's own limit or the iterative
             // constructed-AST gate; it must never enter recursive native IR.
             let invalid = format!("fnc main():int{{return {nested};}}");
-            assert!(parse(&invalid).is_err(), "nested {op} expression bypassed AST depth budget");
+            assert!(
+                parse(&invalid).is_err(),
+                "nested {op} expression bypassed AST depth budget"
+            );
         }
     }
 
@@ -1416,7 +1451,10 @@ mod tests {
         for (source, expected) in [
             ("\0\u{001b}", "source_nul at byte 0"),
             ("\u{007f}\0", "source_terminal_control at byte 0"),
-            ("/* café 😀 */\u{001b}", "source_terminal_control at byte 16"),
+            (
+                "/* café 😀 */\u{001b}",
+                "source_terminal_control at byte 16",
+            ),
         ] {
             let err = parse(source).expect_err("invalid source admitted");
             assert!(err.starts_with(expected), "expected {expected}, got {err}");
@@ -1427,9 +1465,10 @@ mod tests {
     #[test]
     fn rejects_deceptive_unicode_controls_before_comment_scanning() {
         let baseline = "fnc main():int{return 42;}";
-        for cp in [0x0085, 0x061c, 0x200e, 0x200f, 0x2028, 0x2029,
-                   0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
-                   0x2066, 0x2067, 0x2068, 0x2069] {
+        for cp in [
+            0x0085, 0x061c, 0x200e, 0x200f, 0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+            0x2066, 0x2067, 0x2068, 0x2069,
+        ] {
             let control = char::from_u32(cp).unwrap();
             for source in [
                 format!("/* hidden{control} */ {baseline}"),
@@ -1438,8 +1477,10 @@ mod tests {
             ] {
                 let offset = source.find(control).unwrap();
                 let error = parse(&source).expect_err("forbidden source control admitted");
-                assert!(error.contains(&format!("source_unicode_control at byte {offset}")),
-                    "wrong diagnostic for U+{cp:04X}: {error}");
+                assert!(
+                    error.contains(&format!("source_unicode_control at byte {offset}")),
+                    "wrong diagnostic for U+{cp:04X}: {error}"
+                );
             }
         }
         assert!(parse("// café\nfnc main():int{return 42;}").is_ok());
@@ -1472,8 +1513,10 @@ mod tests {
             );
             let code = format!("fnc main():int{{return {literal};}}");
             let reason = parse(&code).expect_err("Cranelift cannot lower String yet");
-            assert!(reason.contains("STRING_BACKEND_UNSUPPORTED"),
-                "unexpected source denial for {literal}: {reason}");
+            assert!(
+                reason.contains("STRING_BACKEND_UNSUPPORTED"),
+                "unexpected source denial for {literal}: {reason}"
+            );
         }
         for (literal, reason) in [
             ("'unclosed", "unterminated string/template"),
@@ -1485,24 +1528,42 @@ mod tests {
             (r#"`invalid \x41`"#, "invalid template escape"),
             (r#"`invalid \u{1f600}`"#, "invalid Unicode escape"),
             ("`invalid \\\nnewline`", "invalid template escape"),
-            (r#"`only comments ${/* comment */}`"#, "empty template interpolation"),
-            (r#"`line comments ${// comment
-}`"#, "empty template interpolation"),
+            (
+                r#"`only comments ${/* comment */}`"#,
+                "empty template interpolation",
+            ),
+            (
+                r#"`line comments ${// comment
+}`"#,
+                "empty template interpolation",
+            ),
             (r#"`bad ${ }`"#, "empty template interpolation"),
-            (r#"`bad ${ /* unterminated}`"#, "unterminated interpolation comment"),
+            (
+                r#"`bad ${ /* unterminated}`"#,
+                "unterminated interpolation comment",
+            ),
         ] {
             let error = quoted_source::scan_quoted(literal, 0).unwrap_err();
             assert!(error.contains(reason), "wrong error for {literal}: {error}");
             let code = format!("fnc main():int{{return {literal};}}");
-            assert!(parse(&code).is_err(), "malformed literal accepted: {literal}");
+            assert!(
+                parse(&code).is_err(),
+                "malformed literal accepted: {literal}"
+            );
         }
         let many = |n: usize| {
             let literal = format!("`{}`", "${'x'}".repeat(n));
             literal
         };
-        assert_eq!(quoted_source::scan_quoted(&many(1024), 0), Ok(many(1024).len()));
-        assert!(quoted_source::scan_quoted(&many(1025), 0)
-            .unwrap_err().contains("template substitution limit"));
+        assert_eq!(
+            quoted_source::scan_quoted(&many(1024), 0),
+            Ok(many(1024).len())
+        );
+        assert!(
+            quoted_source::scan_quoted(&many(1025), 0)
+                .unwrap_err()
+                .contains("template substitution limit")
+        );
         let braces = |n: usize| {
             let mut literal = String::from("`${");
             literal.push_str(&"{".repeat(n));
@@ -1512,9 +1573,15 @@ mod tests {
             literal.push('`');
             literal
         };
-        assert_eq!(quoted_source::scan_quoted(&braces(255), 0), Ok(braces(255).len()));
-        assert!(quoted_source::scan_quoted(&braces(256), 0)
-            .unwrap_err().contains("interpolation brace limit"));
+        assert_eq!(
+            quoted_source::scan_quoted(&braces(255), 0),
+            Ok(braces(255).len())
+        );
+        assert!(
+            quoted_source::scan_quoted(&braces(256), 0)
+                .unwrap_err()
+                .contains("interpolation brace limit")
+        );
         let nested = |n: usize| {
             let mut literal = String::from("`");
             literal.push_str(&"${`".repeat(n));
@@ -1523,9 +1590,15 @@ mod tests {
             literal.push('`');
             literal
         };
-        assert_eq!(quoted_source::scan_quoted(&nested(16), 0), Ok(nested(16).len()));
-        assert!(quoted_source::scan_quoted(&nested(17), 0)
-            .unwrap_err().contains("nesting limit"));
+        assert_eq!(
+            quoted_source::scan_quoted(&nested(16), 0),
+            Ok(nested(16).len())
+        );
+        assert!(
+            quoted_source::scan_quoted(&nested(17), 0)
+                .unwrap_err()
+                .contains("nesting limit")
+        );
         let nested_comments = |count: usize| {
             let mut source = String::from("`${");
             source.push_str(&"/*".repeat(count));
@@ -1538,18 +1611,31 @@ mod tests {
             quoted_source::scan_quoted(&nested_comments(128), 0),
             Ok(nested_comments(128).len())
         );
-        assert!(quoted_source::scan_quoted(&nested_comments(129), 0)
-            .unwrap_err().contains("comment nesting limit"));
+        assert!(
+            quoted_source::scan_quoted(&nested_comments(129), 0)
+                .unwrap_err()
+                .contains("comment nesting limit")
+        );
 
         // Next Line is Unicode whitespace: it cannot count as code.
-        for body in ["\u{0085}", "\u{0085}/* comment */", "\u{0085}\n",
-                     "\u{0085}\u{2028}\u{2029}"] {
+        for body in [
+            "\u{0085}",
+            "\u{0085}/* comment */",
+            "\u{0085}\n",
+            "\u{0085}\u{2028}\u{2029}",
+        ] {
             let template = format!("`x ${{{body}}}`");
-            assert!(quoted_source::scan_quoted(&template, 0)
-                .unwrap_err().contains("empty template interpolation"));
+            assert!(
+                quoted_source::scan_quoted(&template, 0)
+                    .unwrap_err()
+                    .contains("empty template interpolation")
+            );
         }
         let valid_nel = "`x ${\u{0085}x}`";
-        assert_eq!(quoted_source::scan_quoted(valid_nel, 0), Ok(valid_nel.len()));
+        assert_eq!(
+            quoted_source::scan_quoted(valid_nel, 0),
+            Ok(valid_nel.len())
+        );
 
         // Code-like source inside comments remains non-executable.
         assert!(parse("fnc main():int{/* ` ${actor} */ return 42;}").is_ok());
@@ -1931,7 +2017,6 @@ mod tests {
             "fnc main():float{return 1;}",
             "fnc main():int{return x;}",
             "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/",
             "fnc main():int{return 1.0;}",
             "fnc main(x:int,x:int):int{return x;}",
             "fnc main():int{return 1;} unsafe",
@@ -1946,6 +2031,8 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
+        // A valid trailing block comment must not cause a false rejection.
+        assert!(parse("fnc main():int{return 1;} /*no*/").is_ok());
         assert!(
             parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
                 .is_err()
@@ -2136,7 +2223,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn unicode_line_boundaries_align_scalar_lexer_and_actor_preflight() {
         for separator in ["\r", "\n"] {
@@ -2147,25 +2233,31 @@ mod tests {
             assert!(parse(&inline).is_ok(), "whitespace {separator:?}");
 
             let pubsub = format!("// inert{separator}runtime_pubsub.publish");
-            assert!(has_actor_pubsub_surface(&pubsub), "pubsub hidden after {separator:?}");
             assert!(
-                parse(&pubsub).unwrap_err().contains("native ActorGroup/Topic"),
+                has_actor_pubsub_surface(&pubsub),
+                "pubsub hidden after {separator:?}"
+            );
+            assert!(
+                parse(&pubsub)
+                    .unwrap_err()
+                    .contains("native ActorGroup/Topic"),
                 "actor preflight denied with wrong class after {separator:?}"
             );
-            let inert = format!(
-                "// runtime_pubsub.publish{separator}fnc main():int{{return 42;}}"
-            );
+            let inert = format!("// runtime_pubsub.publish{separator}fnc main():int{{return 42;}}");
             assert!(!has_actor_pubsub_surface(&inert), "comment was active");
             assert!(parse(&inert).is_ok(), "comment was not inert");
 
             let pipe = format!("// inert{separator}first pipe second");
-            assert!(has_actor_pipe_surface(&pipe), "actor pipe hidden after {separator:?}");
-
-            let task = format!(
-                "fnc main():int{{return task // inert{separator}{{ 42 }};}}"
-            );
             assert!(
-                parse(&task).unwrap_err().contains("EXECUTION_DOMAIN_UNSUPPORTED"),
+                has_actor_pipe_surface(&pipe),
+                "actor pipe hidden after {separator:?}"
+            );
+
+            let task = format!("fnc main():int{{return task // inert{separator}{{ 42 }};}}");
+            assert!(
+                parse(&task)
+                    .unwrap_err()
+                    .contains("EXECUTION_DOMAIN_UNSUPPORTED"),
                 "task block was not recognized after {separator:?}"
             );
         }
@@ -2178,7 +2270,9 @@ mod tests {
                 format!("fnc main():int{{return \"quoted{control}\";}}"),
             ] {
                 assert!(
-                    parse(&source).unwrap_err().contains("source_unicode_control"),
+                    parse(&source)
+                        .unwrap_err()
+                        .contains("source_unicode_control"),
                     "Unicode security control must fail before quote/comment admission"
                 );
             }

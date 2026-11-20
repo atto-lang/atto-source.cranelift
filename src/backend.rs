@@ -12,6 +12,7 @@ pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
     arity: usize,
+    #[cfg(test)]
     pub clif: String,
 }
 
@@ -195,12 +196,22 @@ fn validate_guest_expr(
                     work.push((item, depth + 1));
                 }
             }
-            Expr::Param(_) => return Err("invalid parameter reference before native codegen".into()),
-            Expr::Local(_) => return Err("invalid or forward local reference before native codegen".into()),
+            Expr::Param(_) => {
+                return Err("invalid parameter reference before native codegen".into());
+            }
+            Expr::Local(_) => {
+                return Err("invalid or forward local reference before native codegen".into());
+            }
             Expr::Neg(x) | Expr::ShiftRight8(x) => work.push((x, depth + 1)),
-            Expr::Add(a,b) | Expr::Sub(a,b) | Expr::Mul(a,b)
-            | Expr::BitXor(a,b) | Expr::BitAnd(a,b) | Expr::BitOr(a,b)
-            | Expr::NamedRem(a,b) | Expr::NamedMod(a,b) | Expr::NamedPow(a,b) => {
+            Expr::Add(a, b)
+            | Expr::Sub(a, b)
+            | Expr::Mul(a, b)
+            | Expr::BitXor(a, b)
+            | Expr::BitAnd(a, b)
+            | Expr::BitOr(a, b)
+            | Expr::NamedRem(a, b)
+            | Expr::NamedMod(a, b)
+            | Expr::NamedPow(a, b) => {
                 work.push((b, depth + 1));
                 work.push((a, depth + 1));
             }
@@ -228,9 +239,25 @@ fn emit(
             // Emit every member: checked errors on discarded entries MUST
             // still branch before the result-store instruction.
             let (first, rest) = parts.split_first().expect("validated nonempty seq");
-            let mut value = emit(first, b, params, locals, error, divisor_error, negative_exponent_error);
+            let mut value = emit(
+                first,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             for part in rest {
-                value = emit(part, b, params, locals, error, divisor_error, negative_exponent_error);
+                value = emit(
+                    part,
+                    b,
+                    params,
+                    locals,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                );
             }
             value
         }
@@ -238,7 +265,15 @@ fn emit(
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte
             // extraction for 0..i31::MAX without float narrowing.
-            let input = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let input = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
         }
@@ -246,8 +281,24 @@ fn emit(
             // Native signed-i64 bitwise primitives, not host-side emulation.
             // Emit and check each operand in lexical order before the bitwise
             // instruction; a checked arithmetic failure cannot be skipped.
-            let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-            let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+            let lhs = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
+            let rhs = emit(
+                y,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
                 BitAnd(_, _) => b.ins().band(lhs, rhs),
@@ -256,8 +307,24 @@ fn emit(
             }
         }
         NamedRem(x, y) | NamedMod(x, y) => {
-            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+            let left = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
+            let right = emit(
+                y,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
                 rem
@@ -273,30 +340,102 @@ fn emit(
             }
         }
         NamedPow(x, y) => {
-            let base = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-            let exponent = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+            let base = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
+            let exponent = emit(
+                y,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
-                    let rhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(
+                        x,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
                 Add(x, y) => {
-                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(
+                        x,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
+                    let rhs = emit(
+                        y,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
-                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(
+                        x,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
+                    let rhs = emit(
+                        y,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
-                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(
+                        x,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
+                    let rhs = emit(
+                        y,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                    );
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -318,7 +457,16 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
-fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context, cranelift_module::FuncId), String> {
+fn prepare_ir(
+    source: &Program,
+) -> Result<
+    (
+        JITModule,
+        cranelift_codegen::Context,
+        cranelift_module::FuncId,
+    ),
+    String,
+> {
     validate_guest_program(source)?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
@@ -352,8 +500,13 @@ fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context
         // A runtime val initializer runs once in lexical order, even if it
         // is unused; checked traps branch away before any output store.
         let value = emit(
-            initializer, &mut b, &p[..4], &locals,
-            failure, divisor_error, negative_exponent_error,
+            initializer,
+            &mut b,
+            &p[..4],
+            &locals,
+            failure,
+            divisor_error,
+            negative_exponent_error,
         );
         locals.push(value);
     }
@@ -395,6 +548,7 @@ pub fn render_ir(source: &Program) -> Result<String, String> {
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
     let (mut module, mut ctx, id) = prepare_ir(source)?;
+    #[cfg(test)]
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -405,6 +559,7 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         module,
         id,
         arity: source.parameters.len(),
+        #[cfg(test)]
         clif,
     })
 }
@@ -466,9 +621,8 @@ mod verification_tests {
 
     #[test]
     fn ir_render_does_not_require_native_finalization_and_matches_compiled_clif() {
-        let parsed = crate::frontend::parse(
-            "fnc main(a:int):int{return Integer.bitXor(a+40,2);}"
-        ).expect("valid typed scalar");
+        let parsed = crate::frontend::parse("fnc main(a:int):int{return Integer.bitXor(a+40,2);}")
+            .expect("valid typed scalar");
         let emitted_only = render_ir(&parsed).expect("verified non-executable CLIF");
         assert!(emitted_only.contains("function"));
         let native = compile(&parsed).expect("Cranelift executable output");
@@ -480,18 +634,25 @@ mod verification_tests {
 
     #[test]
     fn direct_compiled_api_requires_exact_declared_arity() {
-        let program = crate::frontend::parse(
-            "fnc main(a:int,b:int):int{return a*10+b;}"
-        ).expect("two-parameter native scalar");
+        let program = crate::frontend::parse("fnc main(a:int,b:int):int{return a*10+b;}")
+            .expect("two-parameter native scalar");
         let compiled = compile(&program).expect("compile exact arity fixture");
         assert_eq!(compiled.run(&[4, 2]), Ok(42));
-        for args in [
-            &[][..], &[4][..], &[4, 2, 0][..], &[4, 2, 0, 0][..],
-        ] {
-            assert_eq!(compiled.run(args), Err("runtime argument count mismatch".into()));
+        for args in [&[][..], &[4][..], &[4, 2, 0][..], &[4, 2, 0, 0][..]] {
+            assert_eq!(
+                compiled.run(args),
+                Err("runtime argument count mismatch".into())
+            );
         }
-        assert_eq!(compiled.run(&[4, 2, 0, 0, 0]), Err("too many runtime arguments".into()));
-        assert_eq!(compiled.run(&[4, 2]), Ok(42), "failed admission cannot corrupt native state");
+        assert_eq!(
+            compiled.run(&[4, 2, 0, 0, 0]),
+            Err("too many runtime arguments".into())
+        );
+        assert_eq!(
+            compiled.run(&[4, 2]),
+            Ok(42),
+            "failed admission cannot corrupt native state"
+        );
     }
 
     #[test]
@@ -715,18 +876,22 @@ mod local_ast_security_tests {
             locals: vec![Expr::Local(0)],
             result: Expr::Literal(42),
         };
-        assert!(render_ir(&self_reference)
-            .unwrap_err()
-            .contains("invalid or forward local reference"));
+        assert!(
+            render_ir(&self_reference)
+                .unwrap_err()
+                .contains("invalid or forward local reference")
+        );
 
         let forged_parameter = Program {
             parameters: vec![],
             locals: vec![],
             result: Expr::Param(0),
         };
-        assert!(render_ir(&forged_parameter)
-            .unwrap_err()
-            .contains("invalid parameter reference"));
+        assert!(
+            render_ir(&forged_parameter)
+                .unwrap_err()
+                .contains("invalid parameter reference")
+        );
     }
 
     #[test]
@@ -736,9 +901,11 @@ mod local_ast_security_tests {
             locals: vec![Expr::Literal(1); 65],
             result: Expr::Literal(42),
         };
-        assert!(render_ir(&too_many)
-            .unwrap_err()
-            .contains("runtime local count exceeds 64"));
+        assert!(
+            render_ir(&too_many)
+                .unwrap_err()
+                .contains("runtime local count exceeds 64")
+        );
 
         let mut deep = Expr::Literal(42);
         for _ in 0..129 {
@@ -749,12 +916,13 @@ mod local_ast_security_tests {
             locals: vec![],
             result: deep,
         };
-        assert!(render_ir(&deep_program)
-            .unwrap_err()
-            .contains("expression depth budget exceeded"));
+        assert!(
+            render_ir(&deep_program)
+                .unwrap_err()
+                .contains("expression depth budget exceeded")
+        );
     }
 }
-
 
 #[cfg(test)]
 mod integrated_local_sequence_native_tests {
@@ -775,7 +943,10 @@ mod integrated_local_sequence_native_tests {
                 result: expr,
             };
             assert!(render_ir(&program).is_err(), "forged AST emitted CLIF");
-            assert!(compile(&program).is_err(), "forged AST compiled to native code");
+            assert!(
+                compile(&program).is_err(),
+                "forged AST compiled to native code"
+            );
         }
     }
 
@@ -786,18 +957,27 @@ mod integrated_local_sequence_native_tests {
         ).expect("integrated source must parse");
         let ir = render_ir(&program).expect("validate CLIF");
         let native = compile(&program).expect("compile real native guest");
-        assert_eq!(native.clif, ir, "IR preview and native guest must share checked IR");
+        assert_eq!(
+            native.clif, ir,
+            "IR preview and native guest must share checked IR"
+        );
         assert_eq!(native.run(&[40]), Ok(42));
-        assert_eq!(native.run(&[i64::MAX]), Err("i64 arithmetic overflow".into()));
+        assert_eq!(
+            native.run(&[i64::MAX]),
+            Err("i64 arithmetic overflow".into())
+        );
     }
 
     #[test]
     fn unused_runtime_sequence_must_still_trap() {
-        let program = crate::frontend::parse(
-            "fnc main(a:int):int{val ignored=seq(a+1,42);return 42;}"
-        ).expect("checked runtime initializer should parse");
+        let program =
+            crate::frontend::parse("fnc main(a:int):int{val ignored=seq(a+1,42);return 42;}")
+                .expect("checked runtime initializer should parse");
         let native = compile(&program).expect("native checked guest");
         assert_eq!(native.run(&[1]), Ok(42));
-        assert_eq!(native.run(&[i64::MAX]), Err("i64 arithmetic overflow".into()));
+        assert_eq!(
+            native.run(&[i64::MAX]),
+            Err("i64 arithmetic overflow".into())
+        );
     }
 }

@@ -12,7 +12,8 @@ impl Source {
         for _ in 0..64 {
             let id = NEXT.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "atto-cranelift-check-{}-{id}.atto", std::process::id()
+                "atto-cranelift-check-{}-{id}.atto",
+                std::process::id()
             ));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
@@ -27,13 +28,17 @@ impl Source {
     }
 }
 impl Drop for Source {
-    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn check(contents: &str) -> std::process::Output {
     let source = Source::new(contents);
     Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("check").arg(source.0.as_os_str()).output()
+        .arg("check")
+        .arg(source.0.as_os_str())
+        .output()
         .expect("launch actual compiler frontend")
 }
 
@@ -45,9 +50,20 @@ fn check_admits_stage_zero_scalar_without_ir_or_guest_output() {
         "fnc main():int { return 9223372036854775807 - 9223372036854775765; }",
     ] {
         let output = check(src);
-        assert_eq!(output.status.code(), Some(0), "parser denied valid scalar: {}", String::from_utf8_lossy(&output.stderr));
-        assert!(output.stdout.is_empty(), "check must not emit native result or CLIF");
-        assert!(output.stderr.is_empty(), "check must not emit diagnostics on success");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "parser denied valid scalar: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "check must not emit native result or CLIF"
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "check must not emit diagnostics on success"
+        );
     }
 }
 
@@ -60,7 +76,11 @@ fn check_refuses_actor_ownership_and_malformed_source() {
         "fnc main():int{return never_declared;}",
     ] {
         let output = check(src);
-        assert_eq!(output.status.code(), Some(1), "check admitted unsupported source: {src}");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "check admitted unsupported source: {src}"
+        );
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "));
     }
@@ -70,11 +90,18 @@ fn check_refuses_actor_ownership_and_malformed_source() {
 fn check_rejects_runtime_arguments_and_missing_sources_before_guest() {
     let source = Source::new("fnc main():int{return 42;}");
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("check").arg(&source.0).arg("17").output().unwrap();
+        .arg("check")
+        .arg(&source.0)
+        .arg("17")
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not accept runtime arguments"));
-    let missing = Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("check").output().unwrap();
+    let missing = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("check")
+        .output()
+        .unwrap();
     assert_eq!(missing.status.code(), Some(1));
     assert!(missing.stdout.is_empty());
 }
