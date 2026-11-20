@@ -1,1 +1,0 @@
-fnc main(): int { return client_symbol_not_defined(1); }

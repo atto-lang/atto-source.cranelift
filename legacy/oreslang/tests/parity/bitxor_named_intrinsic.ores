@@ -1,1 +1,0 @@
-pub fnc main(): int { return Integer.bitXor(-1, 9223372036854775807); }

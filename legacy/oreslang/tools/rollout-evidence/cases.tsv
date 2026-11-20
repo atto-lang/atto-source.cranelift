@@ -1,6 +1,0 @@
-guest-scalar	cranelift	execution
-checked-i64	cranelift	execution
-structural-depth	cranelift	rejection
-source-admission	cranelift	rejection
-ownership-bang-admission	cranelift	rejection
-native-abi	cranelift	execution

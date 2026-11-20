@@ -1,6 +1,0 @@
-fnc invalid(Option<int> x): int {
-    match x over
-        on Some(7) -> { return 1; }
-        on None -> { return 0; }
-    end
-}
