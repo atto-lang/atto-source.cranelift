@@ -240,7 +240,7 @@ impl<'a> Parser<'a> {
 
     /// True when the next significant byte (after whitespace and line
     /// comments) opens a block. Used for contextual `task`/`nb` blocks.
-    fn next_opens_block(&self) -> bool {
+    fn next_significant_is(&self, expected: u8) -> bool {
         let b = self.input.as_bytes();
         let mut at = self.pos;
         loop {
@@ -263,9 +263,10 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
-            return b.get(at) == Some(&b'{');
+            return b.get(at) == Some(&expected);
         }
     }
+    fn next_opens_block(&self) -> bool { self.next_significant_is(b'{') }
 
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
@@ -324,6 +325,14 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            if self.current == Token::Word("sync") {
+                return Err("E_RESERVED: sync is reserved for cooperative task joining, not a variable or blocking operation".into());
+            }
+            if self.current == Token::Word("task")
+                && (self.next_opens_block() || self.next_significant_is(b'<'))
+            {
+                return Err("E_TASK_UNSUPPORTED: typed task<T> produces Future<T>; cancellation, TaskScope ownership and lock unwind require verified lowering".into());
+            }
             // Typed ownership bangs must never be interpreted as scalar
             // identifiers or a runtime macro call. Detect the contiguous
             // operator before scalar AST admission, including borrow! mut.
@@ -414,8 +423,8 @@ impl<'a> Parser<'a> {
                     "EXECUTION_DOMAIN_UNSUPPORTED: execution domain '{word}' is reserved and not lowered by the Cranelift backend; no implicit CPU fallback"
                 ));
             }
-            if matches!(self.current, Token::Word("task" | "nb")) && self.next_opens_block() {
-                return Err("EXECUTION_DOMAIN_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
+            if self.current == Token::Word("nb") && self.next_opens_block() {
+                return Err("EXECUTION_DOMAIN_UNSUPPORTED: nb task requires scheduler-aware Future lowering; no implicit inline execution".into());
             }
         } else if matches!(first, b'\'' | b'"' | b'`') {
             self.pos = quoted_source::scan_quoted(self.input, start)?;
@@ -1149,6 +1158,32 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sync_reservation_and_typed_tasks_fail_before_cranelift_native_jit() {
+        for spelling in [
+            "fnc main():int { return task<int> { return 42; }; }",
+            "fnc main():int { return task /*c*/ <int> { return 42; }; }",
+            "fnc main():int { do task<int> { return 42; }; return 0; }",
+            "fnc main():int { do sync task<int> { return 42; }; return 0; }",
+            "fnc main():int { return sync task<int> { return 42; }; }",
+        ] {
+            let e = parse(spelling).expect_err("task syntax cannot be scalar JIT lowered");
+            assert!(
+                e.contains("E_TASK_UNSUPPORTED") || e.contains("E_RESERVED"),
+                "unexpected error for {spelling}: {e}"
+            );
+        }
+        let e = parse("fnc main(sync:int):int { return sync; }")
+            .expect_err("reserved sync cannot be a parameter");
+        assert!(e.contains("E_RESERVED"), "{e}");
+        let good = parse("fnc main(sync_data:int):int { return sync_data; }")
+            .expect("identifier prefix should not be reserved");
+        assert_eq!(eval(&good.result, &[42]), Ok(42));
+        let commented = parse("fnc main():int { /* do sync task<int> { } */ return 42; }")
+            .expect("commentary task keywords are inert");
+        assert_eq!(eval(&commented.result, &[]), Ok(42));
+    }
+
     #[test]
     fn nested_block_comments_are_inert_but_bounded_and_well_terminated() {
         let guest = "/* define actor Worker */ fnc main(/* ignored */):int { /* outer /* inner */ rest */ return 42; }";
