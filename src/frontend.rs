@@ -333,6 +333,17 @@ impl<'a> Parser<'a> {
             ) && b.get(self.pos) == Some(&b'!') {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
             }
+            // Do not interpret canonical guest exception keywords as host
+            // macros, scalar names, or a generic unary logical-not.
+            if matches!(self.current,
+                Token::Word("trap" | "throw" | "raise" | "panic"))
+                && b.get(self.pos) == Some(&b'!')
+                && b.get(self.pos + 1) != Some(&b'=')
+                && !(b.get(self.pos..self.pos.saturating_add(3)) == Some(&b"!eq"[..])
+                     && b.get(self.pos + 3).map_or(true, |c| !c.is_ascii_alphanumeric() && *c != b'_'))
+            {
+                return Err("EXCEPTION_BANG_BACKEND_UNSUPPORTED: typed guest Error/Result, unwind and actor supervisor lowering required".into());
+            }
             // The 'mut borrow!' form also must fail with an ownership-specific
             // diagnostic: without lookahead the parser would reject 'mut'
             // generically before advancing to the borrow token.
