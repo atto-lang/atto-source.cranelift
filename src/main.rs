@@ -5,6 +5,7 @@ mod backend;
 pub mod critical_gate;
 mod frontend;
 mod functional_pipelines;
+mod module_link;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
@@ -152,15 +153,27 @@ fn run() -> Result<(), String> {
     // bounded closed-world pipeline parser is consulted only for sources
     // containing pipeline/inline-arrow syntax, without host evaluation.
     // Both paths return the SAME checked Program shape before CLIF emission.
-    let parsed = match frontend::parse(source) {
-        Ok(program) => program,
-        Err(original)
-            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
-        {
-            functional_pipelines::parse(source)
-                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+    let linked_source = source
+        .lines()
+        .any(|line| line.trim_start().starts_with("import "));
+    let parsed = if linked_source {
+        // Imported source graphs are not approved for host-mediated TenantVM
+        // scalar-state stepping, even though the JIT is still trusted-only.
+        if mode == "isolate" {
+            return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
         }
-        Err(original) => return Err(original),
+        module_link::parse(&path, source)?
+    } else {
+        match frontend::parse(source) {
+            Ok(program) => program,
+            Err(original)
+                if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+            {
+                functional_pipelines::parse(source)
+                    .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+            }
+            Err(original) => return Err(original),
+        }
     };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
