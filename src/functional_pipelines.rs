@@ -496,23 +496,26 @@ pub fn parse(source: &str) -> Result<Program, String> {
 /// in a source unit does not make it reachable across the package boundary.
 /// No native call ABI, mutable capture, recursion, or general module language
 /// is implied by this tightly scoped checked inliner.
-pub fn parse_linked(entry: &str, units: &[(String, String)]) -> Result<Program, String> {
+pub fn parse_linked(entry: &str, units: &[(String, String, String)]) -> Result<Program, String> {
     if units.len() > 8 {
         return Err("E_LINK_IMPORT_LIMIT".into());
     }
     let mut selected = Parser::new(entry)?.parse()?;
-    for (requested, text) in units {
+    for (requested, local, text) in units {
         let candidates = Parser::new(text)?.parse()?;
         let mut exported = candidates
             .into_iter()
             .filter(|f| f.name == *requested && f.public);
-        let func = exported.next().ok_or("E_LINK_EXPORT_NOT_PUBLIC_OR_MISSING")?;
+        let mut func = exported.next().ok_or("E_LINK_EXPORT_NOT_PUBLIC_OR_MISSING")?;
         if exported.next().is_some() {
             return Err("E_LINK_AMBIGUOUS_EXPORT".into());
         }
-        if func.name == "main" {
+        if func.name == "main" || local == "main" {
             return Err("E_LINK_IMPORTED_ENTRY".into());
         }
+        // Rename the selected symbol in this closed-world linked scope only.
+        // Private and unimported declarations stay unreachable.
+        func.name = local.clone();
         selected.push(func);
     }
     compile_functions(selected)
