@@ -67,3 +67,30 @@ cargo run --locked -- ir tests/fixtures/clients-scalar-v1/01-precedence.ores
 **Evidence status:** these commands are test instructions, not a claim they ran successfully in this canonical repository. The [native GitHub Actions workflow](.github/workflows/native-cranelift.yml) must show assigned jobs, nonzero executed steps, native guest results and an exact source SHA before recording any capability as passed. A mirror in another private organization requires the same blob SHA proof and explicit runner logs. The repository inventory remains `NOT_CERTIFIED` with `not_executed` statuses until then.
 
 This compiler does **not** currently support full AOT, actor-language compilation, untrusted-isolate sandboxing, ownership-bang lowering, the complete Atto parser, or five-backend parity. It is a stage-0 **trusted** scalar JIT, not a substitute for LLVM/Forge/Java backend verification. No Python scripts or test harnesses are imported.
+
+## Restricted inline `sync task` stage-0 candidate (draft)
+
+The current experimental Cranelift scalar frontend accepts `sync task {}`
+as a sequential empty statement in a synchronous scalar `main`.
+It also accepts `sync task<int> { return <scalar-expression>; }` as
+an expression of type `int`, inferred scalar returns, and
+`do sync task<int> { return <scalar-expression>; }` with discarded
+result. Inline bodies run in lexical order on the caller; they do not
+spawn children or produce `Future<T>`, and checked arithmetic failures
+inside discarded bodies still abort the scalar call without publishing
+a return value. Only signed-i64 arithmetic, parameters and nested
+non-suspending inline tasks are within this experimental subset.
+
+**Not supported:** independently scheduled `task<T>`, `await task`,
+suspension, `Future.cancel()`, mutable locals/captures, child TaskScopes,
+defer/using, scope guards, or tenant scheduling guarantees. These
+require checked lowering and remain rejected before CLIF or executable
+guest emission. This stage-0 JIT is trusted, **not** a sandbox for
+untrusted tenant code. See atto-spec PR #129 for the full target contract
+and atto-platform-conformance PR #115 for portable fixtures. The
+compiler subset does not pass those full portable fixtures yet.
+
+The source includes parser tests and actual CLI native-guest tests in
+`tests/inline_sync_task.rs`; run `cargo test --locked --all-targets`
+on the exact PR head. Until an executing runner produces authenticated
+guest receipts, this is **NOT_EXECUTED** and NOT production-certified.
