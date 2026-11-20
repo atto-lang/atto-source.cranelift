@@ -21,5 +21,8 @@ fn pull_push_remains_fail_closed_until_native_lowering_exists() {
     }
     let accepted = frontend::parse("fnc main():int{return 42;}")
         .expect("negative gate must preserve scalar JIT admission");
-    assert!(accepted.locals.is_empty(), "scalar entry must not gain hidden runtime locals");
+    assert!(
+        accepted.locals.is_empty(),
+        "scalar entry must not gain hidden runtime locals"
+    );
 }

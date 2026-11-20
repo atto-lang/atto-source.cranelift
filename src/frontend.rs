@@ -1003,6 +1003,24 @@ impl<'a> Parser<'a> {
             self.bindings.push((name, constant, runtime_slot));
         }
         if self.current == Token::Word("let") {
+            // A denied 'let' may still conceal a reserved actor operation,
+            // e.g. 'let a = spawn Worker()'. Scan only this unsupported
+            // initializer so actor capability diagnostics win without
+            // changing unrelated ADT/match error precedence elsewhere.
+            for _ in 0..MAX_NODES {
+                match self.next() {
+                    Err(message)
+                        if message.contains("actor and supervisor capabilities are unsupported") =>
+                    {
+                        return Err(message);
+                    }
+                    Ok(()) if matches!(self.current, Token::End | Token::Punct(b';' | b'}')) => {
+                        break;
+                    }
+                    Err(_) => break,
+                    Ok(()) => {}
+                }
+            }
             return Err(
                 "E_LET_UNSUPPORTED: rebindable locals require typed SSA write lowering".into(),
             );
@@ -1339,14 +1357,6 @@ pub fn parse(text: &str) -> Result<Program, String> {
     }
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
-    }
-    // Sweep the complete bounded token stream before choosing a scalar
-    // declaration failure. Security-critical reserved actor/capability tokens
-    // must not be hidden behind an earlier unsupported local binding such as
-    // 'let x = spawn Worker()'. Comments and quotes remain lexically inert.
-    let mut safety_scan = Parser::new(text)?;
-    while safety_scan.current != Token::End {
-        safety_scan.next()?;
     }
     Parser::new(text)?.program()
 }
