@@ -39,7 +39,7 @@ fn result_question_trap_match_fail_closed_before_jit_or_clif() {
 }
 #[test]
 fn scalar_control_remains_real_cranelift_guest() {
-    let output = compile("run", b"pub fnc main(): int { return 42; }\n");
+    let output = compile("run", b"fnc main():int{return 42;}\n");
     assert!(output.status.success(), "scalar source failed admission");
     assert_eq!(output.stdout, b"42\n");
 }
