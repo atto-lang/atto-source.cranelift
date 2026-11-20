@@ -184,14 +184,108 @@ fn import_visibility_and_package_authority_fail_before_native_ir() {
 }
 
 #[test]
-fn nonlinear_call_remains_explicitly_unsupported_until_real_native_call_abi() {
+fn imported_nonlinear_helper_uses_real_native_call_and_returns_42() {
     let project = Project::new();
     let path = project.write(
-        "src/reject-nonlinear.atto",
+        "src/native-double.atto",
         "import twice from \"+src/lib/helpers.atto\";\n\
-         fnc main(): int { return twice(21); }\n",
+         pub fnc main(): int { return twice(21); }\n",
     );
-    reject_all(&path, "E_PIPE_NONLINEAR_BINDING_UNSUPPORTED");
+    let check = invoke("check", &path);
+    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert!(check.stdout.is_empty());
+    let ir = invoke("ir", &path);
+    assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("call "), "no native CLIF call");
+    let run = invoke("run", &path);
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(run.stdout, b"42\n");
+    assert!(run.stderr.is_empty());
+}
+
+#[test]
+fn nested_public_calls_and_lexical_val_initializers_execute_as_native_functions() {
+    let project = Project::new();
+    let path = project.write(
+        "src/nested-native.atto",
+        "import increment from \"+src/lib/helpers.atto\";\n\
+         import twice from \"+src/lib/helpers.atto\";\n\
+         pub fnc main(): int {\n\
+           val intermediate = increment(20);\n\
+           return twice(intermediate);\n\
+         }\n",
+    );
+    let check = invoke("check", &path);
+    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
+    let ir = invoke("ir", &path);
+    assert!(ir.status.success(), "{}", String::from_utf8_lossy(&ir.stderr));
+    let source = String::from_utf8_lossy(&ir.stdout);
+    assert!(source.matches("call ").count() >= 2, "nested native calls missing");
+    let run = invoke("run", &path);
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(run.stdout, b"42\n");
+}
+
+#[test]
+fn checked_overflow_in_a_callee_or_an_argument_propagates_before_entry_output() {
+    let project = Project::new();
+    for (name, source) in [
+        (
+            "src/callee-overflow.atto",
+            "import twice from \"+src/lib/helpers.atto\";\n\
+             pub fnc main(): int { return twice(9223372036854775807); }\n",
+        ),
+        (
+            "src/argument-overflow.atto",
+            "import twice from \"+src/lib/helpers.atto\";\n\
+             pub fnc main(): int { return twice(9223372036854775807 + 1); }\n",
+        ),
+    ] {
+        let path = project.write(name, source);
+        assert!(invoke("check", &path).status.success(), "{name} source rejected");
+        assert!(invoke("ir", &path).status.success(), "{name} CLIF rejected");
+        let observed = invoke("run", &path);
+        assert_eq!(observed.status.code(), Some(1), "{name} overflow wrapped");
+        assert!(observed.stdout.is_empty(), "{name} wrote an output despite failure");
+        assert!(
+            String::from_utf8_lossy(&observed.stderr).contains("i64 arithmetic overflow"),
+            "{name}: {}",
+            String::from_utf8_lossy(&observed.stderr)
+        );
+    }
+}
+
+#[test]
+fn guest_linked_calls_reject_bad_arity_missing_symbol_and_recursive_graph() {
+    let project = Project::new();
+    let wrong_arity = project.write(
+        "src/invalid-arity.atto",
+        "import twice from \"+src/lib/helpers.atto\";\n\
+         pub fnc main(): int { return twice(10, 11); }\n",
+    );
+    reject_all(&wrong_arity, "E_LINK_CALL_ARITY_OR_ENTRY");
+    let unbound = project.write(
+        "src/lib/unbound.atto",
+        "pub fnc wrong(int x): int { return unknown(x); }\n",
+    );
+    assert!(unbound.is_file());
+    let unbound_entry = project.write(
+        "src/invalid-unbound.atto",
+        "import wrong from \"+src/lib/unbound.atto\";\n\
+         pub fnc main(): int { return 42; }\n",
+    );
+    reject_all(&unbound_entry, "E_LINK_UNBOUND_CALLEE");
+    let cyclic = project.write(
+        "src/lib/cycle.atto",
+        "pub fnc cycle(int x): int { return cycle(x); }\n",
+    );
+    assert!(cyclic.is_file());
+    let cyclic_entry = project.write(
+        "src/invalid-cycle.atto",
+        "import cycle from \"+src/lib/cycle.atto\";\n\
+         pub fnc main(): int { return 42; }\n",
+    );
+    reject_all(&cyclic_entry, "E_LINK_CALL_CYCLE");
 }
 
 #[test]
