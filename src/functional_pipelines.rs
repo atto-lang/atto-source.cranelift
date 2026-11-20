@@ -133,6 +133,8 @@ impl Parser {
             let n = self.peek().parse::<i64>().map_err(|_| "E_PIPE_LITERAL")?;
             self.at += 1;
             Raw::Literal(n)
+        } else if self.peek() == "true" || self.peek() == "false" {
+            return Err("E_PIPE_TYPE: Boolean cannot inhabit int64".into());
         } else {
             let name = self.name()?;
             if self.peek() == "(" { Raw::Call(name, self.args(depth)?) }
