@@ -754,3 +754,50 @@ mod local_ast_security_tests {
             .contains("expression depth budget exceeded"));
     }
 }
+
+
+#[cfg(test)]
+mod integrated_local_sequence_native_tests {
+    use super::*;
+
+    #[test]
+    fn forged_sequence_and_local_references_are_denied_before_jit() {
+        let malformed = [
+            Expr::Seq(Vec::new()),
+            Expr::Seq(vec![Expr::Literal(1); 17]),
+            Expr::Seq(vec![Expr::Local(0)]),
+            Expr::Seq(vec![Expr::Seq(vec![Expr::Local(99)])]),
+        ];
+        for expr in malformed {
+            let program = Program {
+                parameters: Vec::new(),
+                locals: Vec::new(),
+                result: expr,
+            };
+            assert!(render_ir(&program).is_err(), "forged AST emitted CLIF");
+            assert!(compile(&program).is_err(), "forged AST compiled to native code");
+        }
+    }
+
+    #[test]
+    fn combined_runtime_local_and_constexpr_seq_emit_checked_native_code() {
+        let program = crate::frontend::parse(
+            "fnc main(a:int):int{val live=seq(1,a+1);const answer=seq(1,40+2);return seq(live,answer);}"
+        ).expect("integrated source must parse");
+        let ir = render_ir(&program).expect("validate CLIF");
+        let native = compile(&program).expect("compile real native guest");
+        assert_eq!(native.clif, ir, "IR preview and native guest must share checked IR");
+        assert_eq!(native.run(&[40]), Ok(42));
+        assert_eq!(native.run(&[i64::MAX]), Err("i64 arithmetic overflow".into()));
+    }
+
+    #[test]
+    fn unused_runtime_sequence_must_still_trap() {
+        let program = crate::frontend::parse(
+            "fnc main(a:int):int{val ignored=seq(a+1,42);return 42;}"
+        ).expect("checked runtime initializer should parse");
+        let native = compile(&program).expect("native checked guest");
+        assert_eq!(native.run(&[1]), Ok(42));
+        assert_eq!(native.run(&[i64::MAX]), Err("i64 arithmetic overflow".into()));
+    }
+}
