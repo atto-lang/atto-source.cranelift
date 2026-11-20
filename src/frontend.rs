@@ -397,6 +397,12 @@ impl<'a> Parser<'a> {
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
             }
+            // Bang macro invocations must never degrade into an unknown scalar
+            // identifier and accidentally bypass macro-expansion admission.
+            // Ownership-bang operators above keep their more specific denial.
+            if self.next_significant_is(b'!') {
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before native JIT".into());
+            }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }

@@ -61,7 +61,7 @@ fn ir_mode_must_refuse_runtime_arguments() {
         b"fnc main(x:int):int{return x+1;}",
         "ir",
         &["1"],
-        "ir mode does not accept arguments",
+        "ir/check mode does not accept runtime arguments",
     );
 }
 
@@ -109,7 +109,7 @@ fn invalid_numeric_arguments_are_rejected_before_source_open() {
         &["1", "2", "3", "4", "invalid"],
         "too many runtime arguments",
     );
-    early_cli_failure("ir", &["not-an-int"], "ir mode does not accept arguments");
+    early_cli_failure("ir", &["not-an-int"], "ir/check mode does not accept runtime arguments");
 }
 
 #[cfg(unix)]
