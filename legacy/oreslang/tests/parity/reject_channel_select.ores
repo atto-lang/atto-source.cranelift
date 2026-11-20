@@ -1,1 +1,0 @@
-pub fnc main(): int { val Channel<int> ch = Channel.new<int>(1); do select first { when readch ch: const value { return value; } } }

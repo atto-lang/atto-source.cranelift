@@ -1,2 +1,0 @@
-isoactor IsolatedProbe { pub fnc get(): int { return 1; } }
-pub fnc main(): int { return 1; }

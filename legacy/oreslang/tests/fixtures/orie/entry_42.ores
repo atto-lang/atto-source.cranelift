@@ -1,2 +1,0 @@
-// Portable scalar subset: source-only candidate, not a cross-backend receipt.
-pub fnc main(): int { return 6 * 7; }
