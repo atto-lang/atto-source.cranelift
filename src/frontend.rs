@@ -400,7 +400,8 @@ impl<'a> Parser<'a> {
                 self.current,
                 Token::Word(
                     "Array" | "FixedArray" | "Vector" | "List" | "FixedList"
-                        | "Slice" | "Tuple" | "Map" | "Set" | "ReadLoan" | "WriteLoan"
+                        | "Slice" | "Tuple" | "Map" | "Entry" | "Record"
+                        | "Set" | "ReadLoan" | "WriteLoan"
                 )
             ) {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
@@ -446,6 +447,11 @@ impl<'a> Parser<'a> {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
             ));
+        } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
+            // Whole nominal Entry syntax is a real language operator, not
+            // two scalar punctuation tokens or an unchecked value pair.
+            // scan_quoted() and comment skipping guard its lexical identity.
+            return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
@@ -1142,6 +1148,23 @@ pub fn parse(text: &str) -> Result<Program, String> {
     }
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
+    }
+    // Parser::program() stops at its first grammar error. Scan the *entire*
+    // bounded token stream first when an unimplemented collection/index
+    // spelling might occur later in source, otherwise an earlier 'let'
+    // hides a typed rejection behind an incidental scalar parser failure.
+    // Never use raw substrings as proof of a token: comments and quoted
+    // strings are skipped/recognized by Parser::next().
+    if text.contains("Map") || text.contains("Entry") || text.contains("Record")
+        || text.contains("=>") || text.contains('[')
+    {
+        let mut scan = Parser::new(text)?;
+        while scan.current != Token::End {
+            if scan.current == Token::Punct(b'[') {
+                return Err("E_UNSUPPORTED_INDEX_WRITE: indexed Record/Map/Struct access requires checked target typing and guest lowering".into());
+            }
+            scan.next()?;
+        }
     }
     Parser::new(text)?.program()
 }
