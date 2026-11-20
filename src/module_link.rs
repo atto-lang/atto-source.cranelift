@@ -266,6 +266,11 @@ fn resolve_import(entry: &Path, root: &Path, spec: &str) -> Result<PathBuf, Stri
 /// checked scalar inliner to *real native Cranelift code*. General native
 /// function ABI calls (including non-linear arguments) are not implemented.
 pub fn parse(entry_path: &Path, source: &str) -> Result<Program, String> {
+    // The non-Unix CLI fallback cannot prove ancestor no-follow confinement.
+    // Do not accidentally advertise a secure linker on that platform.
+    if !cfg!(unix) {
+        return Err("E_LINK_PLATFORM_UNSUPPORTED".into());
+    }
     let (body, imports) = split_entry(source)?;
     let entry = absolute_entry(entry_path)?;
     let root = package_root(&entry)?;
