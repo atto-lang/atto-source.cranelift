@@ -93,6 +93,11 @@ fn two_modern_import_spelling_guests_compile_to_real_native_clif_and_run() {
     for (entry, source) in [
         ("src/main-root.atto", ROOT_MAIN),
         ("src/main-relative.atto", REL_MAIN),
+        (
+            "src/main-aliased.atto",
+            "import increment as add_one from \"+src/lib/helpers.atto\";\n\
+             fnc main(): int { return add_one(41); }\n",
+        ),
     ] {
         let path = project.write(entry, source);
         let admitted = invoke("check", &path);
@@ -153,7 +158,7 @@ fn import_visibility_and_package_authority_fail_before_native_ir() {
         (
             "src/reject-duplicate.atto",
             "import increment from \"+src/lib/helpers.atto\";\nimport twice as increment from \"+src/lib/helpers.atto\";\nfnc main(): int { return increment(41); }\n",
-            "E_LINK_IMPORT_NAME",
+            "E_LINK_DUP_BINDING",
         ),
         (
             "src/reject-late-import.atto",
