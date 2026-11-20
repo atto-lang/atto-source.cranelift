@@ -1,5 +1,6 @@
 //! Independent native Cranelift admission evidence for canonical Atto local
 //! bindings. Source PR #34 was a legacy proposal, not the current atto-spec.
+use std::io::Write;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -10,7 +11,15 @@ fn guest(mode: &str, source: &str, args: &[&str]) -> Output {
     let path = std::env::temp_dir().join(format!(
         "atto-cranelift-local-{}-{n}.atto", std::process::id()
     ));
-    std::fs::write(&path, source).expect("create local-binding fixture");
+    // Refuse pre-existing paths and symlink leaves; never truncate someone
+    // else's source fixture in a shared temporary directory.
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .expect("create exclusive local-binding fixture");
+    file.write_all(source.as_bytes()).expect("write source fixture");
+    drop(file);
     let result = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode)
         .arg(&path)

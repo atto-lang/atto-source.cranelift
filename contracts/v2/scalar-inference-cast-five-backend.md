@@ -1,3 +1,15 @@
+> **HISTORICAL ORESLANG PROPOSAL — NOT THE NORMATIVE ATTOLANG CONTRACT.**
+> This file is retained byte-for-byte below this notice for migration traceability.
+> Its runtime-dependent **local** `const` semantics, its type-first runtime
+> immutable default and its `^` source-operator prohibition are superseded by
+> `atto-lang/atto-spec` (`compile-time-constants-v1`,
+> `local-binding-mutability-v1`, `bitwise-and-stream-operators-v1`).
+> Atto local `const` **and unqualified `int name = ...`** require
+> compile-time evaluation; runtime fixed bindings use `val`.
+> File/module `define const ... = os.read_env(...)` is a separate,
+> tightly scoped exception. Backend execution requires separate exact-head
+> test evidence. See `docs/LOCAL_CONST_RECONCILIATION.md`.
+>
 # Oreslang five-backend inference, checked casts and SSA mutation contract — v2
 
 **Scope:** Java/GraalVM, native LLVM, LLVM-to-wasm32, .NET structured source/CIL, and the independent Cranelift native JIT. Authored source/tests are not execution receipts; do not claim full parity from a shared file or one backend's pass.

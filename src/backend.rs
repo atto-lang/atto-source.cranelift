@@ -684,3 +684,54 @@ mod native_named_signed64_differential {
         }
     }
 }
+
+#[cfg(test)]
+mod local_ast_security_tests {
+    use super::*;
+
+    #[test]
+    fn host_constructed_forward_or_forged_references_fail_before_clif() {
+        let self_reference = Program {
+            parameters: vec![],
+            locals: vec![Expr::Local(0)],
+            result: Expr::Literal(42),
+        };
+        assert!(render_ir(&self_reference)
+            .unwrap_err()
+            .contains("invalid or forward local reference"));
+
+        let forged_parameter = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: Expr::Param(0),
+        };
+        assert!(render_ir(&forged_parameter)
+            .unwrap_err()
+            .contains("invalid parameter reference"));
+    }
+
+    #[test]
+    fn direct_ast_limits_reject_before_jit() {
+        let too_many = Program {
+            parameters: vec![],
+            locals: vec![Expr::Literal(1); 65],
+            result: Expr::Literal(42),
+        };
+        assert!(render_ir(&too_many)
+            .unwrap_err()
+            .contains("runtime local count exceeds 64"));
+
+        let mut deep = Expr::Literal(42);
+        for _ in 0..129 {
+            deep = Expr::Neg(Box::new(deep));
+        }
+        let deep_program = Program {
+            parameters: vec![],
+            locals: vec![],
+            result: deep,
+        };
+        assert!(render_ir(&deep_program)
+            .unwrap_err()
+            .contains("expression depth budget exceeded"));
+    }
+}
