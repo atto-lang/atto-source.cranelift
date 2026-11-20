@@ -288,6 +288,16 @@ impl Lower<'_> {
                 return Err("E_PIPE_NONLINEAR_BINDING_UNSUPPORTED".into());
             }
         }
+        // The call ABI evaluates argument expressions left-to-right before
+        // entering the callee. Inlined parameter expressions must be observed
+        // in their declaration order, or early checked failures could reorder.
+        let parameter_uses: Vec<&str> = order.iter()
+            .filter(|n| func.params.iter().any(|p| p == *n))
+            .map(String::as_str).collect();
+        let declared_params: Vec<&str> = func.params.iter().map(String::as_str).collect();
+        if parameter_uses != declared_params {
+            return Err("E_PIPE_ARGUMENT_ORDER_UNSUPPORTED".into());
+        }
         // Every eager val initializer must execute before later val bodies
         // and before the return expression. Enforce order of uses.
         let observed: Vec<&str> = order.iter()
