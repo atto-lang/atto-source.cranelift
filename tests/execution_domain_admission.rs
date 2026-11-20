@@ -62,8 +62,8 @@ fn task_and_nb_blocks_are_rejected_as_execution_tasks() {
 #[test]
 fn comments_and_longer_identifiers_stay_ordinary() {
     let source = "// gpu { cpu { quantum } } task { }\n\
-                  fnc main(int task, int gpu_count): int {\n\
-                  return task + gpu_count;\n\
+                  fnc main(int task_count, int gpu_count): int {\n\
+                  return task_count + gpu_count;\n\
                   }\n";
     let output = run_source(source, "run", &["40", "2"]);
     assert!(
