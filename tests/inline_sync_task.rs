@@ -145,18 +145,36 @@ fn unverified_spawn_suspend_and_payload_forms_produce_no_guest_artifacts() {
 #[test]
 fn do_inline_void_only_diagnostics_reject_before_clif_or_execution() {
     for (source, expected) in [
-        ("fnc main():int { do sync task<int> {}; return 42; }", "E_TASK_RETURN_TYPE"),
-        ("fnc main():int { do sync task<int> { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
-        ("fnc main():int { do sync task { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
-        ("fnc main():int { do sync task<void> { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
+        (
+            "fnc main():int { do sync task<int> {}; return 42; }",
+            "E_TASK_RETURN_TYPE",
+        ),
+        (
+            "fnc main():int { do sync task<int> { return 42; }; return 0; }",
+            "E_TASK_RETURN_TYPE",
+        ),
+        (
+            "fnc main():int { do sync task { return 42; }; return 0; }",
+            "E_TASK_RETURN_TYPE",
+        ),
+        (
+            "fnc main():int { do sync task<void> { return 42; }; return 0; }",
+            "E_TASK_RETURN_TYPE",
+        ),
         ("fnc main():int { sync task {}; return 42; }", "E_SYNTAX"),
-        ("fnc main():int { sync task<void> {}; return 42; }", "E_SYNTAX"),
+        (
+            "fnc main():int { sync task<void> {}; return 42; }",
+            "E_SYNTAX",
+        ),
     ] {
         let fixture = Source::new(source);
         for mode in ["check", "ir", "run"] {
             let got = call(mode, &fixture, &[]);
             assert_eq!(got.status.code(), Some(1), "{mode} admitted {source}");
-            assert!(got.stdout.is_empty(), "{mode} published stdout for {source}");
+            assert!(
+                got.stdout.is_empty(),
+                "{mode} published stdout for {source}"
+            );
             assert!(
                 String::from_utf8_lossy(&got.stderr).contains(expected),
                 "{mode} missing {expected} for {source}: {}",

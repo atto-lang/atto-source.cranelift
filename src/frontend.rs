@@ -1338,7 +1338,11 @@ mod tests {
     #[test]
     fn inline_sync_task_scalar_semantics_and_fail_closed_admission() {
         for (source, arguments, expected) in [
-            ("fnc main():int { do sync task {}; return 42; }", &[][..], 42),
+            (
+                "fnc main():int { do sync task {}; return 42; }",
+                &[][..],
+                42,
+            ),
             (
                 "fnc main():int { do sync task<void> { return; }; return 42; }",
                 &[],
@@ -1406,7 +1410,10 @@ mod tests {
             "fnc main():int { do sync task<void> { return 1; }; return 42; }",
         ] {
             let diagnostic = parse(source).expect_err("nonvoid do-sync must be rejected");
-            assert!(diagnostic.contains("E_TASK_RETURN_TYPE"), "{source}: {diagnostic}");
+            assert!(
+                diagnostic.contains("E_TASK_RETURN_TYPE"),
+                "{source}: {diagnostic}"
+            );
         }
         for source in [
             "fnc main():int { sync task {}; return 42; }",
