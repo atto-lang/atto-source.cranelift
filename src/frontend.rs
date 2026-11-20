@@ -350,7 +350,14 @@ impl<'a> Parser<'a> {
                     at += 1;
                 }
                 if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..]) {
-                    return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                    let rest = &self.input[at + 6..];
+                    let comparison = rest.starts_with("!=")
+                        || rest.strip_prefix("!eq").is_some_and(|tail| {
+                            !tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                        });
+                    if !comparison {
+                        return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                    }
                 }
             }
             if self.current == Token::Word("unsafe") {
