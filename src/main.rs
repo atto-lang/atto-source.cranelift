@@ -5,6 +5,7 @@ mod backend;
 pub mod critical_gate;
 mod frontend;
 mod functional_pipelines;
+mod linked_native;
 mod module_link;
 mod isolate;
 pub mod layout;
@@ -156,24 +157,39 @@ fn run() -> Result<(), String> {
     let linked_source = source
         .lines()
         .any(|line| line.trim_start().starts_with("import "));
-    let parsed = if linked_source {
-        // Imported source graphs are not approved for host-mediated TenantVM
-        // scalar-state stepping, even though the JIT is still trusted-only.
+    if linked_source {
+        // Multi-file sources use a separately declared, checked native
+        // function ABI. Never enter the host-mediated TenantVM isolate lane.
         if mode == "isolate" {
             return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
         }
-        module_link::parse(&path, source)?
-    } else {
-        match frontend::parse(source) {
-            Ok(program) => program,
-            Err(original)
-                if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
-            {
-                functional_pipelines::parse(source)
-                    .map_err(|reason| format!("{reason} (stage-0: {original})"))?
-            }
-            Err(original) => return Err(original),
+        let functions = module_link::parse(&path, source)?;
+        // Reject every unbound symbol, invalid call, recursive graph, and
+        // source budget violation before writing CLIF or JIT allocations.
+        linked_native::validate(&functions)?;
+        if mode == "check" {
+            return Ok(());
         }
+        if mode == "run" && !values.is_empty() {
+            return Err("runtime argument count mismatch".into());
+        }
+        if mode == "ir" {
+            print!("{}", linked_native::render_ir(&functions)?);
+            return Ok(());
+        }
+        let compiled = linked_native::compile(&functions)?;
+        println!("{}", compiled.run(&[])?);
+        return Ok(());
+    }
+    let parsed = match frontend::parse(source) {
+        Ok(program) => program,
+        Err(original)
+            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+        {
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+        }
+        Err(original) => return Err(original),
     };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
