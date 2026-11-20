@@ -109,6 +109,37 @@ fn fail_closed_on_non_linear_loans_and_other_pre_ir_violations() {
     }
 }
 #[test]
+fn signed_int64_boundary_compiles_into_native_clif_and_executes_without_wraparound() {
+    let accepted = Source::new("pub fnc main(): int -> -9223372036854775808;");
+    let checked = invoke("check", &accepted.0);
+    assert!(checked.status.success(), "i64 minimum rejected: {}",
+        String::from_utf8_lossy(&checked.stderr));
+    let ir = invoke("ir", &accepted.0);
+    assert!(ir.status.success(), "i64 minimum produced no valid IR: {}",
+        String::from_utf8_lossy(&ir.stderr));
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("function"));
+    let run = invoke("run", &accepted.0);
+    assert!(run.status.success(), "i64 minimum failed to execute: {}",
+        String::from_utf8_lossy(&run.stderr));
+    assert_eq!(run.stdout, b"-9223372036854775808\n");
+    assert!(run.stderr.is_empty());
+
+    for invalid in [
+        "pub fnc main(): int -> 9223372036854775808;",
+        "pub fnc main(): int -> -9223372036854775809;",
+    ] {
+        let source = Source::new(invalid);
+        for mode in ["check", "ir", "run"] {
+            let rejected = invoke(mode, &source.0);
+            assert_eq!(rejected.status.code(), Some(1),
+                "out-of-range signed i64 accepted in {mode}");
+            assert!(rejected.stdout.is_empty(), "rejected source emitted IR or guest output");
+            assert!(!rejected.stderr.is_empty());
+        }
+    }
+}
+
+#[test]
 fn copied_spec_fixtures_have_exact_sha_pinned_git_blobs() {
     let pinned = [
         ("block-body.atto", "4a2eab34e1ba39709198afda19a71cfce67f4030"),
