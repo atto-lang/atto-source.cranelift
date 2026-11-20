@@ -12,7 +12,7 @@ const MAX_DEPTH: usize = 32;
 const MAX_EXPANSION: usize = 2048;
 
 #[derive(Clone)]
-enum Raw {
+pub(crate) enum Raw {
     Literal(i64),
     Name(String),
     Add(Box<Raw>, Box<Raw>),
@@ -20,12 +20,12 @@ enum Raw {
     Mul(Box<Raw>, Box<Raw>),
     Call(String, Vec<Raw>),
 }
-struct Fn {
-    public: bool,
-    name: String,
-    params: Vec<String>,
-    locals: Vec<(String, Raw)>,
-    result: Raw,
+pub(crate) struct Fn {
+    pub(crate) public: bool,
+    pub(crate) name: String,
+    pub(crate) params: Vec<String>,
+    pub(crate) locals: Vec<(String, Raw)>,
+    pub(crate) result: Raw,
 }
 fn lex(text: &str) -> Result<Vec<String>, String> {
     if text.len() > MAX_SOURCE {
@@ -497,6 +497,15 @@ pub fn parse(source: &str) -> Result<Program, String> {
 /// No native call ABI, mutable capture, recursion, or general module language
 /// is implied by this tightly scoped checked inliner.
 pub fn parse_linked(entry: &str, units: &[(String, String, String)]) -> Result<Program, String> {
+    compile_functions(parse_linked_native(entry, units)?)
+}
+
+/// Preserve the separately parsed function graph and symbolic calls for
+/// real native function lowering. This path never substitutes argument trees.
+pub(crate) fn parse_linked_native(
+    entry: &str,
+    units: &[(String, String, String)],
+) -> Result<Vec<Fn>, String> {
     if units.len() > 8 {
         return Err("E_LINK_IMPORT_LIMIT".into());
     }
@@ -518,7 +527,7 @@ pub fn parse_linked(entry: &str, units: &[(String, String, String)]) -> Result<P
         func.name = local.clone();
         selected.push(func);
     }
-    compile_functions(selected)
+    Ok(selected)
 }
 
 fn compile_functions(functions: Vec<Fn>) -> Result<Program, String> {
