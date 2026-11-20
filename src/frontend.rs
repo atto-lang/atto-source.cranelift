@@ -1600,6 +1600,16 @@ mod tests {
         assert!(parse("fnc main():int{return 42;} // 100% comment").is_ok());
     }
     #[test]
+    fn exceptional_bang_keywords_fail_closed_before_clif() {
+        for op in ["trap!", "throw!", "raise!", "panic!"] {
+            let src = format!("fnc main():int{{return {op} value;}}");
+            let error = parse(&src).expect_err("unlowered bang effect must fail");
+            assert!(error.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                "unexpected diagnostic for {op}: {error}");
+        }
+        assert!(parse("fnc main():int{return 7;} // throw!").is_ok());
+    }
+    #[test]
     fn option_result_trap_fail_closed_until_native_tagged_lowering() {
         // Only the scalar contract is executable; these are unsupported
         // features, NOT passing semantic Option/Result/trap conformance cases.
