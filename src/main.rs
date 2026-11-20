@@ -2,6 +2,7 @@
 mod backend;
 pub mod critical_gate;
 mod frontend;
+mod functional_pipelines;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
@@ -128,7 +129,19 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
-    let parsed = frontend::parse(source)?;
+    // Preserve the existing full stage-0 parser as authority. Only if it
+    // rejects an explicitly pipeline-bearing source, attempt the separate
+    // strict pure-int64 functional frontend before allocating JIT memory.
+    // An invalid or effectful program cannot silently fall back to an
+    // interpreted host evaluator.
+    let parsed = match frontend::parse(source) {
+        Ok(program) => program,
+        Err(original) if source.contains("|>") || source.contains("<|")
+            || source.contains(": int ->") =>
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?,
+        Err(original) => return Err(original),
+    };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
     if mode == "check" {
