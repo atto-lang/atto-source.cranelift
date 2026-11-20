@@ -337,7 +337,7 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.current,
                 Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop"
-                    | "ref" | "deref" | "unref")
+                    | "freeze" | "weak" | "ref" | "deref" | "unref")
             ) && b.get(self.pos) == Some(&b'!') && !comparison {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
