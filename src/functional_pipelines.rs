@@ -127,8 +127,16 @@ impl Parser {
             self.need(")")?;
             inner
         } else if self.eat("-") {
-            Raw::Sub(Box::new(Raw::Literal(0)),
-                     Box::new(self.expr(30, depth + 1, direction)?))
+            // The signed i64 minimum is admitted as a negative literal.
+            // Positive 2^63 must still fail, so it cannot be parsed first
+            // as an i64 and then negated.
+            if self.peek() == "9223372036854775808" {
+                self.at += 1;
+                Raw::Literal(i64::MIN)
+            } else {
+                Raw::Sub(Box::new(Raw::Literal(0)),
+                         Box::new(self.expr(30, depth + 1, direction)?))
+            }
         } else if self.peek().as_bytes().first().is_some_and(u8::is_ascii_digit) {
             let n = self.peek().parse::<i64>().map_err(|_| "E_PIPE_LITERAL")?;
             self.at += 1;
