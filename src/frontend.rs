@@ -338,15 +338,26 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
-            // Typed ownership bangs must never be interpreted as scalar
-            // identifiers or a runtime macro call. Detect the contiguous
-            // operator before scalar AST admission, including borrow! mut.
-            if matches!(
-                self.current,
-                Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
-            ) && b.get(self.pos) == Some(&b'!')
-            {
-                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+            // A compiler-only bang invocation is not an ordinary unresolved
+            // identifier, even when optional whitespace separates its name
+            // from '!'. Reject before scalar expression lowering / CLIF.
+            // Ownership bangs retain their more specific admission denial.
+            let mut bang_at = self.pos;
+            while bang_at < b.len() {
+                let width = whitespace_width(b, bang_at);
+                if width == 0 {
+                    break;
+                }
+                bang_at += width;
+            }
+            if b.get(bang_at) == Some(&b'!') {
+                if matches!(
+                    self.current,
+                    Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
+                ) {
+                    return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                }
+                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compiler-time AST expansion before native IR".into());
             }
             // The 'mut borrow!' form also must fail with an ownership-specific
             // diagnostic: without lookahead the parser would reject 'mut'
@@ -865,6 +876,9 @@ impl<'a> Parser<'a> {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
+                if matches!(name.as_str(), "sync" | "task" | "yield") {
+                    return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
+                }
                 if is_java_v1_reserved_parameter_name(&name)
                     || matches!(
                         name.as_str(),
@@ -905,6 +919,9 @@ impl<'a> Parser<'a> {
                             | "stdio"
                             | "print"
                             | "seq"
+                            | "sync"
+                            | "task"
+                            | "yield"
                     )
                     || self.parameters.contains(&name)
                 {
@@ -972,6 +989,9 @@ impl<'a> Parser<'a> {
             }
             let typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
+            if matches!(name.as_str(), "sync" | "task" | "yield") {
+                return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
+            }
             if is_java_v1_reserved_parameter_name(&name)
                 || matches!(name.as_str(), "Integer" | "main" | "int" | "seq")
                 || self.parameters.contains(&name)

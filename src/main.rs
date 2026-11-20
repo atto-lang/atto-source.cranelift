@@ -119,8 +119,11 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if (mode == "ir" || mode == "check") && !supplied.is_empty() {
-        return Err("ir/check mode does not accept runtime arguments".into());
+    if mode == "ir" && !supplied.is_empty() {
+        return Err("ir mode does not accept arguments".into());
+    }
+    if mode == "check" && !supplied.is_empty() {
+        return Err("check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
