@@ -526,6 +526,73 @@ impl<'a> Parser<'a> {
         }
         Ok(x)
     }
+    // Deliberately bounded to the trusted, non-suspending scalar subset.
+    // Every inline return exits this lexical body, not the enclosing main().
+    // Unknown-effect calls, child spawns, loans, cleanup and suspension reject.
+    fn inline_task(&mut self, depth: usize, discard: bool) -> Result<Expr, String> {
+        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+        self.expect(Token::Word("sync"))?;
+        self.expect(Token::Word("task"))?;
+        let payload = if self.take(Token::Punct(b'<'))? {
+            let is_int = if self.take(Token::Word("int"))? {
+                true
+            } else if self.take(Token::Word("void"))? {
+                false
+            } else {
+                return Err("E_TASK_RETURN_TYPE: inline scalar tasks accept int or void only".into());
+            };
+            self.expect(Token::Punct(b'>'))?;
+            Some(is_int)
+        } else { None };
+        self.expect(Token::Punct(b'{'))?;
+        let effects = self.inline_statements(depth + 1)?;
+        let value = if self.take(Token::Word("return"))? {
+            if self.take(Token::Punct(b';'))? {
+                None
+            } else {
+                let value = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b';'))?;
+                Some(value)
+            }
+        } else { None };
+        self.expect(Token::Punct(b'}'))?;
+        if (payload == Some(true) && value.is_none())
+            || (payload == Some(false) && value.is_some())
+        {
+            return Err("E_TASK_RETURN_TYPE: inline task payload and return do not agree".into());
+        }
+        if !discard && value.is_none() {
+            return Err("E_TASK_RETURN_TYPE: void inline task cannot be used as int".into());
+        }
+        // Internal sentinel is unobservable: void tasks occur only in
+        // discarded statement context, and their result never escapes.
+        let value = match value { Some(v) => v, None => self.node(Expr::Literal(0))? };
+        let body = if effects.is_empty() {
+            value
+        } else {
+            self.node(Expr::Sequence(effects, Box::new(value)))?
+        };
+        self.node(Expr::InlineTask(Box::new(body)))
+    }
+
+    fn inline_statements(&mut self, depth: usize) -> Result<Vec<Expr>, String> {
+        let mut effects = Vec::new();
+        loop {
+            let do_prefix = self.take(Token::Word("do"))?;
+            if self.current != Token::Word("sync") {
+                if do_prefix {
+                    return Err("E_TASK_UNSUPPORTED: do task requires cancellable child lowering".into());
+                }
+                break;
+            }
+            effects.push(self.inline_task(depth + 1, true)?);
+            // A semicolon after do sync task is optional in the canonical grammar.
+            self.take(Token::Punct(b';'))?;
+            if effects.len() > MAX_NODES { return Err("AST node budget exceeded".into()); }
+        }
+        Ok(effects)
+    }
+
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
