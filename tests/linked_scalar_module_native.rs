@@ -162,6 +162,11 @@ fn import_visibility_and_package_authority_fail_before_native_ir() {
             "E_LINK_DUP_BINDING",
         ),
         (
+            "src/reject-comment-import.atto",
+            "/*\nimport increment from \"+src/lib/helpers.atto\";\n*/\nfnc main(): int { return 42; }\n",
+            "E_LINK_BLOCK_COMMENT_UNSUPPORTED",
+        ),
+        (
             "src/reject-late-import.atto",
             "fnc main(): int { return increment(41); }\nimport increment from \"+src/lib/helpers.atto\";\n",
             "E_LINK_IMPORT_ORDER",
