@@ -6,6 +6,8 @@ mod isolate;
 pub mod layout;
 #[allow(dead_code)]
 mod owned_region;
+// Source-identical to atto-source.rs bounded host primitive; guest lowering pending.
+mod owned_bytes_v1;
 #[allow(dead_code)]
 mod actor_isolation_access_v1;
 mod state_region;
