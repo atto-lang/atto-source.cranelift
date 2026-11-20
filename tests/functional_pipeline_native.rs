@@ -89,6 +89,8 @@ fn fail_closed_on_non_linear_loans_and_other_pre_ir_violations() {
         "pub fnc main(): int -> 42 <| 42;",
         "fnc double(int x): int -> x*2; pub fnc main(): int -> 20 |> double(5);",
         "fnc double(int x): int -> x*2; pub fnc main(): int -> double <| 20 |> double;",
+        "fnc reverse(int a, int b): int -> b - a; pub fnc main(): int -> reverse(1, 2);",
+        "fnc unsafe(int x): int -> x; pub fnc main(): int -> unsafe(42);",
         "pub fnc main(): int -> main();",
         "pub fnc main(): int -> 9223372036854775808;",
         "pub fnc main(): int -> true;",
