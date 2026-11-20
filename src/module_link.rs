@@ -14,8 +14,18 @@ const MAX_MANIFEST_BYTES: u64 = 4096;
 const MAX_SPECIFIER_BYTES: usize = 256;
 
 struct NamedImport {
-    name: String,
+    exported_name: String,
+    local_name: String,
     specifier: String,
+}
+
+fn valid_identifier(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    !bytes.is_empty()
+        && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
 }
 
 fn parse_import_line(line: &str) -> Result<NamedImport, String> {
@@ -26,13 +36,8 @@ fn parse_import_line(line: &str) -> Result<NamedImport, String> {
     let (name, path) = remainder
         .split_once(" from ")
         .ok_or("E_LINK_IMPORT_SYNTAX")?;
-    if name.is_empty()
-        || !name.as_bytes()[0].is_ascii_alphabetic()
-            && name.as_bytes()[0] != b'_'
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
+    let (exported_name, local_name) = name.split_once(" as ").unwrap_or((name, name));
+    if !valid_identifier(exported_name) || !valid_identifier(local_name) {
         return Err("E_LINK_IMPORT_NAME".into());
     }
     let raw = path
@@ -43,7 +48,8 @@ fn parse_import_line(line: &str) -> Result<NamedImport, String> {
         return Err("E_LINK_PATH_SYNTAX".into());
     }
     Ok(NamedImport {
-        name: name.to_owned(),
+        exported_name: exported_name.to_owned(),
+        local_name: local_name.to_owned(),
         specifier: raw.to_owned(),
     })
 }
@@ -63,7 +69,7 @@ fn split_entry(source: &str) -> Result<(String, Vec<NamedImport>), String> {
                 return Err("E_LINK_IMPORT_LIMIT".into());
             }
             let item = parse_import_line(trimmed)?;
-            if !unique.insert(item.name.clone()) {
+            if !unique.insert(item.local_name.clone()) {
                 return Err("E_LINK_DUP_BINDING".into());
             }
             imports.push(item);
@@ -245,7 +251,7 @@ pub fn parse(entry_path: &Path, source: &str) -> Result<Program, String> {
     for import in imports {
         let path = resolve_import(&entry, &root, &import.specifier)?;
         let text = load_bounded(&path, MAX_MODULE_BYTES)?;
-        units.push((import.name, text));
+        units.push((import.exported_name, import.local_name, text));
     }
     functional_pipelines::parse_linked(&body, &units)
 }
