@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Actual Cranelift CLI + native JIT tests, not a Rust host evaluator.
 //! This staged package-link profile uses checked static lowering and does
 //! not yet support true native helper-call ABIs / nonlinear parameter use.
