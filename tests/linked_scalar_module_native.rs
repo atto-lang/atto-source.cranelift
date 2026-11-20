@@ -358,3 +358,48 @@ fn malformed_modern_manifest_does_not_grant_import_authority() {
     let entry = project.write("src/malformed-marker.atto", ROOT_MAIN);
     reject_all(&entry, "E_LINK_INVALID_MANIFEST");
 }
+
+#[test]
+fn discarded_parameter_still_eagerly_evaluates_and_traps() {
+    let project = Project::new();
+    project.write(
+        "src/lib/select_first.atto",
+        "pub fnc select_first(int a, int b): int { return a; }\n",
+    );
+    let source = project.write(
+        "src/eager-discarded-argument.atto",
+        "import select_first from \"+src/lib/select_first.atto\";\n\
+         pub fnc main(): int {\n\
+           return select_first(42, 9223372036854775807 + 1);\n\
+         }\n",
+    );
+    assert!(invoke("check", &source).status.success());
+    assert!(invoke("ir", &source).status.success());
+    let run = invoke("run", &source);
+    assert_eq!(run.status.code(), Some(1));
+    assert!(run.stdout.is_empty(), "discarded eager argument must still trap");
+    assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
+}
+
+#[test]
+fn unused_val_initializer_still_executes_and_traps_before_return() {
+    let project = Project::new();
+    project.write(
+        "src/lib/eager.atto",
+        "pub fnc eager(int x): int {\n\
+           val unused = x + 1;\n\
+           return 42;\n\
+         }\n",
+    );
+    let path = project.write(
+        "src/unused-val-error.atto",
+        "import eager from \"+src/lib/eager.atto\";\n\
+         pub fnc main(): int { return eager(9223372036854775807); }\n",
+    );
+    assert!(invoke("check", &path).status.success());
+    assert!(invoke("ir", &path).status.success());
+    let run = invoke("run", &path);
+    assert_eq!(run.status.code(), Some(1));
+    assert!(run.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
+}
