@@ -147,10 +147,65 @@ fn checked_pow_values(
     b.block_params(finished)[0]
 }
 
+fn validate_guest_program(source: &Program) -> Result<(), String> {
+    if source.parameters.len() > 4 {
+        return Err("parameter count exceeds four before native codegen".into());
+    }
+    if source.locals.len() > 64 {
+        return Err("runtime local count exceeds 64 before native codegen".into());
+    }
+    let mut nodes = 0_usize;
+    for (index, initializer) in source.locals.iter().enumerate() {
+        validate_guest_expr(initializer, index, source.parameters.len(), &mut nodes)?;
+    }
+    validate_guest_expr(
+        &source.result,
+        source.locals.len(),
+        source.parameters.len(),
+        &mut nodes,
+    )
+}
+
+// Revalidate every reference and budget even if a host constructs Program
+// directly without the frontend. No forged index reaches Cranelift emission.
+fn validate_guest_expr(
+    root: &Expr,
+    admitted_locals: usize,
+    admitted_params: usize,
+    nodes: &mut usize,
+) -> Result<(), String> {
+    let mut work = vec![(root, 1_usize)];
+    while let Some((expr, depth)) = work.pop() {
+        *nodes += 1;
+        if *nodes > 4096 {
+            return Err("AST node budget exceeded before native codegen".into());
+        }
+        if depth > 128 {
+            return Err("expression depth budget exceeded before native codegen".into());
+        }
+        match expr {
+            Expr::Literal(_) => {}
+            Expr::Param(index) if *index < admitted_params => {}
+            Expr::Local(index) if *index < admitted_locals => {}
+            Expr::Param(_) => return Err("invalid parameter reference before native codegen".into()),
+            Expr::Local(_) => return Err("invalid or forward local reference before native codegen".into()),
+            Expr::Neg(x) | Expr::ShiftRight8(x) => work.push((x, depth + 1)),
+            Expr::Add(a,b) | Expr::Sub(a,b) | Expr::Mul(a,b)
+            | Expr::BitXor(a,b) | Expr::BitAnd(a,b) | Expr::BitOr(a,b)
+            | Expr::NamedRem(a,b) | Expr::NamedMod(a,b) | Expr::NamedPow(a,b) => {
+                work.push((b, depth + 1));
+                work.push((a, depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
     params: &[cranelift_codegen::ir::Value],
+    locals: &[cranelift_codegen::ir::Value],
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
@@ -159,11 +214,12 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        Local(i) => locals[*i],
         ShiftRight8(x) => {
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte
             // extraction for 0..i31::MAX without float narrowing.
-            let input = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let input = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
         }
@@ -171,8 +227,8 @@ fn emit(
             // Native signed-i64 bitwise primitives, not host-side emulation.
             // Emit and check each operand in lexical order before the bitwise
             // instruction; a checked arithmetic failure cannot be skipped.
-            let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
                 BitAnd(_, _) => b.ins().band(lhs, rhs),
@@ -181,8 +237,8 @@ fn emit(
             }
         }
         NamedRem(x, y) | NamedMod(x, y) => {
-            let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let right = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
                 rem
@@ -198,30 +254,30 @@ fn emit(
             }
         }
         NamedPow(x, y) => {
-            let base = emit(x, b, params, error, divisor_error, negative_exponent_error);
-            let exponent = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let base = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let exponent = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
         _ => {
             let (value, overflow) = match e {
                 Neg(x) => {
-                    let rhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
                 Add(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
-                    let lhs = emit(x, b, params, error, divisor_error, negative_exponent_error);
-                    let rhs = emit(y, b, params, error, divisor_error, negative_exponent_error);
+                    let lhs = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+                    let rhs = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -244,6 +300,7 @@ fn validate_ir(
 }
 
 fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context, cranelift_module::FuncId), String> {
+    validate_guest_program(source)?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
@@ -271,10 +328,21 @@ fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context
     b.switch_to_block(entry);
     b.seal_block(entry);
     let p = b.block_params(entry).to_vec();
+    let mut locals = Vec::with_capacity(source.locals.len());
+    for initializer in &source.locals {
+        // A runtime val initializer runs once in lexical order, even if it
+        // is unused; checked traps branch away before any output store.
+        let value = emit(
+            initializer, &mut b, &p[..4], &locals,
+            failure, divisor_error, negative_exponent_error,
+        );
+        locals.push(value);
+    }
     let value = emit(
         &source.result,
         &mut b,
         &p[..4],
+        &locals,
         failure,
         divisor_error,
         negative_exponent_error,

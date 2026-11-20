@@ -28,6 +28,7 @@ const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_PARAMS: usize = 4;
+const MAX_LOCALS: usize = 64;
 
 // Historical Java v1 Lexer.java keyword inventory (93 spellings), pinned to
 // Git blob bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a.
@@ -154,6 +155,7 @@ fn integer_digits(token: &str) -> Result<String, String> {
 pub enum Expr {
     Literal(i64),
     Param(usize),
+    Local(usize),
     Neg(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
@@ -170,6 +172,7 @@ pub enum Expr {
 #[derive(Debug)]
 pub struct Program {
     pub parameters: Vec<String>,
+    pub locals: Vec<Expr>,
     pub result: Expr,
 }
 
@@ -188,6 +191,9 @@ struct Parser<'a> {
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
+    // (name, constexpr value if static, runtime slot for val otherwise)
+    bindings: Vec<(String, Option<i64>, usize)>,
+    local_initializers: Vec<Expr>,
 }
 
 // Shared block-comment cursor for the scalar lexer and contextual lookahead.
@@ -233,6 +239,8 @@ impl<'a> Parser<'a> {
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
+            bindings: Vec::new(),
+            local_initializers: Vec::new(),
         };
         p.next()?;
         Ok(p)
@@ -449,7 +457,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.".contains(&first) {
+        } else if b"()+-*{}[];:,>.=".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -576,13 +584,22 @@ impl<'a> Parser<'a> {
                 Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
-                let index = self
-                    .parameters
-                    .iter()
-                    .position(|p| p == s)
-                    .ok_or_else(|| format!("unbound or unsupported identifier: {s}"))?;
+                let value = if let Some(index) = self.parameters.iter().position(|p| p == s) {
+                    Expr::Param(index)
+                } else if let Some((_, constant, runtime_slot)) =
+                    self.bindings.iter().find(|(name, _, _)| name == s)
+                {
+                    // Const references are already typed/folded, while val
+                    // references retain a runtime SSA slot.
+                    match constant {
+                        Some(value) => Expr::Literal(*value),
+                        None => Expr::Local(*runtime_slot),
+                    }
+                } else {
+                    return Err(format!("unbound or unsupported identifier: {s}"));
+                };
                 self.next()?;
-                self.node(Expr::Param(index))
+                self.node(value)
             }
             _ => Err(format!("expected scalar expression at byte {}", self.pos)),
         }
@@ -873,6 +890,52 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
+        // This is deliberately a bounded, flat scalar subset. Local const
+        // and type-first int require constexpr; val may be runtime-dependent.
+        // The file/module define-const environment exception is not local.
+        loop {
+            let kind = match self.current {
+                Token::Word("const") => "const",
+                Token::Word("int") => "int",
+                Token::Word("val") => "val",
+                _ => break,
+            };
+            self.next()?;
+            let typed = kind == "int" || self.take(Token::Word("int"))?;
+            let name = self.name()?;
+            if is_java_v1_reserved_parameter_name(&name)
+                || matches!(name.as_str(), "Integer" | "main" | "int")
+                || self.parameters.contains(&name)
+                || self.bindings.iter().any(|(known, _, _)| known == &name)
+            {
+                return Err("invalid, reserved or duplicate local identifier".into());
+            }
+            if !typed && self.take(Token::Punct(b':'))? {
+                self.expect(Token::Word("int"))?;
+            }
+            if self.bindings.len() >= MAX_LOCALS {
+                return Err("local binding count exceeds 64".into());
+            }
+            self.expect(Token::Punct(b'='))?;
+            let initializer = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            validate_ast_depth(&initializer)?;
+            let constant = if kind == "val" {
+                None
+            } else {
+                Some(eval_const_i64(&initializer)?)
+            };
+            let runtime_slot = self.local_initializers.len();
+            if constant.is_none() {
+                self.local_initializers.push(initializer);
+            }
+            // Bind only after the initializer passes admission, preventing
+            // self and forward references and any hidden shadowing.
+            self.bindings.push((name, constant, runtime_slot));
+        }
+        if self.current == Token::Word("let") {
+            return Err("E_LET_UNSUPPORTED: rebindable locals require typed SSA write lowering".into());
+        }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
@@ -901,6 +964,7 @@ impl<'a> Parser<'a> {
         validate_ast_depth(&result)?;
         Ok(Program {
             parameters: self.parameters,
+            locals: self.local_initializers,
             result,
         })
     }
@@ -1084,7 +1148,7 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             return Err("expression depth budget exceeded".into());
         }
         match expr {
-            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Literal(_) | Expr::Param(_) | Expr::Local(_) => {}
             Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
@@ -1103,6 +1167,37 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// Only typed, deterministic scalar expressions may initialize local const.
+// Unlike static define const, a local cannot observe the process environment.
+// This evaluator deliberately refuses function calls, including Integer.*.
+fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
+    match expr {
+        Expr::Literal(value) => Ok(*value),
+        Expr::Param(_) | Expr::Local(_) => Err(
+            "E_CONST_EVAL: local const or type-first int requires a compile-time expression".into(),
+        ),
+        Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
+            "E_CONST_EFFECT: function calls are not supported in local constexpr evaluation".into(),
+        ),
+        Expr::Neg(expr) => eval_const_i64(expr)?
+            .checked_neg()
+            .ok_or_else(|| "E_CONST_OVERFLOW: signed i64 negation".into()),
+        Expr::ShiftRight8(expr) => Ok(eval_const_i64(expr)? >> 8),
+        Expr::Add(left, right) | Expr::Sub(left, right) | Expr::Mul(left, right) => {
+            let lhs = eval_const_i64(left)?;
+            let rhs = eval_const_i64(right)?;
+            let value = match expr {
+                Expr::Add(_, _) => lhs.checked_add(rhs),
+                Expr::Sub(_, _) => lhs.checked_sub(rhs),
+                Expr::Mul(_, _) => lhs.checked_mul(rhs),
+                _ => unreachable!(),
+            };
+            value.ok_or_else(|| "E_CONST_OVERFLOW: signed i64 arithmetic".into())
+        }
+    }
 }
 
 /// Admit source bytes only when visual order and line breaks cannot disagree
@@ -1466,6 +1561,7 @@ mod tests {
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
+            Expr::Local(_) => Err("test evaluator does not execute runtime local sequences"),
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
