@@ -126,7 +126,7 @@ fn exact_shared_checked_i64_corpus_executes_as_native_jit_guests() {
                 let parsed: i64 = expected.parse().expect("signed 64 expected value");
                 assert_eq!(run.status.code(),Some(0),"{id}: {}",
                     String::from_utf8_lossy(&run.stderr));
-                assert_eq!(run.stdout,format!("{parsed}\n").as_bytes(),"{id} wrong guest value");
+                assert_eq!(run.stdout.as_slice(),format!("{parsed}\n").as_bytes(),"{id} wrong guest value");
                 assert!(run.stderr.is_empty(),"{id} value success emitted diagnostics");
             }
             "overflow" | "zero" => {
