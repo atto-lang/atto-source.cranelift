@@ -1344,7 +1344,7 @@ mod tests {
             (r#"`invalid \q`"#, "invalid template escape"),
             (r#"`invalid \x41`"#, "invalid template escape"),
             (r#"`invalid \u{1f600}`"#, "invalid Unicode escape"),
-            ("`invalid \\nnewline`", "invalid template escape"),
+            ("`invalid \\\nnewline`", "invalid template escape"),
             (r#"`only comments ${/* comment */}`"#, "empty template interpolation"),
             (r#"`line comments ${// comment
 }`"#, "empty template interpolation"),
@@ -1946,7 +1946,7 @@ mod tests {
             "fnc main():int{return 42;} /* TopicPublisher runtime_pubsub */"
         ));
         assert!(!has_actor_pubsub_surface(
-            "fnc main():int{return 42;} // TopicSubscriber\n"
+            "fnc main():int{return 42;} // TopicSubscriber\\n"
         ));
         assert!(!has_actor_pubsub_surface(
             "fnc main(TopicPublisher:int):int{return TopicPublisher;}"
