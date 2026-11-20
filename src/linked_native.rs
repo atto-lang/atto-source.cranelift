@@ -79,7 +79,6 @@ fn inspect_expression(
 
 fn cycle_visit(
     index: usize,
-    program: &[ScalarFn],
     names: &HashMap<String, usize>,
     edges: &[Vec<String>],
     states: &mut [u8],
@@ -97,7 +96,7 @@ fn cycle_visit(
     states[index] = 1;
     for target in &edges[index] {
         let other = names[target];
-        cycle_visit(other, program, names, edges, states, depth + 1)?;
+        cycle_visit(other, names, edges, states, depth + 1)?;
     }
     states[index] = 2;
     Ok(())
@@ -147,7 +146,7 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
     }
     let mut states = vec![0; program.len()];
     for i in 0..program.len() {
-        cycle_visit(i, program, &names, &edges, &mut states, 0)?;
+        cycle_visit(i, &names, &edges, &mut states, 0)?;
     }
     Ok(())
 }
