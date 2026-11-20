@@ -267,9 +267,9 @@ fn resolve_import(entry: &Path, root: &Path, spec: &str) -> Result<PathBuf, Stri
 }
 
 /// Link only explicitly named, public scalar helpers in a manifest-backed
-/// single-package source graph. The helpers are lowered by the existing
-/// checked scalar inliner to *real native Cranelift code*. General native
-/// function ABI calls (including non-linear arguments) are not implemented.
+/// single-package source graph. The resulting validated graph is lowered
+/// to separate native Cranelift helper functions by the linked ABI builder.
+/// This is a trusted, restricted scalar subset, not a general module loader.
 pub fn parse(entry_path: &Path, source: &str) -> Result<Vec<ScalarFn>, String> {
     // Modern cross-file semantics must not be silently enabled for the
     // historical .ores compatibility profile.
