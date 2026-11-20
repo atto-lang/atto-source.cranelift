@@ -21,6 +21,7 @@ enum Raw {
     Call(String, Vec<Raw>),
 }
 struct Fn {
+    public: bool,
     name: String,
     params: Vec<String>,
     locals: Vec<(String, Raw)>,
@@ -321,7 +322,7 @@ impl Parser {
     fn parse(mut self) -> Result<Vec<Fn>, String> {
         let mut fns = Vec::new();
         while self.peek() != "<eof>" {
-            self.eat("pub");
+            let public = self.eat("pub");
             self.need("fnc")?;
             let name = self.name()?;
             self.need("(")?;
@@ -363,6 +364,7 @@ impl Parser {
                 return Err("E_PIPE_BODY".into());
             };
             fns.push(Fn {
+                public,
                 name,
                 params,
                 locals,
@@ -487,7 +489,39 @@ impl Lower<'_> {
 /// static inlining, then let the existing Cranelift backend generate actual
 /// machine code. This path is NOT an interpreter, general linker, or AOT.
 pub fn parse(source: &str) -> Result<Program, String> {
-    let functions = Parser::new(source)?.parse()?;
+    compile_functions(Parser::new(source)?.parse()?)
+}
+
+/// Load only explicitly imported public helpers. Merely placing a declaration
+/// in a source unit does not make it reachable across the package boundary.
+/// No native call ABI, mutable capture, recursion, or general module language
+/// is implied by this tightly scoped checked inliner.
+pub fn parse_linked(entry: &str, units: &[(String, String)]) -> Result<Program, String> {
+    if units.len() > 8 {
+        return Err("E_LINK_IMPORT_LIMIT".into());
+    }
+    let mut selected = Parser::new(entry)?.parse()?;
+    for (requested, text) in units {
+        let candidates = Parser::new(text)?.parse()?;
+        let mut exported = candidates
+            .into_iter()
+            .filter(|f| f.name == *requested && f.public);
+        let func = exported.next().ok_or("E_LINK_EXPORT_NOT_PUBLIC_OR_MISSING")?;
+        if exported.next().is_some() {
+            return Err("E_LINK_AMBIGUOUS_EXPORT".into());
+        }
+        if func.name == "main" {
+            return Err("E_LINK_IMPORTED_ENTRY".into());
+        }
+        selected.push(func);
+    }
+    compile_functions(selected)
+}
+
+fn compile_functions(functions: Vec<Fn>) -> Result<Program, String> {
+    if functions.len() > 16 {
+        return Err("E_PIPE_FUNCTION_LIMIT".into());
+    }
     let mut names = HashMap::new();
     for f in functions {
         if names.insert(f.name.clone(), f).is_some() {
