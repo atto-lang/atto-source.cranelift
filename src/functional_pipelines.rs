@@ -94,7 +94,13 @@ impl Parser {
         if !word.bytes().next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
             || !word.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
             || matches!(word, "pub" | "fnc" | "int" | "val" | "let"
-                      | "return" | "true" | "false" | "bool" | "actor") {
+                      | "return" | "true" | "false" | "bool" | "actor"
+                      | "unsafe" | "await" | "susp" | "suspends" | "async"
+                      | "critical" | "trap" | "panic" | "raise" | "throw"
+                      | "take" | "borrow" | "copy" | "share" | "drop"
+                      | "pin" | "rt" | "io" | "stdio" | "process"
+                      | "spawn" | "select" | "import" | "module" | "define"
+                      | "namespace" | "use" | "pipe" | "rpipe") {
             return Err("E_PIPE_NAME".into());
         }
         let name = word.to_owned();
