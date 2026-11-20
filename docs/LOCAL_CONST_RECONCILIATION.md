@@ -27,7 +27,7 @@ Checked compile-time overflow rejects **before IR**, including unused constexpr 
 
 - Atto Cranelift **#52** modifies the scalar frontend/backend to support ordered sequence expressions. It is a **separate feature with overlapping files**; neither branch supersedes the other. Integrate and rerun native full-suite tests before merging either into a combined tree.
 - **#50** uses a separate functional pipeline parser and constrained lexical `val` expansion, not these general local bindings. Verify composition explicitly; this PR does not claim it.
-- Atto **#39** adjusts scalar-v4 parity; retain its `^` integer-XOR semantic migration and do not restore the old Oreslang caret ban.
+- Atto **#39** currently proposes `^` as integer XOR, but this conflicts with the later language decision reserving `^ expr;` for return and using `^^` for integer bitwise XOR. The checked-in bitwise spec still contains the old infix-XOR text. **Do not merge #39 or claim operator parity from this PR** until the canonical spec, parser, formatter and regression corpus agree.
 - Do not privately mirror legacy archived source into another organization. This branch is an independent implementation in the active Atto repo.
 
 ## Admission
@@ -58,3 +58,9 @@ Canonical diagnostics should correspond to the Java/LLVM/.NET semantic classes: 
 Migration requires a versioned language profile and explicit runner evidence for older fixtures that admitted runtime `const`. Historical source docs are preserved rather than changed in place. The file/module `define const os.read_env` exception and contextual `if ... as const` never authorize local runtime constexpr elision.
 
 Cross-backend exact-head tests, formatter alignment (`atto-format`, `oreslang-format`), native CLIF/LLVM IR, NativeAOT, Wasm isolation and negative-artifact evidence are still pending.
+
+### Operator contract outside the binding scope (blocking overlap)
+
+The checked-in Atto bitwise-v1 contract and Cranelift target #39 still propose infix `int ^ int` and Boolean `^^`. A newer explicit language decision instead sets `^ expr;` to be **return only**, `^^` to be **integer bitwise XOR**, `Math.pow()` as exponentiation, `<<<` and `>>>` as bitwise shifts, and `<<`/`>>` as directional stream/channel operations. The open `atto-spec#35` caret-return work is a related but not complete operator-contract reconciliation.
+
+Consequences: do not use current main's infix-XOR clause as an authority for new code, do not silently reinterpret existing `^ ` guest fixtures, and keep `atto-source.cranelift#39` on an explicit conflict/integration hold. Source profile/version transition, conformance fixtures and formatter changes require their own coordinated work; this PR neither implements nor tests those operators. Existing Cranelift `>>8` signed-shift stage-0 behavior also must not be misrepresented as current Atto `>>` stream-read semantics.
