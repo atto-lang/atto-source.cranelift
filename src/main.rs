@@ -11,6 +11,9 @@ mod actor_isolation_access_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
+// Host-only proxy mailbox tickets; never guest-exposed or a transport ABI.
+pub mod proxy_receipt_gate_v1;
+pub mod proxy_mailbox_ticket_v1;
 pub mod uhl1;
 use std::io::Read;
 
