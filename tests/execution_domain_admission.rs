@@ -58,8 +58,14 @@ fn domain_words_are_reserved_in_every_position() {
 
 #[test]
 fn task_and_nb_blocks_are_rejected_as_execution_tasks() {
-    rejected_with_diagnostic("fnc main(): int { return task { 1 }; }\n", "E_TASK_UNSUPPORTED");
-    rejected_with_diagnostic("fnc main(): int { return task // block\n { 1 }; }\n", "E_TASK_UNSUPPORTED");
+    rejected_with_diagnostic(
+        "fnc main(): int { return task { 1 }; }\n",
+        "E_TASK_UNSUPPORTED",
+    );
+    rejected_with_diagnostic(
+        "fnc main(): int { return task // block\n { 1 }; }\n",
+        "E_TASK_UNSUPPORTED",
+    );
     rejected_without_output("fnc main(): int { return nb { 1 }; }\n");
 }
 

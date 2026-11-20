@@ -119,17 +119,20 @@ fn scalar_control_still_executes_and_emits_clif() {
 #[test]
 fn type_only_patterns_refuse_before_ir_or_jit() {
     for (source, expected_diagnostic) in [
-        (b"define pattern P as end".as_slice(), "native type-only ADT pattern lowering unsupported"),
-        (b"match value over end".as_slice(), "MATCH_DEFAULT_BACKEND_UNSUPPORTED"),
+        (
+            b"define pattern P as end".as_slice(),
+            "native type-only ADT pattern lowering unsupported",
+        ),
+        (
+            b"match value over end".as_slice(),
+            "MATCH_DEFAULT_BACKEND_UNSUPPORTED",
+        ),
     ] {
         for mode in ["run", "ir"] {
             let output = invoke(mode, source);
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());
-            assert!(
-                String::from_utf8_lossy(&output.stderr)
-                    .contains(expected_diagnostic)
-            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains(expected_diagnostic));
         }
     }
 }
