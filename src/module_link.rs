@@ -1,7 +1,7 @@
 //! Bounded, explicitly-authorized source graph for the trusted scalar JIT.
 //! This is NOT a general Atto package resolver or a native tenant sandbox.
 //! No fallback to ambient ORES_PATHS, user directories, or arbitrary imports.
-use crate::frontend::Program;
+use crate::functional_pipelines::Fn as ScalarFn;
 use crate::functional_pipelines;
 use crate::open_source_file;
 use std::collections::HashSet;
@@ -270,7 +270,7 @@ fn resolve_import(entry: &Path, root: &Path, spec: &str) -> Result<PathBuf, Stri
 /// single-package source graph. The helpers are lowered by the existing
 /// checked scalar inliner to *real native Cranelift code*. General native
 /// function ABI calls (including non-linear arguments) are not implemented.
-pub fn parse(entry_path: &Path, source: &str) -> Result<Program, String> {
+pub fn parse(entry_path: &Path, source: &str) -> Result<Vec<ScalarFn>, String> {
     // The non-Unix CLI fallback cannot prove ancestor no-follow confinement.
     // Do not accidentally advertise a secure linker on that platform.
     if !cfg!(unix) {
@@ -288,7 +288,7 @@ pub fn parse(entry_path: &Path, source: &str) -> Result<Program, String> {
         let text = load_bounded(&path, MAX_MODULE_BYTES)?;
         units.push((import.exported_name, import.local_name, text));
     }
-    functional_pipelines::parse_linked(&body, &units)
+    functional_pipelines::parse_linked_native(&body, &units)
 }
 
 #[cfg(test)]
