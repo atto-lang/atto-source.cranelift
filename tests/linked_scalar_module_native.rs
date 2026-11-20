@@ -289,6 +289,17 @@ fn guest_linked_calls_reject_bad_arity_missing_symbol_and_recursive_graph() {
 }
 
 #[test]
+fn modern_linked_imports_do_not_reinterpret_legacy_ores_entries() {
+    let project = Project::new();
+    let path = project.write(
+        "src/legacy-linked.ores",
+        "import twice from \"+src/lib/helpers.atto\";\n\
+         pub fnc main(): int { return twice(21); }\n",
+    );
+    reject_all(&path, "E_LINK_ENTRY_REQUIRES_ATTO");
+}
+
+#[test]
 fn graph_imports_may_not_repurpose_isolate_tenant_entry() {
     let project = Project::new();
     let path = project.write("src/isolate-link.atto", ROOT_MAIN);
