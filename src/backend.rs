@@ -159,6 +159,19 @@ fn emit(
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
+        Seq(parts) => {
+            // The source parser bounds this sequence. Revalidate the full
+            // externally constructible Program before reaching emit().
+            // Each earlier expression still emits its overflow/divisor
+            // control-flow checks; only the scalar result is discarded.
+            let (first, rest) = parts.split_first()
+                .expect("prepare_ir validated nonempty sequence");
+            let mut last = emit(first, b, params, error, divisor_error, negative_exponent_error);
+            for item in rest {
+                last = emit(item, b, params, error, divisor_error, negative_exponent_error);
+            }
+            last
+        }
         ShiftRight8(x) => {
             // Signed Cranelift arithmetic shift of i64, preserving sign.
             // The parser admits only the constant 8, matching ODB1 byte
@@ -244,6 +257,8 @@ fn validate_ir(
 }
 
 fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context, cranelift_module::FuncId), String> {
+    // Never trust a manually constructed AST or a stale parser receipt.
+    crate::frontend::validate_ast_depth(&source.result)?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
     let mut sig = module.make_signature();
