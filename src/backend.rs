@@ -630,4 +630,39 @@ mod native_named_signed64_differential {
             );
         }
     }
+
+    #[test]
+    fn checked_sequence_jit_matches_reference_and_rejects_forged_ast() {
+        for expression in [
+            "seq(42)", "seq(1,2,42)", "(> 1,2,42)",
+            "seq(1, (> 2,42))", "seq(1,Integer.bitAnd(7,3),42)",
+            "seq(1,2)+40",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let parsed = crate::frontend::parse(&source).expect("valid sequence");
+            let checked_ir = render_ir(&parsed).expect("verified native IR");
+            let compiled = compile(&parsed).expect("real Cranelift JIT");
+            assert_eq!(checked_ir, compiled.clif, "IR/JIT drift for {source}");
+            assert_eq!(compiled.run(&[]), Ok(42), "{source}");
+        }
+        for (expression, error) in [
+            ("seq(9223372036854775807+1,42)", "i64 arithmetic overflow"),
+            ("(> 9223372036854775807+1,42)", "i64 arithmetic overflow"),
+            ("seq(Integer.rem(8,0),42)", "integer divisor zero"),
+            ("(> Integer.mod(8,0),42)", "integer divisor zero"),
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let parsed = crate::frontend::parse(&source).expect("valid but trapping sequence");
+            let compiled = compile(&parsed).expect("checked guest IR");
+            assert_eq!(compiled.run(&[]), Err(error.to_owned()), "{source}");
+        }
+        for result in [
+            Expr::Seq(vec![]),
+            Expr::Seq(vec![Expr::Literal(42); 17]),
+        ] {
+            let forged = Program { parameters: vec![], result };
+            assert!(render_ir(&forged).is_err(), "invalid AST admitted to CLIF IR");
+            assert!(compile(&forged).is_err(), "invalid AST reached JIT");
+        }
+    }
 }
