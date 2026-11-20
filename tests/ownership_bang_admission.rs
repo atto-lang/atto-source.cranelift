@@ -59,8 +59,9 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
         "borrow! mut value", "mut borrow! value", "mut borrow!value", "share!value",
         "ref!value", "ref!(value)", "deref!handle", "deref! handle",
         "unref!handle", "unref! handles[0]", "ref!eqfoo",
-        "borrow!\\nmut value", "borrow!/* checked loan */mut value",
-        "mut borrow!\\nvalue",
+        "freeze!value", "weak!value", "copy!!value",
+        "borrow!\nmut value", "borrow!/* checked loan */mut value",
+        "mut borrow!\nvalue",
     ] {
         for mode in ["run", "ir"] {
             let source = format!("fnc main():int{{return {expression};}}");
@@ -118,6 +119,23 @@ fn checked_handle_spelling_inside_comments_is_inert() {
         );
         assert!(output.status.success(), "{mode}: {}",
             String::from_utf8_lossy(&output.stderr));
+    }
+}
+
+#[test]
+fn nested_comments_are_inert_and_nesting_limit_is_fail_closed() {
+    for mode in ["run", "ir"] {
+        let benign = "fnc main():int{/* outer /* ref!bad weak!bad */ still outer */return 42;}";
+        let valid = run_source(benign, mode);
+        assert!(valid.status.success(), "{mode}: {}",
+            String::from_utf8_lossy(&valid.stderr));
+        let overdeep = format!("fnc main():int{{{}42{}return 42;}}",
+            "/*".repeat(129), "*/".repeat(129));
+        let denied = run_source(&overdeep, mode);
+        assert!(!denied.status.success(), "{mode} accepted 129 nested comments");
+        assert!(denied.stdout.is_empty(), "{mode} emitted output for overdeep comment");
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("block comment nesting limit"),
+            "{mode}: {}", String::from_utf8_lossy(&denied.stderr));
     }
 }
 
