@@ -271,6 +271,11 @@ fn resolve_import(entry: &Path, root: &Path, spec: &str) -> Result<PathBuf, Stri
 /// checked scalar inliner to *real native Cranelift code*. General native
 /// function ABI calls (including non-linear arguments) are not implemented.
 pub fn parse(entry_path: &Path, source: &str) -> Result<Vec<ScalarFn>, String> {
+    // Modern cross-file semantics must not be silently enabled for the
+    // historical .ores compatibility profile.
+    if entry_path.extension().and_then(|ext| ext.to_str()) != Some("atto") {
+        return Err("E_LINK_ENTRY_REQUIRES_ATTO".into());
+    }
     // The non-Unix CLI fallback cannot prove ancestor no-follow confinement.
     // Do not accidentally advertise a secure linker on that platform.
     if !cfg!(unix) {
