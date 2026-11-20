@@ -241,3 +241,20 @@ fn oversized_imported_modules_are_rejected_before_any_native_code() {
     );
     reject_all(&entry, "E_LINK_SOURCE_BUDGET");
 }
+
+#[test]
+fn nearest_legacy_package_blocks_parent_modern_authority() {
+    let project = Project::new();
+    project.write("src/.oreslangc.cfg.toml", "[project]\nname = \"legacy\"\n");
+    let entry = project.write("src/legacy-subpackage.atto", ROOT_MAIN);
+    reject_all(&entry, "E_LINK_LEGACY_PACKAGE_BOUNDARY");
+}
+
+#[test]
+fn malformed_modern_manifest_does_not_grant_import_authority() {
+    let project = Project::new();
+    fs::remove_file(project.base.join(".ores.pkg.toml")).expect("delete test marker");
+    project.write(".ores.pkg.toml", "schema_version = \"1\"\n[package]\nname = \"x\"\n[unauthorized]\nsecret = \"path\"\n");
+    let entry = project.write("src/malformed-marker.atto", ROOT_MAIN);
+    reject_all(&entry, "E_LINK_INVALID_MANIFEST");
+}
