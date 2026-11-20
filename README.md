@@ -70,20 +70,21 @@ This compiler does **not** currently support full AOT, actor-language compilatio
 
 ## Restricted inline `sync task` stage-0 candidate (draft)
 
-The experimental Cranelift scalar frontend accepts `do sync task {}`
-and `do sync task<void> { return; }` as sequential **void-only
-inline statements** in synchronous scalar `main`. Omitted do-inline
-type means `void`, never an inferred nonvoid payload.
-`do sync task<int>` or `do sync task { return 42; }` rejects with
-`E_TASK_RETURN_TYPE` before CLIF emission. Bare standalone
-`sync task {};` and `sync task<void> {};` reject with `E_SYNTAX`:
-the `do` keyword is required. Value-producing `sync task<int>
-{ return <scalar-expression>; }` remains an expression of type `int`.
-Inline bodies execute in lexical order on the caller, without spawning
-a child or creating `Future<T>`. Checked arithmetic failures in an
-inline value expression suppress guest result publication. Only
-signed-i64 arithmetic, parameters and nested non-suspending inline
-tasks are within this experimental subset.
+The experimental Cranelift scalar frontend admits `do sync task {}`
+and `do sync task<void> { return; }` as sequential void inline
+statements in synchronous scalar `main`. The syntax `do sync
+task<int> { return 42; }` also executes inline and **discards its int
+result**; `do sync task { return 42; }` infers the int payload.
+Discarding a value is valid under the canonical atto-spec contract.
+A mismatched explicit payload type rejects with `E_TASK_RETURN_TYPE`.
+Bare standalone `sync task {};` and `sync task<void> {};` reject with
+`E_SYNTAX`: the `do` keyword is required in statement position.
+Value-producing `sync task<int> { return <scalar-expression>; }`
+remains an expression of type `int`. Inline bodies execute in lexical
+order on the caller, without spawning a child or creating `Future<T>`.
+Checked arithmetic failures within discarded inline values suppress
+guest result publication. Only signed-i64 arithmetic, parameters and
+nested non-suspending inline tasks are within this experimental subset.
 
 **Not supported:** independently scheduled `task<T>`, `await task`,
 suspension, `Future.cancel()`, mutable locals/captures, child TaskScopes,
