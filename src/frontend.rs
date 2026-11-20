@@ -621,6 +621,12 @@ impl<'a> Parser<'a> {
                 if !self.take(Token::Word("int"))? {
                     return Err("unsupported checked cast target (only int is supported)".into());
                 }
+                // No IR instruction for an identity cast, but every cast
+                // still consumes a source/AST complexity admission unit.
+                self.nodes += 1;
+                if self.nodes > MAX_NODES {
+                    return Err("AST node budget exceeded".into());
+                }
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
@@ -901,6 +907,15 @@ impl<'a> Parser<'a> {
                 _ => break,
             };
             self.next()?;
+            if self.current == Token::Word("mut") {
+                // const mut on scalar int is never a writable variable,
+                // and val mut requires a typed referent/loan backend.
+                return if kind == "val" {
+                    Err("E_MUT_BACKEND_UNSUPPORTED: no scalar referent mutability lowering".into())
+                } else {
+                    Err("E_CONST_MUT_UNSUPPORTED: scalar const mut requires a non-scalar owned referent".into())
+                };
+            }
             let typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if is_java_v1_reserved_parameter_name(&name)
@@ -935,6 +950,14 @@ impl<'a> Parser<'a> {
         }
         if self.current == Token::Word("let") {
             return Err("E_LET_UNSUPPORTED: rebindable locals require typed SSA write lowering".into());
+        }
+        if self.current == Token::Word("mut") {
+            return Err("E_MUT_QUALIFIER: bare mut requires an explicit binding qualifier".into());
+        }
+        if let Token::Word(name) = self.current {
+            if self.bindings.iter().any(|(declared, _, _)| declared == name) {
+                return Err("E_IMMUTABLE_REBIND: local const/val is not rebindable".into());
+            }
         }
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
@@ -1176,11 +1199,11 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
         Expr::Literal(value) => Ok(*value),
         Expr::Param(_) | Expr::Local(_) => Err(
-            "E_CONST_EVAL: local const or type-first int requires a compile-time expression".into(),
+            "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
         Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
-            "E_CONST_EFFECT: function calls are not supported in local constexpr evaluation".into(),
+            "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
         Expr::Neg(expr) => eval_const_i64(expr)?
             .checked_neg()

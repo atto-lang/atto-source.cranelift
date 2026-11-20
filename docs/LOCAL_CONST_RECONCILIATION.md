@@ -33,3 +33,28 @@ Checked compile-time overflow rejects **before IR**, including unused constexpr 
 ## Admission
 
 **Tests authored, not executed.** Required for promotion: `cargo fmt --all -- --check`, `cargo test --locked --all-targets`, `cargo clippy --locked --all-targets -- -D warnings`, plus exact-head real CLI `run`/`ir` positive, const-rejection and eager-overflow receipts. A failed zero-step GitHub Actions run is NOT_EXECUTED, not proof of native semantics.
+
+## Cross-backend audit: legacy Oreslang versus canonical Atto
+
+Read against the **merged Java source/compiler** and legacy LLVM/Wasm/.NET/Forge/Rust/JS branches, plus `atto-lang/atto-spec`. These are source/PR audits, NOT a single cross-backend compiled-guest parity receipt.
+
+| Backend / evidence | Typed scalar local const/type-first | Untyped local const | Runtime val/let and availability |
+| --- | --- | --- | --- |
+| Java/Graal `oreslang-source.java#3066` (merged) | Stage-one constexpr checks, including type-right const | **Legacy runtime readonly allowed**, folded opportunistically | `val` runtime fixed, `let` mutable; Java preserved old implicit referent behavior in this merge |
+| LLVM `oreslang-source.llvm#1779` (merged), `#1850` (open) | Typed local constexpr baseline, type-right parity still pending | Other scalar/inference PRs remain unverified | Native link/execute evidence must be pinned to exact heads |
+| .NET `oreslang-source.net#516` (open), `#377` (merged) | Structured compiler draft enforces typed constexpr | **Java-compatible runtime readonly** retained in `#516` | Structured CFG/CIL and separate shipping/NativeAOT gates |
+| Wasm `oreslang-source.wasm#400/#407` (merged) | Delegates compilation to pinned LLVM | Earlier guest positive explicitly permitted runtime `const` | Tests alone are not a separate Wasm language frontend |
+| Forge `oreslang-source.forge#171` (open) | Bounded immutable i64 proposal, no proven full typed constexpr parity | Not established | Proposed native compile/guest testing; no full scalar mutability parity established |
+| Rust `oreslang-source.rs#35` (open) | Immutable/type-first parser plus SSA drafts | Not established as matching current Atto const semantics | `let` implementation draft, source review/guest CI needed |
+| JS `oreslang-source.js#96` (merged) | Typed lexical const/ESM source slice | Not established as current Atto semantics | Distinct typed program-v2 feature, no general ownership/actor support |
+| Cranelift **this PR** | Implements compile-time `const int`, type-first `int`, and `const x: int` for signed i64 | **Strict constexpr** per Atto spec (intentionally differs from legacy Java stage one) | Eager native signed-i64 `val`, no `let` rebinding or secure sandbox |
+
+### Authority and release policy
+
+Canonical `atto-lang/atto-spec/language/compile-time-constants-v1.md` and `local-binding-mutability-v1.md` require **all local `const` initializers** to be compile-time-evaluable, including untyped `const x = e;`. This is a **migration difference**, not evidence that the merged Java stage-one runtime-`const` implementation is wrong for its historical profile. Never silently accept Java's compatibility behavior in a strict Atto profile or claim Java cross-backend parity based on syntax acceptance alone.
+
+Canonical diagnostics should correspond to the Java/LLVM/.NET semantic classes: `E_NON_CONST_INITIALIZER`, `E_CONST_OVERFLOW`, `E_CONST_MUT_UNSUPPORTED`, `E_MUT_QUALIFIER`, and `E_IMMUTABLE_REBIND`. The Cranelift stage-0 `let` rejection is specifically an **unsupported feature**, not a prohibition in AttoLang.
+
+Migration requires a versioned language profile and explicit runner evidence for older fixtures that admitted runtime `const`. Historical source docs are preserved rather than changed in place. The file/module `define const os.read_env` exception and contextual `if ... as const` never authorize local runtime constexpr elision.
+
+Cross-backend exact-head tests, formatter alignment (`atto-format`, `oreslang-format`), native CLIF/LLVM IR, NativeAOT, Wasm isolation and negative-artifact evidence are still pending.

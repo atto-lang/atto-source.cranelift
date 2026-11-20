@@ -35,6 +35,9 @@ fn local_const_and_val_have_distinct_native_semantics() {
     for (source, args, answer) in [
         ("fnc main():int{const x=40+2;return x;}", &[][..], b"42\n".as_slice()),
         ("fnc main():int{int x=40+2;return x;}", &[][..], b"42\n".as_slice()),
+        ("fnc main():int{const x: int=40+2;return x;}", &[][..], b"42\n".as_slice()),
+        ("fnc main():int{int a=7;val int b=a+35;return b;}", &[][..], b"42\n".as_slice()),
+        ("fnc main():int{const x=40 as int;const int y=x+2;return y;}", &[][..], b"42\n".as_slice()),
         ("fnc main():int{const int x=40;const y=x+2;return y;}", &[][..], b"42\n".as_slice()),
         ("fnc main(a:int):int{val y=a+1;return y;}", &["41"][..], b"42\n".as_slice()),
         ("fnc main(a:int):int{val int y=a+1;val z=y+1;return z;}", &["40"][..], b"42\n".as_slice()),
@@ -58,6 +61,12 @@ fn runtime_const_and_type_first_parameter_must_fail_before_ir() {
         "fnc main(a:int):int{val y=a+1;const x=y+1;return x;}",
         "fnc main():int{const x=9223372036854775807+1;return 0;}",
         "fnc main():int{int x=9223372036854775807+1;return 0;}",
+        "fnc main():int{const x: int=9223372036854775807+1;return x;}",
+        "fnc main(a:int):int{const x: int=a;return x;}",
+        "fnc main():int{const mut int x=1;return x;}",
+        "fnc main():int{mut int x=1;return x;}",
+        "fnc main():int{val mut int x=1;return x;}",
+        "fnc main():int{val x=1;x=2;return x;}",
         "fnc main():int{const x=Integer.pow(2,3);return x;}",
         "fnc main():int{val y=y+1;return y;}",
         "fnc main():int{const x=x+1;return x;}",
@@ -109,4 +118,35 @@ fn binding_budget_and_comment_inertness() {
     }
     let comments = "fnc main():int{/* const x=a+1 */ val x=40; // let y=bad\nreturn x+2;}";
     assert_eq!(guest("run", comments, &[]).stdout, b"42\n");
+}
+
+#[test]
+fn cross_backend_const_diagnostic_classes_are_stable() {
+    let cases = [
+        ("fnc main(a:int):int{const int x=a;return x;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main(a:int):int{int x=a;return x;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main(a:int):int{const x: int=a;return x;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main():int{const x=Integer.pow(2,3);return x;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main():int{const x=9223372036854775807+1;return x;}", "E_CONST_OVERFLOW"),
+        ("fnc main():int{const mut int x=0;return x;}", "E_CONST_MUT_UNSUPPORTED"),
+        ("fnc main():int{mut int x=0;return x;}", "E_MUT_QUALIFIER"),
+        ("fnc main():int{val x=0;x=1;return x;}", "E_IMMUTABLE_REBIND"),
+    ];
+    for (source, diagnostic) in cases {
+        for mode in ["check", "ir", "run"] {
+            let args = if source.contains("main(a:int)") && mode == "run" {
+                &["1"][..]
+            } else {
+                &[][..]
+            };
+            let result = guest(mode, source, args);
+            assert_eq!(result.status.code(), Some(1), "{mode}: {source}");
+            assert!(result.stdout.is_empty(), "{mode}: no guest / IR result on rejection");
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains(diagnostic),
+                "{mode}/{source} expected {diagnostic}, got {}",
+                String::from_utf8_lossy(&result.stderr),
+            );
+        }
+    }
 }
