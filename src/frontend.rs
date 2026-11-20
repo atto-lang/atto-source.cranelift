@@ -165,6 +165,10 @@ pub enum Expr {
     NamedMod(Box<Expr>, Box<Expr>),
     NamedPow(Box<Expr>, Box<Expr>),
     ShiftRight8(Box<Expr>),
+    // Inline, same-caller execution; never an independent Future or TaskId.
+    InlineTask(Box<Expr>),
+    // Preserve evaluation of discarded inline task bodies before a return.
+    Sequence(Vec<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -268,8 +272,33 @@ impl<'a> Parser<'a> {
     }
     fn next_opens_block(&self) -> bool { self.next_significant_is(b'{') }
 
+    fn next_significant_word_is(&self, expected: &str) -> bool {
+        let b = self.input.as_bytes();
+        let mut at = self.pos;
+        loop {
+            while at < b.len() {
+                let width = whitespace_width(b, at);
+                if width == 0 { break; }
+                at += width;
+            }
+            if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
+                at += 2;
+                while at < b.len() && line_break_width(b, at) == 0 { at += 1; }
+                continue;
+            }
+            if b.get(at..at.saturating_add(2)) == Some(&b"/*"[..]) {
+                at = match skip_block_comment(b, at) { Ok(end) => end, Err(_) => return false };
+                continue;
+            }
+            let word = expected.as_bytes();
+            return b.get(at..at.saturating_add(word.len())) == Some(word)
+                && b.get(at + word.len()).is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_');
+        }
+    }
+
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
+        let preceded_by_sync = self.current == Token::Word("sync");
         loop {
             while self.pos < b.len() {
                 let width = whitespace_width(b, self.pos);
@@ -325,13 +354,12 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
-            if self.current == Token::Word("sync") {
-                return Err("E_RESERVED: sync is reserved for cooperative task joining, not a variable or blocking operation".into());
-            }
+            // A task header can only pass this scanner after an actual sync token.
             if self.current == Token::Word("task")
                 && (self.next_opens_block() || self.next_significant_is(b'<'))
+                && !preceded_by_sync
             {
-                return Err("E_TASK_UNSUPPORTED: typed task<T> produces Future<T>; cancellation, TaskScope ownership and lock unwind require verified lowering".into());
+                return Err("E_TASK_UNSUPPORTED: task<T> produces Future<T>; cancellation, TaskScope ownership and lock unwind require verified lowering".into());
             }
             // Typed ownership bangs must never be interpreted as scalar
             // identifiers or a runtime macro call. Detect the contiguous
@@ -531,6 +559,12 @@ impl<'a> Parser<'a> {
                     .map_err(|_| "i64 literal out of range")?;
                 self.next()?;
                 self.node(Expr::Literal(value))
+            }
+            Token::Word("sync") => {
+                if !self.next_significant_word_is("task") {
+                    return Err("E_RESERVED: sync is reserved for inline task execution".into());
+                }
+                self.inline_task(depth + 1, false)
             }
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
@@ -798,6 +832,7 @@ impl<'a> Parser<'a> {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
+                if name == "sync" { return Err("E_RESERVED: sync is not a legal parameter".into()); }
                 if is_java_v1_reserved_parameter_name(&name)
                     || matches!(
                         name.as_str(),
@@ -882,8 +917,14 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
+        let inline_effects = self.inline_statements(0)?;
         self.expect(Token::Word("return"))?;
-        let result = self.expr(0, 0)?;
+        let value = self.expr(0, 0)?;
+        let result = if inline_effects.is_empty() {
+            value
+        } else {
+            self.node(Expr::Sequence(inline_effects, Box::new(value)))?
+        };
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         while self.current == Token::Word("export") {
@@ -1094,8 +1135,12 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
         }
         match expr {
             Expr::Literal(_) | Expr::Param(_) => {}
-            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
+            }
+            Expr::Sequence(prefix, last) => {
+                pending.push((last.as_ref(), level + 1));
+                for part in prefix { pending.push((part, level + 1)); }
             }
             Expr::Add(left, right)
             | Expr::Sub(left, right)
@@ -1523,6 +1568,11 @@ mod tests {
             }
             Expr::NamedPow(a, b) => checked_pow(eval(a, args)?, eval(b, args)?),
             Expr::ShiftRight8(x) => Ok(eval(x, args)? >> 8),
+            Expr::InlineTask(body) => eval(body, args),
+            Expr::Sequence(prefix, last) => {
+                for part in prefix { let _ = eval(part, args)?; }
+                eval(last, args)
+            },
         }
     }
     #[test]
