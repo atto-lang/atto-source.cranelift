@@ -492,14 +492,6 @@ pub fn parse(source: &str) -> Result<Program, String> {
     compile_functions(Parser::new(source)?.parse()?)
 }
 
-/// Load only explicitly imported public helpers. Merely placing a declaration
-/// in a source unit does not make it reachable across the package boundary.
-/// No native call ABI, mutable capture, recursion, or general module language
-/// is implied by this tightly scoped checked inliner.
-pub fn parse_linked(entry: &str, units: &[(String, String, String)]) -> Result<Program, String> {
-    compile_functions(parse_linked_native(entry, units)?)
-}
-
 /// Preserve the separately parsed function graph and symbolic calls for
 /// real native function lowering. This path never substitutes argument trees.
 pub(crate) fn parse_linked_native(
