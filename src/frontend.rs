@@ -486,7 +486,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.".contains(&first) {
+        } else if b"()+-*{}[];:,<>.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -1271,28 +1271,42 @@ pub fn parse(text: &str) -> Result<Program, String> {
 mod tests {
     use super::*;
     #[test]
-    fn sync_reservation_and_typed_tasks_fail_before_cranelift_native_jit() {
-        for spelling in [
+    fn inline_sync_task_scalar_semantics_and_fail_closed_admission() {
+        for (source, arguments, expected) in [
+            ("fnc main():int { sync task {}; return 42; }", &[][..], 42),
+            ("fnc main():int { do sync task<void> { return; }; return 42; }", &[], 42),
+            ("fnc main():int { return sync task<int> { return 40+2; }; }", &[], 42),
+            ("fnc main(x:int):int { return 1 + sync /*ok*/ task<int> { return x; }; }", &[41], 42),
+            ("fnc main():int { return sync task { return sync task<int> { return 42; }; }; }", &[], 42),
+            ("fnc main():int { do sync task<int> { return 1+1; }; return 42; }", &[], 42),
+            ("fnc main():int { do sync task { do sync task {} return 7; } return 42; }", &[], 42),
+        ] {
+            let p = parse(source).expect("non-suspending inline scalar task");
+            assert_eq!(eval(&p.result, arguments), Ok(expected), "{source}");
+        }
+        for source in [
             "fnc main():int { return task<int> { return 42; }; }",
             "fnc main():int { return task /*c*/ <int> { return 42; }; }",
             "fnc main():int { do task<int> { return 42; }; return 0; }",
-            "fnc main():int { do sync task<int> { return 42; }; return 0; }",
-            "fnc main():int { return sync task<int> { return 42; }; }",
+            "fnc main():int { return await task<int> { return 42; }; }",
+            "fnc main():int { return sync task {}; }",
+            "fnc main():int { return sync task<void> { return; }; }",
+            "fnc main():int { return sync task<int> {}; }",
+            "fnc main():int { return sync task<int> { return; }; }",
+            "fnc main():int { do sync task<void> { return 7; }; return 0; }",
+            "fnc main():int { do sync task { await task<int> { return 1; }; } return 0; }",
+            "fnc main():int { return sync task<int> { defer 1; return 42; }; }",
+            "fnc main():int { return sync task<int> { task<int> {return 1;}; return 42; }; }",
+            "fnc main():int { return sync task<int> { return 7; }; sync task {}; }",
         ] {
-            let e = parse(spelling).expect_err("task syntax cannot be scalar JIT lowered");
-            assert!(
-                e.contains("E_TASK_UNSUPPORTED") || e.contains("E_RESERVED"),
-                "unexpected error for {spelling}: {e}"
-            );
+            assert!(parse(source).is_err(), "unsupported guest task admitted: {source}");
         }
         let e = parse("fnc main(sync:int):int { return sync; }")
             .expect_err("reserved sync cannot be a parameter");
         assert!(e.contains("E_RESERVED"), "{e}");
-        let good = parse("fnc main(sync_data:int):int { return sync_data; }")
-            .expect("identifier prefix should not be reserved");
+        let good = parse("fnc main(sync_data:int):int { return sync_data; }").unwrap();
         assert_eq!(eval(&good.result, &[42]), Ok(42));
-        let commented = parse("fnc main():int { /* do sync task<int> { } */ return 42; }")
-            .expect("commentary task keywords are inert");
+        let commented = parse("fnc main():int { /* do sync task<int> { } */ return 42; }").unwrap();
         assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
 
