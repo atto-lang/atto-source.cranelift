@@ -117,7 +117,10 @@ fn unverified_spawn_suspend_and_payload_forms_produce_no_guest_artifacts() {
         "fnc main():int { sync task {}; return 42; }",
         "fnc main():int { sync task<void> {}; return 42; }",
         "fnc main():int { do sync task<int> {}; return 0; }",
+        "fnc main():int { do sync task<int> { return 42; }; return 0; }",
+        "fnc main():int { do sync task { return 42; }; return 0; }",
         "fnc main():int { do sync task<void> { return 42; }; return 0; }",
+        "fnc main():int { do sync task { do sync task<int> { return 42; }; }; return 0; }",
         "fnc main():int { return sync task {}; }",
         "fnc main():int { return sync task<void> { return; }; }",
         "fnc main():int { return sync task<int> { return; }; }",
@@ -140,9 +143,11 @@ fn unverified_spawn_suspend_and_payload_forms_produce_no_guest_artifacts() {
 }
 
 #[test]
-fn discarded_task_payload_type_and_statement_syntax_are_checked() {
+fn do_inline_void_only_diagnostics_reject_before_clif_or_execution() {
     for (source, expected) in [
         ("fnc main():int { do sync task<int> {}; return 42; }", "E_TASK_RETURN_TYPE"),
+        ("fnc main():int { do sync task<int> { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
+        ("fnc main():int { do sync task { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
         ("fnc main():int { do sync task<void> { return 42; }; return 0; }", "E_TASK_RETURN_TYPE"),
         ("fnc main():int { sync task {}; return 42; }", "E_SYNTAX"),
         ("fnc main():int { sync task<void> {}; return 42; }", "E_SYNTAX"),
@@ -159,22 +164,4 @@ fn discarded_task_payload_type_and_statement_syntax_are_checked() {
             );
         }
     }
-    // Value-returning do-sync is an inline expression whose result is
-    // deliberately discarded. A checked failure still terminates the parent.
-    for source in [
-        "fnc main():int { do sync task<int> { return 7; }; return 42; }",
-        "fnc main():int { do sync task { return 7; }; return 42; }",
-    ] {
-        let fixture = Source::new(source);
-        let native = call("run", &fixture, &[]);
-        assert!(native.status.success(), "typed discard: {}", String::from_utf8_lossy(&native.stderr));
-        assert_eq!(native.stdout, b"42\n");
-    }
-    let failing = Source::new(
-        "fnc main():int { do sync task<int> { return Integer.rem(5,0); }; return 42; }"
-    );
-    let native = call("run", &failing, &[]);
-    assert_eq!(native.status.code(), Some(1));
-    assert!(native.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&native.stderr).contains("integer divisor zero"));
 }

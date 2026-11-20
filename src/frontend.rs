@@ -580,6 +580,11 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // A discarded inline task is a void-only statement: do not erase
+        // nonvoid payload types, even if the task body has no return.
+        if discard && payload == Some(true) {
+            return Err("E_TASK_RETURN_TYPE: do sync task requires void".into());
+        }
         self.expect(Token::Punct(b'{'))?;
         let effects = self.inline_statements(depth + 1)?;
         let value = if self.take(Token::Word("return"))? {
@@ -597,6 +602,9 @@ impl<'a> Parser<'a> {
         if (payload == Some(true) && value.is_none()) || (payload == Some(false) && value.is_some())
         {
             return Err("E_TASK_RETURN_TYPE: inline task payload and return do not agree".into());
+        }
+        if discard && value.is_some() {
+            return Err("E_TASK_RETURN_TYPE: do sync task cannot return a value".into());
         }
         if !discard && value.is_none() {
             return Err("E_TASK_RETURN_TYPE: void inline task cannot be used as int".into());
@@ -1352,7 +1360,7 @@ mod tests {
                 42,
             ),
             (
-                "fnc main():int { do sync task<int> { return 1+1; }; return 42; }",
+                "fnc main():int { do sync task { do sync task<void> { return; }; return; }; return 42; }",
                 &[],
                 42,
             ),
@@ -1377,6 +1385,9 @@ mod tests {
             "fnc main():int { return sync task<int> {}; }",
             "fnc main():int { return sync task<int> { return; }; }",
             "fnc main():int { do sync task<int> {}; return 0; }",
+            "fnc main():int { do sync task<int> { return 7; }; return 0; }",
+            "fnc main():int { do sync task { return 7; }; return 0; }",
+            "fnc main():int { do sync task { return sync task<int> { return 7; }; }; return 0; }",
             "fnc main():int { do sync task<void> { return 7; }; return 0; }",
             "fnc main():int { do sync task { await task<int> { return 1; }; } return 0; }",
             "fnc main():int { return sync task<int> { defer 1; return 42; }; }",
@@ -1388,20 +1399,13 @@ mod tests {
                 "unsupported guest task admitted: {source}"
             );
         }
-        // The spec permits value-returning do-sync inline bodies; they are
-        // evaluated on the caller and discarded after local cleanup.
-        for source in [
-            "fnc main():int { do sync task<int> { return 1; }; return 42; }",
-            "fnc main():int { do sync task { return 1; }; return 42; }",
-        ] {
-            let parsed = parse(source).expect("discarding a typed inline value is valid");
-            assert_eq!(eval(&parsed.result, &[]), Ok(42), "{source}");
-        }
         for source in [
             "fnc main():int { do sync task<int> {}; return 42; }",
+            "fnc main():int { do sync task<int> { return 1; }; return 42; }",
+            "fnc main():int { do sync task { return 1; }; return 42; }",
             "fnc main():int { do sync task<void> { return 1; }; return 42; }",
         ] {
-            let diagnostic = parse(source).expect_err("incorrect inline payload type");
+            let diagnostic = parse(source).expect_err("nonvoid do-sync must be rejected");
             assert!(diagnostic.contains("E_TASK_RETURN_TYPE"), "{source}: {diagnostic}");
         }
         for source in [
