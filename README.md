@@ -90,7 +90,10 @@ untrusted tenant code. See atto-spec PR #129 for the full target contract
 and atto-platform-conformance PR #115 for portable fixtures. The
 compiler subset does not pass those full portable fixtures yet.
 
-The source includes parser tests and actual CLI native-guest tests in
-`tests/inline_sync_task.rs`; run `cargo test --locked --all-targets`
-on the exact PR head. Until an executing runner produces authenticated
-guest receipts, this is **NOT_EXECUTED** and NOT production-certified.
+The source includes parser tests and real CLI native-guest tests in
+`tests/inline_sync_task.rs`. For executed checks, precise source commit/tree,
+runner logs, and outcomes, see the current audit evidence on AttoLang
+Cranelift PR #54; run `cargo test --locked --all-targets --no-fail-fast`
+on the exact head. These receipts can certify only the restricted trusted
+scalar subset, not full AttoLang task/cancellation/actor capabilities.
+The repository capability inventory remains **NOT_CERTIFIED**.
