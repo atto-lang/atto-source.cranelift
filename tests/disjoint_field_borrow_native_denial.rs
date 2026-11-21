@@ -11,7 +11,19 @@ fn invoke(mode: &str, source: &str) -> Output {
     let file = std::env::temp_dir().join(format!(
         "atto-cranelift-field-borrow-{}-{nonce}.atto", std::process::id()
     ));
-    std::fs::write(&file, source).expect("create source fixture");
+    // Never truncate or follow a pre-existing symlink in a shared temp directory.
+    // Exclusive creation also prevents collisions between independently running suites.
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut handle = options.open(&file).expect("exclusive source fixture");
+    handle.write_all(source.as_bytes()).expect("write source fixture");
+    drop(handle);
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode).arg(&file).output().expect("run native CLI");
     std::fs::remove_file(file).expect("remove source fixture");
