@@ -92,6 +92,81 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+// Dispatch to the package-authorized linker only for a real import header.
+// A line inside a multiline comment is not an import, and its text must not
+// cause the otherwise valid single-unit scalar compiler to require a package
+// manifest. This is a routing check, NOT an alternate import parser: the
+// restricted module linker still validates every admitted header and forbids
+// unsupported block-comment syntax within imported source graphs.
+fn has_real_import_header(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut pos = 0;
+    let mut block_depth = 0usize;
+    let mut line_comment = false;
+    let mut quote = false;
+    let mut escaped = false;
+    let mut at_line_start = true;
+    while pos < bytes.len() {
+        let current = bytes[pos];
+        if current == b'\n' {
+            line_comment = false;
+            at_line_start = true;
+            pos += 1;
+            continue;
+        }
+        if line_comment {
+            pos += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            if bytes[pos..].starts_with(b"/*") {
+                block_depth += 1;
+                pos += 2;
+            } else if bytes[pos..].starts_with(b"*/") {
+                block_depth -= 1;
+                pos += 2;
+            } else {
+                pos += 1;
+            }
+            continue;
+        }
+        if quote {
+            if escaped {
+                escaped = false;
+            } else if current == b'\\' {
+                escaped = true;
+            } else if current == b'"' {
+                quote = false;
+            }
+            pos += 1;
+            continue;
+        }
+        if bytes[pos..].starts_with(b"//") {
+            line_comment = true;
+            pos += 2;
+            continue;
+        }
+        if bytes[pos..].starts_with(b"/*") {
+            block_depth = 1;
+            pos += 2;
+            continue;
+        }
+        if at_line_start && matches!(current, b' ' | b'\t' | b'\r') {
+            pos += 1;
+            continue;
+        }
+        if at_line_start && bytes[pos..].starts_with(b"import ") {
+            return true;
+        }
+        at_line_start = false;
+        if current == b'"' {
+            quote = true;
+        }
+        pos += 1;
+    }
+    false
+}
+
 // Only trusted native scalar programs enter this ABI. Imported modules and
 // standalone multi-function sources share exactly the same IR validator,
 // checked call-status propagation and non-executing IR inspection path.
@@ -180,9 +255,7 @@ fn run() -> Result<(), String> {
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
-    let linked_source = source
-        .lines()
-        .any(|line| line.trim_start().starts_with("import "));
+    let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated
         // TenantVM isolate lane, even before reading imported source files.

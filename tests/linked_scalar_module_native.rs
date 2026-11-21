@@ -588,3 +588,48 @@ fn standalone_native_calls_preserve_checked_eager_arguments_and_unused_val_initi
             "{name}: {}", String::from_utf8_lossy(&run.stderr));
     }
 }
+
+#[test]
+fn multiline_block_comment_with_import_looking_text_is_not_a_module_import() {
+    let project = Project::new();
+    fs::remove_file(project.base.join(".ores.pkg.toml"))
+        .expect("comment-only source needs no package marker");
+    let entry = project.write(
+        "src/multiline-comment.atto",
+        "/* narrative only\n\
+         import missing from \"+src/private/absent.atto\";\n\
+         /* nested import ignored too */\n\
+         */\n\
+         pub fnc main(): int { return 42; }\n",
+    );
+    for mode in ["check", "ir", "run"] {
+        let outcome = invoke(mode, &entry);
+        assert_eq!(
+            outcome.status.code(),
+            Some(0),
+            "{mode}: {}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        if mode == "run" {
+            assert_eq!(outcome.stdout, b"42\n");
+        } else if mode == "check" {
+            assert!(outcome.stdout.is_empty(), "check may not emit guest output");
+        }
+    }
+}
+
+#[test]
+fn genuine_import_after_unsupported_block_comment_still_fails_closed() {
+    let project = Project::new();
+    let entry = project.write(
+        "src/block-comment-plus-import.atto",
+        "/* deliberately unsupported module-header comment */\n\
+         import twice from \"+src/lib/helpers.atto\";\n\
+         pub fnc main(): int { return twice(21); }\n",
+    );
+    for mode in ["check", "ir", "run"] {
+        let outcome = invoke(mode, &entry);
+        assert_eq!(outcome.status.code(), Some(1), "{mode} admitted import with block comment");
+        assert!(outcome.stdout.is_empty(), "{mode} emitted output from rejected source");
+    }
+}
