@@ -2147,32 +2147,46 @@ mod tests {
     }
 
     #[test]
-    fn return_first_rejects_inline_begin_invalid_closers_and_nominal_methods() {
+    fn return_first_inline_brace_and_bare_end_follow_canonical_grammar() {
+        let baseline = parse("fnc main():int{return 42;}").unwrap();
         for source in [
             "int <- main() begin return 42; end",
             "int <- main()\nbegin return 42;\nend",
-            "int <- main()\nbegin\nreturn 42;",
-            "int <- main()\nbegin\nreturn 42;\nend..",
-            "int <- main()\nbegin\nreturn 42;\nend; garbage",
-            "int < - main()\nbegin\nreturn 42;\nend",
-            "int <- main() -> int\nbegin\nreturn 42;\nend",
-            "define actor Worker as\nint <- receive()\nbegin\nreturn 42;\nend\nend",
+            "int <- main()\u{000b}begin\u{000b}return 42;\u{000b}end",
+            "int <- main() { return 42; }",
+            "int• main() { return 42; }",
+            "int <- main() return 42; end",
+            "fnc int <- main() return 42; end",
+            "fnc int• main() begin return 42; end",
+            "fnc main():int begin return 42; end",
+            "fnc main()->int begin return 42; end",
+            "int <- main() // header comment\r\nbegin // opener\r\nreturn 42;\r\nend.",
+        ] {
+            let parsed = parse(source).unwrap_or_else(|err| panic!("{source}: {err}"));
+            assert_eq!(parsed.result, baseline.result, "{source}");
+            assert!(parsed.locals.is_empty(), "{source}");
+            let compiled = crate::backend::compile(&parsed).expect("native scalar codegen");
+            assert_eq!(compiled.run(&[]), Ok(42), "{source}");
+        }
+    }
+
+    #[test]
+    fn return_first_rejects_invalid_closers_and_nominal_methods() {
+        for source in [
+            "int <- main() begin return 42;",
+            "int <- main() begin return 42; }",
+            "int <- main() { return 42; end",
+            "int <- main() begin begin return 42; end",
+            "int <- main() begin return 42; end..",
+            "int <- main() begin return 42; end; garbage",
+            "int <- main() return 42; end end",
+            "int <- main() return 42 end",
+            "int < - main() begin return 42; end",
+            "int <- main() -> int begin return 42; end",
+            "fnc main():int return 42; end",
+            "define actor Worker as\nint <- receive() begin return 42; end\nend",
         ] {
             assert!(parse(source).is_err(), "should reject {source:?}");
-        }
-        assert!(parse("int <- main()\nbegin // opener\nreturn 42;\nend. // closer").is_ok());
-        // Comments may occur between header and opener, but line separation
-        // is mandatory. A vertical tab is whitespace, not a line break.
-        assert!(parse("int <- main() // header\r\nbegin // opener\r\n  return 42;\r\nend.").is_ok());
-        assert!(parse("int• main()\rbegin\r  return 42;\rend;").is_ok());
-        for invalid in [
-            "int <- main()\u{000b}begin\nreturn 42;\nend",
-            "int <- main()\nbegin\u{000b}return 42;\nend",
-            "int <- main() // no begin\nreturn 42;\nend",
-            "int <- main()\nbegin return 42;\nend",
-            "int <- main()\nbegin\nreturn 42;\nend. end",
-        ] {
-            assert!(parse(invalid).is_err(), "must reject boundary: {invalid:?}");
         }
     }
     #[test]
