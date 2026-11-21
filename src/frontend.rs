@@ -2419,7 +2419,12 @@ mod tests {
     #[test]
     fn return_first_scalar_main_matches_legacy_ast_for_all_four_spellings() {
         let baseline = parse("fnc main():int{return 42;}").unwrap();
-        for header in ["int <- main()", "int• main()", "fnc int <- main()", "fnc int• main()"] {
+        for header in [
+            "int <- main()",
+            "int• main()",
+            "fnc int <- main()",
+            "fnc int• main()",
+        ] {
             for ending in ["end", "end.", "end;"] {
                 let source = format!("{header}\nbegin\n  return 42;\n{ending}\n");
                 let result = parse(&source).unwrap_or_else(|err| panic!("{source}: {err}"));
@@ -2483,14 +2488,20 @@ mod tests {
     fn return_first_and_scalar_immutable_locals_compose_before_jit() {
         let accepted = parse(
             "int <- main(value:int)\nbegin\n  const base=7;\n  val total=base*6+value;\n  return total;\nend.\n",
-        ).expect("return-first and immutable locals compose");
-        assert_eq!(accepted.locals.len(), 1, "constexpr base is folded; only val gets a runtime slot");
+        )
+        .expect("return-first and immutable locals compose");
+        assert_eq!(
+            accepted.locals.len(),
+            1,
+            "constexpr base is folded; only val gets a runtime slot"
+        );
         let native = crate::backend::compile(&accepted).expect("compiled scalar locals");
         assert_eq!(native.run(&[0]), Ok(42));
 
         let denied = parse(
             "fnc int• main(value:int)\nbegin\n  const invalid=value;\n  return invalid;\nend;\n",
-        ).expect_err("runtime parameter cannot initialize standalone const");
+        )
+        .expect_err("runtime parameter cannot initialize standalone const");
         assert!(denied.contains("E_NON_CONST_INITIALIZER"), "{denied}");
     }
 
@@ -2509,6 +2520,4 @@ mod tests {
             }
         }
     }
-
-
 }
