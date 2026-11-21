@@ -90,3 +90,27 @@ its overlap and independent-review gates, with full exact-head retests.
 General imports, namespace/module libraries, arbitrary types, actors,
 untrusted tenant isolation, recursive native calls, task effects,
 channel I/O, and full AOT remain separate work.
+
+
+## Standalone multi-function source (candidate, NOT EXECUTED)
+
+The same checked independent function ABI is now attempted for **unimported**
+standalone `.atto` sources containing two or more parsable scalar `fnc`
+definitions when the stage-0 single-main frontend rejects the input.
+No `.ores.pkg.toml` marker is needed without imports. Existing successful
+single-function scalar and pipeline paths remain unchanged. No source-language
+interpreter or substitution is used for the new branch.
+
+```atto
+pub fnc twice(int value): int { return value + value; }
+pub fnc main(): int { return twice(21); }
+```
+
+The added real CLI/JIT fixtures require `check`, `ir` (with actual `call`
+and separate `main`/`twice` CLIF definitions), and `run` returning 42;
+dormant unbound helpers, cycles, duplicate names, and overflow must fail
+without CLIF output or a success-value print. These are source assertions
+only until exact-head native Cargo and guest execution have run.
+
+`isolate` still rejects linked native programs; this change does not add
+an untrusted TenantVM sandbox, AOT or actor support.

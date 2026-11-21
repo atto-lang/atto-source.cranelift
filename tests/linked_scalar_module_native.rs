@@ -414,3 +414,73 @@ fn unused_val_initializer_still_executes_and_traps_before_return() {
     assert!(run.stdout.is_empty());
     assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
 }
+
+#[test]
+fn standalone_multi_function_atto_uses_real_native_calls_without_a_manifest() {
+    let project = Project::new();
+    fs::remove_file(project.base.join(".ores.pkg.toml")).expect("remove unused marker");
+    let entry = project.write(
+        "src/standalone-native.atto",
+        r#"pub fnc twice(int value): int {
+  return value + value;
+}
+pub fnc main(): int {
+  return twice(21);
+}
+"#,
+    );
+    let check = invoke("check", &entry);
+    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert!(check.stdout.is_empty());
+    let ir = invoke("ir", &entry);
+    assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
+    let clif = String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("call "), "standalone helper was not a native call");
+    assert!(clif.contains("linked function twice"), "missing helper CLIF");
+    assert!(clif.contains("linked function main"), "missing entry CLIF");
+    let native = invoke("run", &entry);
+    assert_eq!(native.status.code(), Some(0), "{}", String::from_utf8_lossy(&native.stderr));
+    assert_eq!(native.stdout, b"42\n");
+    assert!(native.stderr.is_empty());
+}
+
+#[test]
+fn standalone_multi_function_dormant_errors_fail_before_clif_or_execution() {
+    let project = Project::new();
+    for (name, source, expected) in [
+        (
+            "src/standalone-unbound.atto",
+            "fnc unused(int x): int { return missing(x); }\nfnc main(): int { return 42; }\n",
+            "E_LINK_UNBOUND_CALLEE",
+        ),
+        (
+            "src/standalone-cycle.atto",
+            "fnc unused(int x): int { return unused(x); }\nfnc main(): int { return 42; }\n",
+            "E_LINK_CALL_CYCLE",
+        ),
+        (
+            "src/standalone-duplicate.atto",
+            "fnc main(): int { return 0; }\nfnc main(): int { return 42; }\n",
+            "E_LINK_DUP_FUNCTION",
+        ),
+    ] {
+        reject_all(&project.write(name, source), expected);
+    }
+}
+
+#[test]
+fn standalone_checked_helper_overflow_never_writes_guest_output() {
+    let project = Project::new();
+    let entry = project.write(
+        "src/standalone-checked.atto",
+        r#"pub fnc twice(int x): int { return x + x; }
+pub fnc main(): int { return twice(9223372036854775807); }
+"#,
+    );
+    assert!(invoke("check", &entry).status.success());
+    assert!(invoke("ir", &entry).status.success());
+    let run = invoke("run", &entry);
+    assert_eq!(run.status.code(), Some(1));
+    assert!(run.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
+}

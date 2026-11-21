@@ -92,6 +92,33 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+// Only trusted native scalar programs enter this ABI. Imported modules and
+// standalone multi-function sources share exactly the same IR validator,
+// checked call-status propagation and non-executing IR inspection path.
+fn run_linked_native(
+    mode: &str,
+    values: &[i64],
+    functions: &[functional_pipelines::Fn],
+) -> Result<(), String> {
+    if mode == "isolate" {
+        return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
+    }
+    linked_native::validate(functions)?;
+    if mode == "check" {
+        return Ok(());
+    }
+    if mode == "run" && !values.is_empty() {
+        return Err("runtime argument count mismatch".into());
+    }
+    if mode == "ir" {
+        print!("{}", linked_native::render_ir(functions)?);
+        return Ok(());
+    }
+    let compiled = linked_native::compile(functions)?;
+    println!("{}", compiled.run(&[])?);
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
@@ -158,28 +185,13 @@ fn run() -> Result<(), String> {
         .lines()
         .any(|line| line.trim_start().starts_with("import "));
     if linked_source {
-        // Multi-file sources use a separately declared, checked native
-        // function ABI. Never enter the host-mediated TenantVM isolate lane.
+        // Module graphs must not enter the experimental host-mediated
+        // TenantVM isolate lane, even before reading imported source files.
         if mode == "isolate" {
             return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
         }
         let functions = module_link::parse(&path, source)?;
-        // Reject every unbound symbol, invalid call, recursive graph, and
-        // source budget violation before writing CLIF or JIT allocations.
-        linked_native::validate(&functions)?;
-        if mode == "check" {
-            return Ok(());
-        }
-        if mode == "run" && !values.is_empty() {
-            return Err("runtime argument count mismatch".into());
-        }
-        if mode == "ir" {
-            print!("{}", linked_native::render_ir(&functions)?);
-            return Ok(());
-        }
-        let compiled = linked_native::compile(&functions)?;
-        println!("{}", compiled.run(&[])?);
-        return Ok(());
+        return run_linked_native(&mode, &values, &functions);
     }
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
@@ -189,7 +201,23 @@ fn run() -> Result<(), String> {
             functional_pipelines::parse(source)
                 .map_err(|reason| format!("{reason} (stage-0: {original})"))?
         }
-        Err(original) => return Err(original),
+        Err(original) => {
+            // A standalone .atto file with multiple scalar functions needs real
+            // native calls, not the single-main scalar AST or strict inline
+            // substitution path. Preserve all existing single-function parser
+            // diagnostics by admitting this fallback only for >1 parsed fnc.
+            // No package authority or ambient import lookup is involved.
+            if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
+                if let Ok(functions) =
+                    functional_pipelines::parse_linked_native(source, &[])
+                {
+                    if functions.len() > 1 {
+                        return run_linked_native(&mode, &values, &functions);
+                    }
+                }
+            }
+            return Err(original);
+        }
     };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
