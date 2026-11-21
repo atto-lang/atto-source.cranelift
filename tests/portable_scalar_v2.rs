@@ -129,11 +129,12 @@ fn portable_scalar_v2_native_signed_i64_values() {
 
 #[test]
 fn portable_scalar_v2_compiler_negative_sources() {
+    assert!(ORACLE.contains("\\\"expression\\\": \\\"7 ^^ 3\\\""));
     for (id, expression) in [
         ("removed-percent", "7 % 3"),
-        // The historical removed-caret negative is superseded: ^ is now
-        // defined as integer XOR by the canonical bitwise language contract.
-        ("removed-double-caret", "7 ^^ 3"),
+        // Legacy v2's ^^ negative is superseded by canonical integer XOR.
+        // It remains in the immutable v2 manifest but is no longer executed
+        // as a current compiler rejection. See scalar-v5 positive guests.
         ("out-of-range-positive", "9223372036854775808"),
     ] {
         native_case(id, expression, None);
