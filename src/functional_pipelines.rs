@@ -329,8 +329,17 @@ impl Parser {
             let mut params = Vec::new();
             if self.peek() != ")" {
                 loop {
-                    self.need("int")?;
-                    let n = self.name()?;
+                    // The normative scalar declaration allows both
+                    // type-first `int x` and name-first `x: int` formals.
+                    // Never infer an omitted type in this native i64 ABI.
+                    let n = if self.eat("int") {
+                        self.name()?
+                    } else {
+                        let n = self.name()?;
+                        self.need(":")?;
+                        self.need("int")?;
+                        n
+                    };
                     if params.contains(&n) {
                         return Err("E_PIPE_DUP_PARAM".into());
                     }

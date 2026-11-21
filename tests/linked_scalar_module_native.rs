@@ -484,3 +484,49 @@ pub fnc main(): int { return twice(9223372036854775807); }
     assert!(run.stdout.is_empty());
     assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
 }
+
+#[test]
+fn standalone_name_first_formals_keep_real_native_calls_and_checked_status() {
+    let project = Project::new();
+    let entry = project.write(
+        "src/name-first-double.atto",
+        "pub fnc twice(value: int): int { return value + value; }\n         pub fnc main(): int { return twice(21); }\n",
+    );
+    assert!(invoke("check", &entry).status.success());
+    let ir = invoke("ir", &entry);
+    assert!(ir.status.success(), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("call "));
+    let run = invoke("run", &entry);
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(run.stdout, b"42\n");
+}
+
+#[test]
+fn standalone_name_first_and_type_first_formals_are_equivalent_but_untyped_rejects() {
+    let project = Project::new();
+    for (name, callable) in [
+        ("typed-first", "fnc twice(int value): int { return value + value; }"),
+        ("named-first", "fnc twice(value: int): int { return value + value; }"),
+    ] {
+        let entry = project.write(
+            &format!("src/{name}.atto"),
+            &format!("{callable}\nfnc main(): int {{ return twice(21); }}\n"),
+        );
+        assert_eq!(invoke("run", &entry).stdout, b"42\n", "{name}");
+    }
+    for (name, bad_formal) in [
+        ("untyped", "value"),
+        ("wrong-type", "value: bool"),
+        ("duplicate", "int value, value: int"),
+    ] {
+        let entry = project.write(
+            &format!("src/deny-{name}.atto"),
+            &format!("fnc twice({bad_formal}): int {{ return 42; }}\n                fnc main(): int {{ return twice(21); }}\n"),
+        );
+        for mode in ["check", "ir", "run"] {
+            let result = invoke(mode, &entry);
+            assert_eq!(result.status.code(), Some(1), "{name} {mode} admitted");
+            assert!(result.stdout.is_empty(), "{name} {mode} emitted output");
+        }
+    }
+}

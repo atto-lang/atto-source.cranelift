@@ -197,8 +197,25 @@ fn run() -> Result<(), String> {
         Err(original)
             if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
         {
-            functional_pipelines::parse(source)
-                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+            // Preserve the existing verified single-unit pipeline inliner.
+            // On a separate multi-function .atto graph, let real native calls
+            // handle nonlinear formal use and eager checked arguments instead
+            // of rejecting a sound independent-call program as un-inlineable.
+            match functional_pipelines::parse(source) {
+                Ok(program) => program,
+                Err(reason) => {
+                    if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
+                        if let Ok(functions) =
+                            functional_pipelines::parse_linked_native(source, &[])
+                        {
+                            if functions.len() > 1 {
+                                return run_linked_native(&mode, &values, &functions);
+                            }
+                        }
+                    }
+                    return Err(format!("{reason} (stage-0: {original})"));
+                }
+            }
         }
         Err(original) => {
             // A standalone .atto file with multiple scalar functions needs real
