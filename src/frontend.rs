@@ -324,6 +324,13 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            // This scalar Cranelift stage has no authenticated compiler-owned
+            // Atto Core linker, allocator, hosted Std or actor supervisor.
+            // Reject an actual import token before parsing its string/path,
+            // with no JIT/IR artifact or ambient file/host resolution.
+            if self.current == Token::Word("import") {
+                return Err("E_LIBRARY_PROFILE_UNSUPPORTED: atto.core/alloc/std and actor modules require verified import/profile lowering".into());
+            }
             // Typed ownership bangs must never be interpreted as scalar
             // identifiers or a runtime macro call. Detect the contiguous
             // operator before scalar AST admission, including borrow! mut.
