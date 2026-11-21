@@ -1609,6 +1609,44 @@ mod tests {
         }
         assert!(parse("fnc main():int{return 7;} // throw!").is_ok());
     }
+
+    #[test]
+    fn eighteen_case_exception_bang_boundaries_never_forge_native_clif_effects() {
+        // 18 spec #146 lexical vectors: six backend-denied canonical forms,
+        // nine collision/legacy forms, one string and two comments.
+        for expr in [
+            "trap! parse_id(\"42\")", "trap!parse_id(\"42\")",
+            "throw! Error(\"bad\")", "raise! Error(\"bad\")",
+            "panic! Error(\"bad\")", "throw!Error(\"bad\")"
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            let err = parse(&source).expect_err("unimplemented effect must fail closed");
+            assert!(err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                "wrong diagnostic for {expr:?}: {err}");
+        }
+        for expr in [
+            "trap parse_id(\"42\")", "throw Error(\"bad\")",
+            "raise Error(\"bad\")", "panic Error(\"bad\")",
+            "trap !ready", "trap!=next", "trap!eq next",
+            "trapped! parse_id()", "copy! owned"
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            if let Err(err) = parse(&source) {
+                assert!(!err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                    "false exceptional bang in {expr:?}: {err}");
+            }
+        }
+        for source in [
+            "fnc main():int{return 7;} // trap! throw! raise! panic!",
+            "fnc main():int{/* trap! throw! raise! panic! */return 7;}",
+            "fnc main():int{return \"trap! throw! raise! panic!\";}"
+        ] {
+            if let Err(err) = parse(source) {
+                assert!(!err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                    "trivia falsely reclassified as control: {err}");
+            }
+        }
+    }
     #[test]
     fn option_result_trap_fail_closed_until_native_tagged_lowering() {
         // Only the scalar contract is executable; these are unsupported
