@@ -184,6 +184,7 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    ReturnFirstBullet,
     End,
 }
 
@@ -484,7 +485,14 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.=".contains(&first) {
+        } else if first == 0xe2
+            && b.get(self.pos..self.pos.saturating_add(2)) == Some(&[0x80, 0xa2][..])
+        {
+            // Unicode U+2022 bullet is a return-first header separator.
+            // Do not classify arbitrary non-ASCII punctuation as a header.
+            self.pos += 2;
+            self.current = Token::ReturnFirstBullet;
+        } else if b"()+-*{}[];:,>.=<".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -863,7 +871,28 @@ impl<'a> Parser<'a> {
         if self.current == Token::Word("await") {
             return Err("E_SUSPENDS_UNSUPPORTED: await requires continuation lowering".into());
         }
-        self.expect(Token::Word("fnc"))?;
+        let explicit_fnc = self.take(Token::Word("fnc"))?;
+        // Scalar-only implementation of the canonical return-first header:
+        //   int <- main(...)  /  int• main(...)
+        // with the optional fnc prefix. The '<-' bytes must be contiguous.
+        let return_first = if self.take(Token::Word("int"))? {
+            if self.take(Token::ReturnFirstBullet)? {
+                true
+            } else if self.current == Token::Punct(b'<')
+                && self.input.as_bytes().get(self.pos) == Some(&b'-')
+            {
+                self.expect(Token::Punct(b'<'))?;
+                self.expect(Token::Punct(b'-'))?;
+                true
+            } else {
+                return Err("return-first scalar declaration requires adjacent <- or •".into());
+            }
+        } else {
+            if !explicit_fnc {
+                return Err("expected scalar fnc or int <-/• declaration".into());
+            }
+            false
+        };
         if matches!(self.current, Token::Word("actor") | Token::Word("isoactor")) {
             return Err(
                 "Cranelift source actor hierarchy, traits and mailbox runtime unsupported".into(),
@@ -941,23 +970,39 @@ impl<'a> Parser<'a> {
             }
             self.expect(Token::Punct(b')'))?;
         }
-        // Scalar entry has one proven result type: signed i64. `infer`
-        // therefore infers i64 here; it does not admit nominal types or
-        // general type inference. All supported return spellings are equivalent.
-        let colon_form = self.take(Token::Punct(b':'))?;
-        if !colon_form {
-            self.expect(Token::Punct(b'-'))?;
-            self.expect(Token::Punct(b'>'))?;
-        }
-        if !self.take(Token::Word("infer"))? {
-            self.expect(Token::Word("int"))?;
-        }
-        // Allow the explicit return/body separator only for colon-form
-        // declarations: `: int -> { ... }` and `: infer -> { ... }`.
-        if colon_form && self.take(Token::Punct(b'-'))? {
-            self.expect(Token::Punct(b'>'))?;
-        }
-        self.expect(Token::Punct(b'{'))?;
+        // Preserve #58's constexpr/runtime-val bindings and ordered sequence
+        // lowering. Only the callable header and body delimiter vary.
+        // Return-first accepts brace, begin/end, and bare-end statement bodies.
+        // Name-first requires an explicit result annotation and a delimited
+        // body; its optional ': int -> {' arrow remains brace-only.
+        let end_delimited = if return_first {
+            if self.take(Token::Word("begin"))? {
+                true
+            } else {
+                !self.take(Token::Punct(b'{'))?
+            }
+        } else {
+            // Scalar entry has one proven result type, signed i64; infer
+            // resolves to i64 in this narrow stage-0 profile.
+            let colon_form = self.take(Token::Punct(b':'))?;
+            if !colon_form {
+                self.expect(Token::Punct(b'-'))?;
+                self.expect(Token::Punct(b'>'))?;
+            }
+            if !self.take(Token::Word("infer"))? {
+                self.expect(Token::Word("int"))?;
+            }
+            if colon_form && self.take(Token::Punct(b'-'))? {
+                self.expect(Token::Punct(b'>'))?;
+                self.expect(Token::Punct(b'{'))?;
+                false
+            } else if self.take(Token::Word("begin"))? {
+                true
+            } else {
+                self.expect(Token::Punct(b'{'))?;
+                false
+            }
+        };
         if self.current == Token::Word("critical")
             || self.current == Token::Word("try")
             || self.current == Token::Word("await")
@@ -1058,7 +1103,14 @@ impl<'a> Parser<'a> {
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
-        self.expect(Token::Punct(b'}'))?;
+        if end_delimited {
+            self.expect(Token::Word("end"))?;
+            if !self.take(Token::Punct(b'.'))? {
+                self.take(Token::Punct(b';'))?;
+            }
+        } else {
+            self.expect(Token::Punct(b'}'))?;
+        }
         while self.current == Token::Word("export") {
             if seen_export {
                 return Err("EXPORT_DUPLICATE: main".into());
@@ -2364,4 +2416,99 @@ mod tests {
             "// runtime_pubsub.publish\rfnc main():int{return 1;}"
         ));
     }
+    #[test]
+    fn return_first_scalar_main_matches_legacy_ast_for_all_four_spellings() {
+        let baseline = parse("fnc main():int{return 42;}").unwrap();
+        for header in ["int <- main()", "int• main()", "fnc int <- main()", "fnc int• main()"] {
+            for ending in ["end", "end.", "end;"] {
+                let source = format!("{header}\nbegin\n  return 42;\n{ending}\n");
+                let result = parse(&source).unwrap_or_else(|err| panic!("{source}: {err}"));
+                assert_eq!(result.parameters, baseline.parameters);
+                assert_eq!(result.locals.len(), baseline.locals.len());
+                assert_eq!(result.result, baseline.result);
+                // Parsing/evaluator equivalence is not machine-code parity:
+                // compile each of the 12 variants into real Cranelift code
+                // and execute the emitted native entrypoint in the test lane.
+                let compiled = crate::backend::compile(&result)
+                    .expect("return-first i64 Cranelift native codegen");
+                assert_eq!(compiled.run(&[]), Ok(42), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn return_first_inline_brace_and_bare_end_follow_canonical_grammar() {
+        let baseline = parse("fnc main():int{return 42;}").unwrap();
+        for source in [
+            "int <- main() begin return 42; end",
+            "int <- main()\nbegin return 42;\nend",
+            "int <- main()\u{000b}begin\u{000b}return 42;\u{000b}end",
+            "int <- main() { return 42; }",
+            "int• main() { return 42; }",
+            "int <- main() return 42; end",
+            "fnc int <- main() return 42; end",
+            "fnc int• main() begin return 42; end",
+            "fnc main():int begin return 42; end",
+            "fnc main()->int begin return 42; end",
+            "int <- main() // header comment\r\nbegin // opener\r\nreturn 42;\r\nend.",
+        ] {
+            let parsed = parse(source).unwrap_or_else(|err| panic!("{source}: {err}"));
+            assert_eq!(parsed.result, baseline.result, "{source}");
+            assert!(parsed.locals.is_empty(), "{source}");
+            let compiled = crate::backend::compile(&parsed).expect("native scalar codegen");
+            assert_eq!(compiled.run(&[]), Ok(42), "{source}");
+        }
+    }
+
+    #[test]
+    fn return_first_rejects_invalid_closers_and_nominal_methods() {
+        for source in [
+            "int <- main() begin return 42;",
+            "int <- main() begin return 42; }",
+            "int <- main() { return 42; end",
+            "int <- main() begin begin return 42; end",
+            "int <- main() begin return 42; end..",
+            "int <- main() begin return 42; end; garbage",
+            "int <- main() return 42; end end",
+            "int <- main() return 42 end",
+            "int < - main() begin return 42; end",
+            "int <- main() -> int begin return 42; end",
+            "fnc main():int return 42; end",
+            "define actor Worker as\nint <- receive() begin return 42; end\nend",
+        ] {
+            assert!(parse(source).is_err(), "should reject {source:?}");
+        }
+    }
+    #[test]
+    fn return_first_and_scalar_immutable_locals_compose_before_jit() {
+        let accepted = parse(
+            "int <- main(value:int)\nbegin\n  const base=7;\n  val total=base*6+value;\n  return total;\nend.\n",
+        ).expect("return-first and immutable locals compose");
+        assert_eq!(accepted.locals.len(), 1, "constexpr base is folded; only val gets a runtime slot");
+        let native = crate::backend::compile(&accepted).expect("compiled scalar locals");
+        assert_eq!(native.run(&[0]), Ok(42));
+
+        let denied = parse(
+            "fnc int• main(value:int)\nbegin\n  const invalid=value;\n  return invalid;\nend;\n",
+        ).expect_err("runtime parameter cannot initialize standalone const");
+        assert!(denied.contains("E_NON_CONST_INITIALIZER"), "{denied}");
+    }
+
+    #[test]
+    fn return_first_type_first_locals_still_require_constexpr() {
+        for source in [
+            "int <- main(value:int) begin int x=value+1; return x; end",
+            "fnc int• main(value:int) { int x=value; return x; }",
+            "int <- main(value:int) return 0; end", // valid bare-end with unused parameter
+        ] {
+            if source.contains("int x=") {
+                let err = parse(source).expect_err("type-first int must be constexpr");
+                assert!(err.contains("E_NON_CONST_INITIALIZER"), "{err}");
+            } else {
+                assert!(parse(source).is_ok(), "{source}");
+            }
+        }
+    }
+
+
 }
