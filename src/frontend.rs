@@ -1584,23 +1584,36 @@ mod tests {
         assert_eq!(eval(&edge.result, &[]), Ok(-1));
     }
     #[test]
-    fn infix_integer_bitxor_matches_spec_and_rejects_boolean_xor_on_int() {
+    fn canonical_caret_return_and_contiguous_integer_xor_are_distinct() {
         for (source, value) in [
-            ("fnc main():int{return 11 ^ 4;}", 15i64),
-            ("fnc main():int{return 5 + 6 ^ 4;}", 15),
-            ("fnc main():int{return 1 ^ 256 >> 8;}", 0),
-            ("fnc main():int{return -1 ^ 9223372036854775807;}", i64::MIN),
+            ("fnc main():int{return 11 ^^ 4;}", 15i64),
+            ("fnc main():int{return 5 + 6 ^^ 4;}", 15),
+            ("fnc main():int{return 1 ^^ 256 >> 8;}", 0),
+            ("fnc main():int{return -1 ^^ 9223372036854775807;}", i64::MIN),
         ] {
             let parsed = parse(source).expect("int XOR source must compile");
             assert_eq!(eval(&parsed.result, &[]), Ok(value));
         }
-        assert!(parse("fnc main():int{return 11 ^^ 4;}").is_err());
+        for source in [
+            "fnc main():int{return 11 ^ 4;}",
+            "fnc main():int{return 11 ^ ^ 4;}",
+            "fnc main():int{return 11 ^/* comment */^ 4;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}: single/spaced infix caret must fail");
+        }
+        for source in [
+            "fnc main():int{^ 42;}",
+            "fnc main():int{^ 11 ^^ 4;}",
+        ] {
+            let expected = if source.contains("42") { 42 } else { 15 };
+            assert_eq!(eval(&parse(source).unwrap().result, &[]), Ok(expected));
+        }
         assert!(parse("fnc main():int{return 11 % 4;}").is_err());
     }
     #[test]
     fn removed_remainder_operator_is_rejected_before_lowering() {
-        // The historical scalar-v3 contract removed %, ^ and ^^; the current
-        // Atto bitwise-v1 contract reinstates ^ as integer XOR. The tokenizer must
+        // The historical scalar-v3 contract removed %, ^ and ^^; current
+        // Atto syntax uses prefix ^ for return and adjacent ^^ for XOR. The lexer must
         // reject all forms of % rather than accepting a restricted subset.
         for source in [
             "fnc main():int{return -7%3;}",
