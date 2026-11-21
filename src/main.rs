@@ -192,46 +192,31 @@ fn run() -> Result<(), String> {
         let functions = module_link::parse(&path, source)?;
         return run_linked_native(&mode, &values, &functions);
     }
+    // A valid standalone multi-function .atto translation unit must reach the
+    // same real native call ABI used by imported public helpers, even when its
+    // expressions happen to be safe to inline. The legacy pure-pipeline
+    // expander is retained for single-function compatibility only.
+    //
+    // Parse the *entire* restricted source before choosing this path: lexical
+    // counts of "fnc" (including strings/comments) cannot grant JIT admission.
+    // Any linked-native validation failure is returned by run_linked_native;
+    // it may never fall back to an inliner or a different semantic profile.
+    if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
+        if let Ok(functions) = functional_pipelines::parse_linked_native(source, &[]) {
+            if functions.len() > 1 {
+                return run_linked_native(&mode, &values, &functions);
+            }
+        }
+    }
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
         Err(original)
             if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
         {
-            // Preserve the existing verified single-unit pipeline inliner.
-            // On a separate multi-function .atto graph, let real native calls
-            // handle nonlinear formal use and eager checked arguments instead
-            // of rejecting a sound independent-call program as un-inlineable.
-            match functional_pipelines::parse(source) {
-                Ok(program) => program,
-                Err(reason) => {
-                    if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
-                        if let Ok(functions) =
-                            functional_pipelines::parse_linked_native(source, &[])
-                        {
-                            if functions.len() > 1 {
-                                return run_linked_native(&mode, &values, &functions);
-                            }
-                        }
-                    }
-                    return Err(format!("{reason} (stage-0: {original})"));
-                }
-            }
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
         }
-        Err(original) => {
-            // A standalone .atto file with multiple scalar functions needs real
-            // native calls, not the single-main scalar AST or strict inline
-            // substitution path. Preserve all existing single-function parser
-            // diagnostics by admitting this fallback only for >1 parsed fnc.
-            // No package authority or ambient import lookup is involved.
-            if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
-                if let Ok(functions) = functional_pipelines::parse_linked_native(source, &[]) {
-                    if functions.len() > 1 {
-                        return run_linked_native(&mode, &values, &functions);
-                    }
-                }
-            }
-            return Err(original);
-        }
+        Err(original) => return Err(original),
     };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.

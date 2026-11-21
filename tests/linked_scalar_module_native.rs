@@ -530,3 +530,61 @@ fn standalone_name_first_and_type_first_formals_are_equivalent_but_untyped_rejec
         }
     }
 }
+
+#[test]
+fn standalone_inlineable_calls_use_real_native_function_abi_not_expression_substitution() {
+    let project = Project::new();
+    fs::remove_file(project.base.join(".ores.pkg.toml"))
+        .expect("standalone compilation must not need a package marker");
+    let entry = project.write(
+        "src/standalone-linear-calls.atto",
+        "fnc double(int x): int { return x * 2; }\n\
+         fnc add_two(int x): int { return x + 2; }\n\
+         pub fnc main(): int { return add_two(double(20)); }\n",
+    );
+    let check = invoke("check", &entry);
+    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert!(check.stdout.is_empty(), "check must be non-executing");
+    let ir = invoke("ir", &entry);
+    assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
+    let clif = String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("; linked function double"), "standalone double has no CLIF");
+    assert!(clif.contains("; linked function add_two"), "standalone add_two has no CLIF");
+    assert!(clif.contains("; linked function main"), "standalone main has no CLIF");
+    assert!(clif.matches("call ").count() >= 2, "nested helpers were inlined: {clif}");
+    let run = invoke("run", &entry);
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(run.stdout, b"42\n");
+    assert!(run.stderr.is_empty());
+}
+
+#[test]
+fn standalone_native_calls_preserve_checked_eager_arguments_and_unused_val_initializers() {
+    let project = Project::new();
+    let cases = [
+        (
+            "src/standalone-discarded-argument.atto",
+            "fnc first(int a, int b): int { return a; }\n\
+             pub fnc main(): int { return first(42, 9223372036854775807 + 1); }\n",
+        ),
+        (
+            "src/standalone-unused-val.atto",
+            "fnc first(int x): int { val unused = x + 1; return 42; }\n\
+             pub fnc main(): int { return first(9223372036854775807); }\n",
+        ),
+    ];
+    for (name, source) in cases {
+        let entry = project.write(name, source);
+        let check = invoke("check", &entry);
+        assert!(check.status.success(), "{name}: {}", String::from_utf8_lossy(&check.stderr));
+        let ir = invoke("ir", &entry);
+        assert!(ir.status.success(), "{name}: {}", String::from_utf8_lossy(&ir.stderr));
+        assert!(String::from_utf8_lossy(&ir.stdout).contains("call "),
+            "{name}: missing native helper call");
+        let run = invoke("run", &entry);
+        assert_eq!(run.status.code(), Some(1), "{name} incorrectly succeeded");
+        assert!(run.stdout.is_empty(), "{name} emitted a successful result on overflow");
+        assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"),
+            "{name}: {}", String::from_utf8_lossy(&run.stderr));
+    }
+}
