@@ -854,30 +854,17 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        // Capture the exact ')' offset before advancing through trivia.
-        let header_end = self.pos;
         self.expect(Token::Punct(b')'))?;
-        if return_first {
-            // Check exact lexer token boundaries, not cursor arithmetic or a
-            // guessed keyword width. Trivia can contain comments and CRLF.
-            let begin_start = self.current_start;
-            if self.current != Token::Word("begin")
-                || begin_start < header_end
-                || !self.input.as_bytes()[header_end..begin_start]
-                    .iter()
-                    .any(|b| *b == b'\n' || *b == b'\r')
-            {
-                return Err("return-first declaration requires begin on the next line".into());
-            }
-            let begin_end = self.pos;
-            self.expect(Token::Word("begin"))?;
-            let next_start = self.current_start;
-            if next_start < begin_end
-                || !self.input.as_bytes()[begin_end..next_start]
-                    .iter()
-                    .any(|b| *b == b'\n' || *b == b'\r')
-            {
-                return Err("begin must be alone on its line".into());
+        // The canonical grammar treats begin/end as tokens, not as a
+        // line-oriented dialect. Both inline and multiline bodies are valid.
+        // Return-first declarations additionally admit bare "...; end" and
+        // brace bodies; name-first declarations require an explicit body
+        // delimiter. This remains a bounded scalar main-only subset.
+        let end_delimited = if return_first {
+            if self.take(Token::Word("begin"))? {
+                true
+            } else {
+                !self.take(Token::Punct(b'{'))?
             }
         } else {
             if !self.take(Token::Punct(b':'))? {
@@ -885,8 +872,13 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Punct(b'>'))?;
             }
             self.expect(Token::Word("int"))?;
-            self.expect(Token::Punct(b'{'))?;
-        }
+            if self.take(Token::Word("begin"))? {
+                true
+            } else {
+                self.expect(Token::Punct(b'{'))?;
+                false
+            }
+        };
         if self.current == Token::Word("critical")
             || self.current == Token::Word("try")
             || self.current == Token::Word("await")
@@ -943,7 +935,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::Word("return"))?;
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
-        if return_first {
+        if end_delimited {
             self.expect(Token::Word("end"))?;
             if !self.take(Token::Punct(b'.'))? {
                 self.take(Token::Punct(b';'))?;
