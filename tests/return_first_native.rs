@@ -93,19 +93,39 @@ fn return_first_parameters_comments_and_line_endings() {
 }
 
 #[test]
+fn return_first_inline_and_alternate_bodies_execute_real_native_guest() {
+    for source in [
+        "int <- main() begin return 40+2; end",
+        "int <- main()\nbegin return 40+2;\nend",
+        "int <- main()\u{000b}begin\u{000b}return 40+2;\u{000b}end",
+        "int <- main() { return 40+2; }",
+        "int• main() { return 40+2; }",
+        "int <- main() return 40+2; end",
+        "fnc int <- main() return 40+2; end",
+        "fnc int• main() begin return 40+2; end",
+        "fnc main():int begin return 40+2; end",
+        "fnc main()->int begin return 40+2; end",
+    ] {
+        accepts(source, &[], "42\n");
+    }
+}
+
+#[test]
 fn return_first_fail_closed_parser_admission() {
     for source in [
-        "int <- main() begin\nreturn 42;\nend",
-        "int <- main()\nbegin return 42;\nend",
-        "int <- main()\u{000b}begin\nreturn 42;\nend",
-        "int <- main()\nbegin\u{000b}return 42;\nend",
-        "int < - main()\nbegin\nreturn 42;\nend",
-        "int <- main()\nbegin\nreturn 42;\nend..",
-        "int <- main()\nbegin\nreturn 42;\nend. garbage",
-        "int <- main()\nbegin\nreturn 42;",
-        "int <- main()\nbegin\nreturn borrow! 42;\nend",
-        "int <- main()\nbegin\nreturn 42 as bool;\nend",
-        "int <- main()\nbegin\nreturn 42 % 3;\nend",
+        "int < - main() begin return 42; end",
+        "int <- main() begin return 42; end..",
+        "int <- main() begin return 42; end. garbage",
+        "int <- main() begin return 42;",
+        "int <- main() begin return 42; }",
+        "int <- main() { return 42; end",
+        "int <- main() return 42 end",
+        "int <- main() return 42; end end",
+        "int <- main() begin begin return 42; end",
+        "fnc main():int return 42; end",
+        "int <- main() begin return borrow! 42; end",
+        "int <- main() begin return 42 as bool; end",
+        "int <- main() begin return 42 % 3; end",
     ] {
         refuses(source, &[], "");
     }
