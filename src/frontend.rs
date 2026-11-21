@@ -609,7 +609,14 @@ impl<'a> Parser<'a> {
             let (l_bp, r_bp, op) = match self.current {
                 // Low to high: XOR, shift, additive, multiplicative.
                 // Signed >> 8 is the stage-0 slice of the full shift grammar.
-                Token::Punct(b'^') => (0, 1, b'^'),
+                // The leading ^ is a return statement. Only TWO CARETS
+                // directly adjacent in the original source denote i64 XOR.
+                // The lexer emits one punctuation token at a time: self.pos
+                // is immediately after the first caret here. Whitespace,
+                // comments or Unicode separators cannot synthesize ^^.
+                Token::Punct(b'^') if self.input.as_bytes().get(self.pos) == Some(&b'^') => (0, 1, b'^'),
+                Token::Punct(b'^') => return Err(format!(
+                    "E_OPERATOR_CARET: single infix ^ is not XOR at byte {}", self.pos.saturating_sub(1))),
                 Token::Punct(b'>') => (1, 2, b'>'),
                 Token::Punct(b'+') => (2, 3, b'+'),
                 Token::Punct(b'-') => (2, 3, b'-'),
@@ -622,6 +629,8 @@ impl<'a> Parser<'a> {
             self.next()?;
             if op == b'>' {
                 self.expect(Token::Punct(b'>'))?;
+            } else if op == b'^' {
+                self.expect(Token::Punct(b'^'))?; // consume adjacent second caret
             }
             let rhs = self.expr(r_bp, depth + 1)?;
             lhs = self.node(match op {
@@ -877,7 +886,13 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
-        self.expect(Token::Word("return"))?;
+        // Statement-leading caret and keyword return are the same scalar
+        // exit operation. A single infix caret is never a binary XOR.
+        if self.current == Token::Punct(b'^') {
+            self.next()?;
+        } else {
+            self.expect(Token::Word("return"))?;
+        }
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
