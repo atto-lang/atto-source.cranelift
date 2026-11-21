@@ -232,3 +232,53 @@ fn scalar_v5_checked_overflow_fails_closed() {
         );
     }
 }
+
+#[test]
+fn scalar_v5_statement_caret_generates_the_same_native_result_as_return() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("caret-return.atto");
+    fs::write(&path, "pub fnc main():int{^ 11 ^^ 4;}\n").unwrap();
+    for mode in ["run", "ir"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&path)
+            .output()
+            .expect("source-compiled Cranelift CLI must execute");
+        assert_eq!(output.status.code(), Some(0), "{mode}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.stderr.is_empty(), "{mode} produced compiler diagnostics");
+        if mode == "run" {
+            assert_eq!(String::from_utf8_lossy(&output.stdout), "15\n");
+        } else {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("function"),
+                "source-to-CLIF emission missing");
+        }
+    }
+}
+
+#[test]
+fn scalar_v5_infix_caret_and_unsupported_float_division_fail_before_native_ir() {
+    let fixture = Fixture::new();
+    for (index, statement) in [
+        "return 11 ^ 4;",
+        "return 11 ^ ^ 4;",
+        "return 11 ^/*comment*/^ 4;",
+        "return 5 / 2;",
+    ].into_iter().enumerate() {
+        let path = fixture.0.join(format!("reject-{index}.atto"));
+        fs::write(&path, format!("pub fnc main():int{{{statement}}}\n")).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .expect("source-compiled Cranelift CLI must report failure");
+            assert_eq!(output.status.code(), Some(1), "{mode}/{statement}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(output.stdout.is_empty(), "{mode}/{statement} emitted forbidden guest/IR");
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(diagnostic.starts_with("orescranelift: "), "{mode}/{statement}: {diagnostic}");
+            if statement.contains('^') {
+                assert!(diagnostic.contains("E_OPERATOR_CARET"), "{mode}/{statement}: {diagnostic}");
+            }
+        }
+    }
+}
