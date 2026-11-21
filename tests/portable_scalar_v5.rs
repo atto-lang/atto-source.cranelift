@@ -1,4 +1,4 @@
-//! Stage-0 Cranelift CLI/JIT checks for scalar v3 (12 positive, 9 negative).
+//! Stage-0 Cranelift CLI/JIT checks for canonical scalar v5 (13 positive, 8 negative).
 //! Exact-head cargo results are required before counting any native guest evidence.
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MANIFEST: &str = include_str!("../contracts/parity/portable-scalar-v3-20261101.json");
+const MANIFEST: &str = include_str!("../contracts/parity/portable-scalar-v5-20261120.json");
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
@@ -14,7 +14,7 @@ impl Fixture {
     fn new() -> Self {
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
         let directory =
-            std::env::temp_dir().join(format!("orescranelift-v3-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("atto-cranelift-v5-{}-{nonce}", std::process::id()));
         fs::create_dir(&directory).expect("cannot create isolated fixture directory");
         Self(directory)
     }
@@ -33,7 +33,7 @@ fn run_one(fixture: &Fixture, id: &str, expression: &str) -> std::process::Outpu
         MANIFEST.contains(&binding),
         "manifest ID/expression binding drift for {id}"
     );
-    let path = fixture.0.join(format!("{id}.ores"));
+    let path = fixture.0.join(format!("{id}.atto"));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -50,15 +50,15 @@ fn run_one(fixture: &Fixture, id: &str, expression: &str) -> std::process::Outpu
 }
 
 #[test]
-fn scalar_v3_manifest_inventory_is_exact() {
-    assert!(MANIFEST.contains("\"schema_version\": \"2026-11-01.scalar-v3\""));
+fn scalar_v5_manifest_inventory_is_exact() {
+    assert!(MANIFEST.contains("\"schema_version\": \"2026-11-20.scalar-v5\""));
     assert_eq!(MANIFEST.matches("\"id\":").count(), 21);
     assert_eq!(MANIFEST.matches("\"expression\":").count(), 21);
-    assert_eq!(MANIFEST.matches("\"expected\":").count(), 12);
+    assert_eq!(MANIFEST.matches("\"expected\":").count(), 13);
 }
 
 #[test]
-fn scalar_v3_real_jit_positive_values() {
+fn scalar_v5_real_jit_positive_values() {
     let fixture = Fixture::new();
     for (id, expression, expected) in [
         (
@@ -99,6 +99,7 @@ fn scalar_v3_real_jit_positive_values() {
             "(-2147483647) * 2147483647",
             "-4611686014132420609",
         ),
+        ("bitxor-11-4", "11 ^^ 4", "15"),
         ("quadruple-negation", "-(-(-(-33)))", "33"),
         (
             "max-range-roundtrip",
@@ -133,25 +134,21 @@ fn is_compiler_rejection(id: &str, stderr: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(stderr) else {
         return false;
     };
-    if id.starts_with("removed-") {
-        let Some(offset) = text
-            .strip_prefix("orescranelift: invalid character at byte ")
-            .and_then(|s| s.strip_suffix('\n'))
-        else {
-            return false;
-        };
-        !offset.is_empty() && offset.bytes().all(|c| c.is_ascii_digit())
-    } else {
-        text == "orescranelift: i64 literal out of range\n"
-    }
-}
-
-fn is_native_checked_overflow(stderr: &[u8]) -> bool {
-    stderr == b"orescranelift: i64 arithmetic overflow\n"
+    // Percent is removed; obsolete single ^ infix is rejected before JIT,
+    // not confused with a removed arithmetic operator.
+    let prefix = match id {
+        "removed-percent-new" => "orescranelift: invalid character at byte ",
+        "obsolete-single-caret-infix" => "orescranelift: E_OPERATOR_CARET: single infix ^ is not XOR at byte ",
+        _ => return text == "orescranelift: i64 literal out of range\n",
+    };
+    let Some(offset) = text.strip_prefix(prefix).and_then(|s| s.strip_suffix('\n')) else {
+        return false;
+    };
+    !offset.is_empty() && offset.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[test]
-fn scalar_v3_rejection_phase_mutations_fail_closed() {
+fn scalar_v5_rejection_phase_mutations_fail_closed() {
     for bad in [
         "",
         "orescranelift: i64 arithmetic overflow\n",
@@ -170,7 +167,7 @@ fn scalar_v3_rejection_phase_mutations_fail_closed() {
         ));
     }
     assert!(is_compiler_rejection(
-        "removed-caret-new",
+        "removed-percent-new",
         b"orescranelift: invalid character at byte 27\n"
     ));
     assert!(is_compiler_rejection(
@@ -191,12 +188,11 @@ fn scalar_v3_rejection_phase_mutations_fail_closed() {
 }
 
 #[test]
-fn scalar_v3_compiler_rejects_invalid_sources() {
+fn scalar_v5_compiler_rejects_invalid_sources() {
     let fixture = Fixture::new();
     for (id, expression) in [
         ("removed-percent-new", "11 % 4"),
-        ("removed-caret-new", "11 ^ 4"),
-        ("removed-double-caret-new", "11 ^^ 4"),
+        ("obsolete-single-caret-infix", "11 ^ 4"),
         ("positive-outside-signed-range", "9223372036854775808 + 1"),
         ("negative-outside-signed-range", "-9223372036854775809"),
     ] {
@@ -216,7 +212,7 @@ fn scalar_v3_compiler_rejects_invalid_sources() {
 }
 
 #[test]
-fn scalar_v3_checked_overflow_fails_closed() {
+fn scalar_v5_checked_overflow_fails_closed() {
     // The native backend uses an explicit JIT overflow status and prints the
     // exact diagnostic. Do not count parser, linker or infrastructure failures.
     let fixture = Fixture::new();
@@ -234,5 +230,55 @@ fn scalar_v3_checked_overflow_fails_closed() {
             "{id} was not observed native JIT overflow: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[test]
+fn scalar_v5_statement_caret_generates_the_same_native_result_as_return() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("caret-return.atto");
+    fs::write(&path, "pub fnc main():int{^ 11 ^^ 4;}\n").unwrap();
+    for mode in ["run", "ir"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg(mode)
+            .arg(&path)
+            .output()
+            .expect("source-compiled Cranelift CLI must execute");
+        assert_eq!(output.status.code(), Some(0), "{mode}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.stderr.is_empty(), "{mode} produced compiler diagnostics");
+        if mode == "run" {
+            assert_eq!(String::from_utf8_lossy(&output.stdout), "15\n");
+        } else {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("function"),
+                "source-to-CLIF emission missing");
+        }
+    }
+}
+
+#[test]
+fn scalar_v5_infix_caret_and_unsupported_float_division_fail_before_native_ir() {
+    let fixture = Fixture::new();
+    for (index, statement) in [
+        "return 11 ^ 4;",
+        "return 11 ^ ^ 4;",
+        "return 11 ^/*comment*/^ 4;",
+        "return 5 / 2;",
+    ].into_iter().enumerate() {
+        let path = fixture.0.join(format!("reject-{index}.atto"));
+        fs::write(&path, format!("pub fnc main():int{{{statement}}}\n")).unwrap();
+        for mode in ["run", "ir"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .expect("source-compiled Cranelift CLI must report failure");
+            assert_eq!(output.status.code(), Some(1), "{mode}/{statement}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(output.stdout.is_empty(), "{mode}/{statement} emitted forbidden guest/IR");
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(diagnostic.starts_with("orescranelift: "), "{mode}/{statement}: {diagnostic}");
+            if statement.contains('^') {
+                assert!(diagnostic.contains("E_OPERATOR_CARET"), "{mode}/{statement}: {diagnostic}");
+            }
+        }
     }
 }

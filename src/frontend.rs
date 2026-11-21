@@ -449,7 +449,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.".contains(&first) {
+        } else if b"()+-*{}[];:,>.^".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -607,10 +607,20 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
-                Token::Punct(b'+') => (1, 2, b'+'),
-                Token::Punct(b'-') => (1, 2, b'-'),
-                Token::Punct(b'*') => (3, 4, b'*'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                // Low to high: XOR, shift, additive, multiplicative.
+                // Signed >> 8 is the stage-0 slice of the full shift grammar.
+                // The leading ^ is a return statement. Only TWO CARETS
+                // directly adjacent in the original source denote i64 XOR.
+                // The lexer emits one punctuation token at a time: self.pos
+                // is immediately after the first caret here. Whitespace,
+                // comments or Unicode separators cannot synthesize ^^.
+                Token::Punct(b'^') if self.input.as_bytes().get(self.pos) == Some(&b'^') => (0, 1, b'^'),
+                Token::Punct(b'^') => return Err(format!(
+                    "E_OPERATOR_CARET: single infix ^ is not XOR at byte {}", self.pos.saturating_sub(1))),
+                Token::Punct(b'>') => (1, 2, b'>'),
+                Token::Punct(b'+') => (2, 3, b'+'),
+                Token::Punct(b'-') => (2, 3, b'-'),
+                Token::Punct(b'*') => (4, 5, b'*'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -619,12 +629,15 @@ impl<'a> Parser<'a> {
             self.next()?;
             if op == b'>' {
                 self.expect(Token::Punct(b'>'))?;
+            } else if op == b'^' {
+                self.expect(Token::Punct(b'^'))?; // consume adjacent second caret
             }
             let rhs = self.expr(r_bp, depth + 1)?;
             lhs = self.node(match op {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'^' => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -873,7 +886,13 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
-        self.expect(Token::Word("return"))?;
+        // Statement-leading caret and keyword return are the same scalar
+        // exit operation. A single infix caret is never a binary XOR.
+        if self.current == Token::Punct(b'^') {
+            self.next()?;
+        } else {
+            self.expect(Token::Word("return"))?;
+        }
         let result = self.expr(0, 0)?;
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
@@ -1422,7 +1441,7 @@ mod tests {
             "gpu",
             "cpu",
             "panic",
-            "1 ^ 2",
+            // Infix ^ is invalid: only leading ^ returns; contiguous ^^ is integer XOR.
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             assert!(
@@ -1565,8 +1584,36 @@ mod tests {
         assert_eq!(eval(&edge.result, &[]), Ok(-1));
     }
     #[test]
+    fn canonical_caret_return_and_contiguous_integer_xor_are_distinct() {
+        for (source, value) in [
+            ("fnc main():int{return 11 ^^ 4;}", 15i64),
+            ("fnc main():int{return 5 + 6 ^^ 4;}", 15),
+            ("fnc main():int{return 1 ^^ 256 >> 8;}", 0),
+            ("fnc main():int{return -1 ^^ 9223372036854775807;}", i64::MIN),
+        ] {
+            let parsed = parse(source).expect("int XOR source must compile");
+            assert_eq!(eval(&parsed.result, &[]), Ok(value));
+        }
+        for source in [
+            "fnc main():int{return 11 ^ 4;}",
+            "fnc main():int{return 11 ^ ^ 4;}",
+            "fnc main():int{return 11 ^/* comment */^ 4;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}: single/spaced infix caret must fail");
+        }
+        for source in [
+            "fnc main():int{^ 42;}",
+            "fnc main():int{^ 11 ^^ 4;}",
+        ] {
+            let expected = if source.contains("42") { 42 } else { 15 };
+            assert_eq!(eval(&parse(source).unwrap().result, &[]), Ok(expected));
+        }
+        assert!(parse("fnc main():int{return 11 % 4;}").is_err());
+    }
+    #[test]
     fn removed_remainder_operator_is_rejected_before_lowering() {
-        // The language contract removed %, ^ and ^^. The tokenizer must
+        // The historical scalar-v3 contract removed %, ^ and ^^; current
+        // Atto syntax uses prefix ^ for return and adjacent ^^ for XOR. The lexer must
         // reject all forms of % rather than accepting a restricted subset.
         for source in [
             "fnc main():int{return -7%3;}",
@@ -1741,7 +1788,7 @@ mod tests {
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
-            "fnc main():int{return 5 ^ 3;}",
+            "fnc main():int{return 5 ^ 3;}", // ^ is return-only, never infix XOR
             "fnc main():int{return Integer.div(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",
             "fnc main():int{return Integer.bitXor(5,3,1);}",

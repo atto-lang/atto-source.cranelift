@@ -71,6 +71,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --all-targets
+      - name: Prove canonical scalar-v5 JIT without misinterpreting historical v4 as current
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --test portable_scalar_v5
+          cargo test --locked --test portable_scalar_v4
+          echo 'CANONICAL_SCALAR_V5_COMPILED_JIT=TESTED' >> "$GITHUB_STEP_SUMMARY"
+          echo 'HISTORICAL_SCALAR_V4=INVENTORY_ONLY' >> "$GITHUB_STEP_SUMMARY"
       - name: Execute native compiled Atto scalar smoke and inspect CLIF
         shell: bash
         run: |

@@ -120,11 +120,15 @@ fn portable_shared_scalar_matrix_executes_in_real_cranelift_jit() {
 
 #[test]
 fn portable_shared_scalar_negatives_fail_closed_without_guest_stdout() {
+    // Preserve superseded exact v1 source without treating its old error
+    // expectation as an executable current language rule.
+    assert_manifest_case("forbidden-double-caret", "7 ^^ 3", None);
     let fixture = Fixture::new();
     for (id, expr) in [
         ("div-int", "7 / 2"),
-        ("forbidden-caret", "7 ^ 3"),
-        ("forbidden-double-caret", "7 ^^ 3"),
+        // Historical v1 treated ^^ as invalid. That expectation is now
+        // superseded and is checked as immutable source history below;
+        // current compiled positives for ^^ live in scalar-v5.
         ("forbidden-remainder", "7 % 3"),
         ("i64-overflow-literal", "9223372036854775808"),
         ("negative-i64-underflow-literal", "-9223372036854775809"),
