@@ -67,3 +67,14 @@ cargo run --locked -- ir tests/fixtures/clients-scalar-v1/01-precedence.ores
 **Evidence status:** these commands are test instructions, not a claim they ran successfully in this canonical repository. The [native GitHub Actions workflow](.github/workflows/native-cranelift.yml) must show assigned jobs, nonzero executed steps, native guest results and an exact source SHA before recording any capability as passed. A mirror in another private organization requires the same blob SHA proof and explicit runner logs. The repository inventory remains `NOT_CERTIFIED` with `not_executed` statuses until then.
 
 This compiler does **not** currently support full AOT, actor-language compilation, untrusted-isolate sandboxing, ownership-bang lowering, the complete Atto parser, or five-backend parity. It is a stage-0 **trusted** scalar JIT, not a substitute for LLVM/Forge/Java backend verification. No Python scripts or test harnesses are imported.
+
+
+## Canonical caret/XOR scalar JIT candidate (draft, not release-certified)
+
+The historical scalar-v4 corpus (Git blob `8185a1b4bf0e0a776b4168cad4805fc40660327d`) assigned integer XOR to infix `^` and rejected `^^`. That is **not** current AttoLang semantics. It remains byte-identical in `contracts/parity/portable-scalar-v4-20261119.json` as history only.
+
+The draft canonical scalar-v5 corpus in `contracts/parity/portable-scalar-v5-20261120.json` instead requires `^ 42;` as statement-leading return and contiguous `11 ^^ 4` as integer XOR (result `15`); `11 ^ 4`, spaced/comment-separated carets and obsolete `%/` language operators must fail before JIT IR. The new real-JIT guest tests in `tests/portable_scalar_v5.rs` cover 13 positives, four source rejects, four overflow cases, plus direct caret-return and no-IR negative checks. Historical v1/v2/v4 operator outcomes are source-only archival checks, not current execution evidence.
+
+This is an **i64-only, limited stage-0 compiler**. Its legacy `>> 8` facility is not proof of canonical typed stream I/O or checked triple shifts. `int / int` yields `float` in portable AttoLang according to [atto-spec #151](https://github.com/atto-lang/atto-spec/pull/151), but this narrow native JIT has not implemented floating signatures/codegen: `5 / 2` must be explicitly **unsupported**, never silently emit truncated `i64` division. The new compiled no-IR test enforces this boundary.
+
+These changes are authored in [Cranelift #39](https://github.com/atto-lang/atto-source.cranelift/pull/39). **No exact-head Cargo/JIT guest execution has been observed** after these edits, and no release support is claimed. Do not mark any corresponding [11-backend conformance #236](https://github.com/atto-lang/atto-platform-conformance/pull/236) cells as passing without authenticated execution receipts. Preserve security-governed CI admission and independent review; keep draft.
