@@ -360,6 +360,13 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            // An actor-owned class allocation needs nominal layout, Ref32
+            // authority and lifetime lowering. Stage-0 must reject the
+            // operation BEFORE CLIF/JIT publication, even in unused source.
+            // Comments and quoted strings were already consumed as inert.
+            if self.current == Token::Word("new") {
+                return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
+            }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
             }
@@ -1164,6 +1171,38 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn actor_heap_guest_fails_closed_before_cranelift_jit() {
+        let node = r#"define class Node as
+    int value
+    Node? next
+end
+define actor HeapGraphProbe as
+    receive(int message) {
+        let first = new Node(42, none)
+        let second = new Node(99, first)
+        assert(second.next?.value == 42)
+    }
+end"#;
+        let error = parse(node).unwrap_err();
+        assert!(error.contains("DECL_KIND_UNSUPPORTED: class"), "{error}");
+
+        for src in [
+            "fnc main():int{return new Node(7);}",
+            "fnc main():int{return 42;} new Node(7)",
+        ] {
+            let error = parse(src).unwrap_err();
+            assert!(error.contains("E_ACTOR_MEMORY_GUEST_UNSUPPORTED"), "{src}: {error}");
+        }
+        for inert in [
+            "fnc main():int{return 42;} // new Node(7)",
+            "fnc main():int{return 42;} /* new Node(7) */",
+            "fnc main():int{return 42;} /* define actor A as end */",
+        ] {
+            assert!(parse(inert).is_ok(), "inert actor memory comment: {inert}");
+        }
+    }
+
     #[test]
     fn nested_block_comments_are_inert_but_bounded_and_well_terminated() {
         let guest = "/* define actor Worker */ fnc main(/* ignored */):int { /* outer /* inner */ rest */ return 42; }";
