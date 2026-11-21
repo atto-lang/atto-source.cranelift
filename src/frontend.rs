@@ -937,6 +937,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     let mut before_previous: Option<Tok<'_>> = None;
     let mut third_previous: Option<Tok<'_>> = None;
     let mut pending_pipe = false;
+    let mut last_token_end = 0usize;
 
     while index < bytes.len() {
         let byte = bytes[index];
@@ -983,6 +984,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             continue;
         }
 
+        let token_start = index;
         let current = if is_ident_start(byte) {
             let start = index;
             index += 1;
@@ -1014,6 +1016,13 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             return true;
         }
         if detect_pipe {
+            // A contextual bang is valid only when adjacent to pipe/rpipe.
+            // Carry the left operand proof past the single ! token; comments,
+            // whitespace and unrelated punctuation must not synthesize pipe!.
+            let contiguous_pipe_bang = pending_pipe
+                && matches!(previous, Some(Tok::Id("pipe" | "rpipe")))
+                && matches!(current, Tok::Sym(b'!'))
+                && token_start == last_token_end;
             let static_dot = matches!(
                 (before_previous, previous, current),
                 (
@@ -1065,9 +1074,11 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                 Some(Tok::Sym(b')' | b']' | b'}')) => true,
                 _ => false,
             };
-            pending_pipe = matches!(current, Tok::Id("pipe" | "rpipe")) && left_end;
+            pending_pipe = (matches!(current, Tok::Id("pipe" | "rpipe")) && left_end)
+                || contiguous_pipe_bang;
         }
 
+        last_token_end = index;
         third_previous = before_previous;
         before_previous = previous;
         previous = Some(current);
@@ -1934,6 +1945,10 @@ mod tests {
             "return first pipe second;",
             "return first rpipe second;",
             "return sink rpipe source;",
+            "return spawn Producer() pipe! spawn Consumer();",
+            "return first pipe! second;",
+            "return sink rpipe! source;",
+            "return consumer rpipe! producer;",
             "return ActorUtils.rpipe(source, sink);",
             "return ActorUtils::rpipe(source, sink);",
         ] {
@@ -1949,6 +1964,9 @@ mod tests {
             "fnc main(pipe:int):int{return pipe+1;}",
             "fnc main():int{return 42;} // spawn A() pipe spawn B()",
             "fnc main():int{return 42;} // sink rpipe source",
+            "fnc main():int{return 42;} // first pipe! second",
+            "fnc main():int{return 42;} /* sink rpipe! source */",
+            "fnc main():int{return 42;} \"first pipe! second\"",
             r#"fnc main():int{return 42;} "ActorUtils::pipe(A,B)""#,
             "fnc main(x:int):int{return x |> add_one;}",
         ] {
