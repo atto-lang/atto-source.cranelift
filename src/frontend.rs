@@ -1006,6 +1006,11 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             ) => true,
             (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
             (_, Some(Tok::Sym(b'.')), Tok::Id("pubsub")) => true,
+            // A local/imported Topic handle need not spell Topic<T> or
+            // actor.group in the same file. Do not let its publication
+            // fall through to scalar CLIF/JIT or produce a misleading
+            // unknown-member error. A free fnc try_publish remains legal.
+            (_, Some(Tok::Sym(b'.')), Tok::Id("try_publish")) => true,
             (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
             (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
             _ => false,
@@ -1887,6 +1892,53 @@ mod tests {
             assert_eq!(eval(&program.result, &[]), expected, "{source}");
         }
     }
+    #[test]
+    fn actor_pubsub_alias_try_publish_denied_before_scalar_clif() {
+        // Identical Git blob across LLVM/Wasm/.NET/JS/HDL/Forge/central:
+        // c562ad380bb283da9ffa26160653c1186ab63462.
+        // This target is scalar-only; it must not pretend to implement
+        // Result<PublishReceipt,PublishError> or checked share! lowering.
+        let canonical = include_str!(
+            "../tests/fixtures/atto-ensemble-v1/canonical-unlowered-try-publish.atto"
+        );
+        for source in [
+            canonical,
+            "val receipt=imported_topic.try_publish(share! event)?;",
+            "val receipt=local /* outer /* nested */ end */ . try_publish(share! event)?;",
+            "val receipt=local?.try_publish(rt share event);",
+            "val method=topic.try_publish;",
+            "val receipt=topic.\ntry_publish(event);",
+            "val receipt=topic.// inert .try_publish\ntry_publish(event);",
+        ] {
+            assert!(has_actor_pubsub_surface(source),
+                "unlowered aliased Topic member was accepted by source gate: {source}");
+            assert_eq!(
+                parse(source).unwrap_err(),
+                "native ActorGroup/Topic source lowering unsupported",
+                "no scalar CLIF, JIT, or artifact should be produced"
+            );
+        }
+    }
+
+    #[test]
+    fn actor_pubsub_alias_preflight_ignores_inert_tokens() {
+        for inert in [
+            "fnc try_publish(value:int):int{return value;}",
+            "fnc main():int{return 42;} // topic.try_publish(share! event)?",
+            "fnc main():int{return 42;} /* nested /* x.try_publish() */ tail */",
+            r#"fnc main():int{return 42;} "topic.try_publish(share! event)?""#,
+            "fnc main(topic:int):int{return topic;}",
+            "fnc main():int{return 42;} /* .try_publish member reference */",
+            "fnc main():int{return 42;} /* topic. */ try_publish",
+            "fnc main():int{return 42;} // imported_topic.try_publish\n",
+        ] {
+            assert!(!has_actor_pubsub_surface(inert),
+                "inert syntax must not forge typed pub/sub capability: {inert}");
+        }
+        let scalar=parse("fnc main():int{return 42;}").unwrap();
+        assert_eq!(eval(&scalar.result,&[]),Ok(42));
+    }
+
     #[test]
     fn actor_pubsub_preflight_ignores_inert_text_and_accepts_spacing() {
         assert!(!has_actor_pubsub_surface(
