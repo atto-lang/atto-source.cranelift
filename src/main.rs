@@ -177,10 +177,9 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
-    // The scalar frontend owns single-main source. A separate strictly
-    // bounded closed-world pipeline parser is consulted only for sources
-    // containing pipeline/inline-arrow syntax, without host evaluation.
-    // Both paths return the SAME checked Program shape before CLIF emission.
+    // Imported and standalone multi-function scalar graphs use separate
+    // checked native functions. Legacy single-main and strict pure-pipeline
+    // paths continue to lower to the stage-0 scalar Program shape.
     let linked_source = source
         .lines()
         .any(|line| line.trim_start().starts_with("import "));
@@ -208,9 +207,7 @@ fn run() -> Result<(), String> {
             // diagnostics by admitting this fallback only for >1 parsed fnc.
             // No package authority or ambient import lookup is involved.
             if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
-                if let Ok(functions) =
-                    functional_pipelines::parse_linked_native(source, &[])
-                {
+                if let Ok(functions) = functional_pipelines::parse_linked_native(source, &[]) {
                     if functions.len() > 1 {
                         return run_linked_native(&mode, &values, &functions);
                     }

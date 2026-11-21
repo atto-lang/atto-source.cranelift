@@ -1,7 +1,7 @@
 #![cfg(unix)]
 //! Actual Cranelift CLI + native JIT tests, not a Rust host evaluator.
-//! This staged package-link profile uses checked static lowering and does
-//! not yet support true native helper-call ABIs / nonlinear parameter use.
+//! This restricted trusted scalar profile emits independent native
+//! Cranelift helper calls; it is not a sandbox, actor backend or AOT proof.
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
