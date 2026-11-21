@@ -1441,7 +1441,7 @@ mod tests {
             "gpu",
             "cpu",
             "panic",
-            // Infix ^ is now valid integer XOR under bitwise-v1.
+            // Infix ^ is invalid: only leading ^ returns; contiguous ^^ is integer XOR.
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             assert!(
@@ -1788,7 +1788,7 @@ mod tests {
     fn fail_closed() {
         for source in [
             "fnc main():int{return 1/0;}",
-            // Infix integer XOR is tested by the bitwise-v1 positive suite.
+            "fnc main():int{return 5 ^ 3;}", // ^ is return-only, never infix XOR
             "fnc main():int{return Integer.div(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",
             "fnc main():int{return Integer.bitXor(5,3,1);}",
