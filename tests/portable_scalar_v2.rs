@@ -129,7 +129,7 @@ fn portable_scalar_v2_native_signed_i64_values() {
 
 #[test]
 fn portable_scalar_v2_compiler_negative_sources() {
-    assert!(ORACLE.contains("\\\"expression\\\": \\\"7 ^^ 3\\\""));
+    assert!(ORACLE.contains("\"expression\": \"7 ^^ 3\""));
     for (id, expression) in [
         ("removed-percent", "7 % 3"),
         // Legacy v2's ^^ negative is superseded by canonical integer XOR.
