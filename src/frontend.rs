@@ -1145,7 +1145,7 @@ fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
         window.rotate_left(1);
         window[5] = token;
         if matches!(&window[1..], [Token::Word("Mutex"), Token::Punct(b'<'),
-            Token::Word("int"), Token::Punct(b'>'), Token::Punct(b'(')]) {
+            Token::Word(_), Token::Punct(b'>'), Token::Punct(b'(')]) {
             if window[0] == Token::Word("new") {
                 return Err("E_LOCK_UNSUPPORTED: no compiled MutexLease or scheduler exists for Cranelift".into());
             }
@@ -1176,10 +1176,15 @@ mod tests {
     use super::*;
     #[test]
     fn mutex_new_constructor_is_required_but_not_yet_runtime_supported() {
-        let old = "pub fnc main():int { val counter = Mutex<int>(0); return 0; }";
-        let canonical = "pub fnc main():int { val counter = new Mutex<int>(0); return 0; }";
-        assert!(parse(old).unwrap_err().contains("E_NEW_REQUIRED"));
-        assert!(parse(canonical).unwrap_err().contains("E_LOCK_UNSUPPORTED"));
+        // Constructor grammar applies to all simple nominal type arguments,
+        // not just the currently executable scalar int. Nested type arguments
+        // remain outside this narrowly bounded source admission gate.
+        for ty in ["int", "bool", "float", "Buffer"] {
+            let old = format!("pub fnc main():int {{ val counter = Mutex<{ty}>(0); return 0; }}");
+            let canonical = format!("pub fnc main():int {{ val counter = new Mutex<{ty}>(0); return 0; }}");
+            assert!(parse(&old).unwrap_err().contains("E_NEW_REQUIRED"), "{ty}");
+            assert!(parse(&canonical).unwrap_err().contains("E_LOCK_UNSUPPORTED"), "{ty}");
+        }
         assert_eq!(eval(&parse("// Mutex<int>(0) is a comment\nfnc main():int{return 42;}").unwrap().result, &[]), Ok(42));
     }
 
