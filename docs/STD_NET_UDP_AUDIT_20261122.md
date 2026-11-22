@@ -30,3 +30,7 @@ The operator authorized token-free private exact-tree mirroring into an alternat
 - Verify .NET native host test and native AOT on a real .NET toolchain, Java JDK 25 + Truffle, native LLVM AOT, and Wasm guest runtime separately.
 - Re-test the **whole exact PR head/tree**, not only verified individual Git blobs, on a carrier with real runner jobs and nonzero steps.
 - Keep PRs Draft and do not promote from a source-only, host-only or zero-step result.
+
+## Follow-up 2026-11-22 — Cranelift compile/run UDP rejection
+
+Added `tests/udp_raw_socket_failclosed.rs`, a native Rust integration test that invokes the actual `orescranelift check` and `orescranelift run` CLI with unsupported `network.bind_udp` and `std.net.udp.bind` guest source, requiring nonzero exit, nonempty diagnostics and no fabricated guest result. Stage-0 compiler support is intentionally limited; pure `.atto` policy source-model results do not establish Cranelift guest or physical socket support. **Not executed** locally (no Rust toolchain); compiler/guest socket integration remains unimplemented and this is an explicit negative gate.
