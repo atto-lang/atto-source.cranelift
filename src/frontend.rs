@@ -1749,7 +1749,6 @@ mod tests {
             "fnc main():float{return 1;}",
             "fnc main():int{return x;}",
             "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/",
             "fnc main():int{return 1.0;}",
             "fnc main(x:int,x:int):int{return x;}",
             "fnc main():int{return 1;} unsafe",
@@ -1764,6 +1763,8 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
+        // Well-formed trailing block comments are inert, like trailing line comments.
+        assert!(parse("fnc main():int{return 1;} /*no*/").is_ok());
         assert!(
             parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
                 .is_err()
