@@ -11,3 +11,7 @@ Conformance fixture: compile/link the actual `edge-positive.atto` and execute th
 ## Namespace-only core source
 
 Canonical `use namespace types;` file header plus public top-level functions; no `define module` wrapper. Consumers still explicitly import the symbols. Compiler parse, namespace source identity, static imports, and executed linked guests require separate proofs. Until the current PR compiles and runs, namespace guest parity remains NOT_EXECUTED.
+
+## Exact-head executable compiler admission gate
+
+The `core-types-native-compiler-admission` Actions job attempts to consume the unchanged `core/types.atto` with this repository's **real** compiler. The source-only oracle is insufficient. The job fails if the compiler rejects any required syntax; no host-model fallback or skip is permitted. This backend currently has an independently diagnosed namespace/boolean/type-lowering gap, so a green compiled-parity result is **not** claimed. The initial test proves stage-0 parser and IR only; real JIT function invocation and NativeAOT not proven if it genuinely executes and succeeds, and deeper runtime and 8 compiler-negative fixture tests remain separate work. Do not merge until the real compiled positive/negative and target-appropriate execution gates pass on this exact PR head.
