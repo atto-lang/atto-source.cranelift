@@ -669,6 +669,17 @@ impl<'a> Parser<'a> {
             let _ = self.name()?;
             self.expect(Token::Punct(b';'))?;
         }
+        // Diagnose a repeated header before the generic "expected fnc"
+        // branch consumes the invalid token and loses its exact reason.
+        if self.current == Token::Word("use") ||
+            self.current == Token::Word("namespace")
+        {
+            return Err((if has_namespace {
+                "CRANELIFT_NAMESPACE_DUPLICATE: duplicate file-level namespace"
+            } else {
+                "CRANELIFT_NAMESPACE_HEADER_ORDER: namespace must be declared before functions"
+            }).into());
+        }
         let mut seen_export = false;
         while self.current == Token::Word("export") {
             if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
