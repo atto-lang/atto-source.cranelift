@@ -29,6 +29,12 @@ impl Drop for Input { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
 
 #[test]
 fn raw_udp_guest_requires_explicit_compiler_lowering() {
+    // A compiler that fails every source cannot pass this negative gate.
+    let scalar = Input::new("fnc main():int{return 42;}");
+    let accepted = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("check").arg(&scalar.0).output().expect("run valid scalar");
+    assert!(accepted.status.success(), "valid scalar baseline must be admitted");
+    assert!(accepted.stderr.is_empty());
     for src in [
         "fnc main():int{return network.bind_udp(\"127.0.0.1\",0);}",
         "fnc main():int{return std.net.udp.bind(0);}",
