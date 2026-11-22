@@ -31,3 +31,23 @@ fn fold(state:i64,octet:i64)->i64 {
  assert!(CELL.contains("not real Cell<T>/RefCell<T>"));
  assert!(CELL.contains("do NOT grant loans"));
 }
+
+#[test] fn no_core_policy_predicate_is_a_borrow_capability_or_guest_proof() {
+ for method in ["valid_loan_state", "can_owner_read", "can_owner_write",
+                "can_move_owner", "can_suspend_unpinned"] {
+  assert!(CELL.contains(&format!("pub fnc {method}(")),
+     "missing pure owner policy in Cranelift-owned Atto source: {method}");
+ }
+ for [readers, writer_active, valid, writable] in [
+  [0,0,1,1], [1,0,1,0], [65535,0,1,0], [65536,0,0,0],
+  [0,1,1,0], [1,1,0,0], [-1,0,0,0]
+ ] {
+  let valid_state=readers>=0&&readers<=65535&&(!writer_active_is_true(writer_active)||readers==0);
+  let owner_can_move=readers==0&&!writer_active_is_true(writer_active);
+  assert_eq!(valid_state,valid==1);
+  assert_eq!(owner_can_move,writable==1);
+ }
+ // Host-only independent model deliberately confers no source-level loan.
+ assert!(CELL.contains("NON-CAPABILITIES"));
+}
+fn writer_active_is_true(value:i32)->bool {value!=0}
