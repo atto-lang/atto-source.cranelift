@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'core/types.atto'
+      - 'src/frontend.rs'
       - 'tests/core-types-source.test.mjs'
       - 'tests/core-types-matrix-source.test.mjs'
       - 'tests/fixtures/core-types-v1/**'
@@ -57,6 +58,20 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked --bin orescranelift
+          target/debug/orescranelift check tests/fixtures/core-types-v1/cranelift-namespace-positive.atto
+          test "$(target/debug/orescranelift run tests/fixtures/core-types-v1/cranelift-namespace-positive.atto)" = "64"
+          for case in cranelift-namespace-duplicate-negative cranelift-namespace-late-negative; do
+            if target/debug/orescranelift check "tests/fixtures/core-types-v1/$case.atto" >"$RUNNER_TEMP/$case.stdout" 2>"$RUNNER_TEMP/$case.stderr"; then
+              echo "$case unexpectedly compiled" >&2
+              exit 1
+            fi
+            case "$case" in
+              *duplicate*) grep -Fq CRANELIFT_NAMESPACE_DUPLICATE "$RUNNER_TEMP/$case.stderr";;
+              *late*) grep -Fq CRANELIFT_NAMESPACE_HEADER_ORDER "$RUNNER_TEMP/$case.stderr";;
+            esac
+          done
+          echo 'CORE_TYPES_CRANELIFT_NAMESPACE_FRAGMENT=JIT_EXECUTED'
+          # Complete library and 8 shared negatives remain separate parity gates.
           target/debug/orescranelift check core/types.atto
           target/debug/orescranelift ir core/types.atto > "$RUNNER_TEMP/core-types.clif"
           test -s "$RUNNER_TEMP/core-types.clif"

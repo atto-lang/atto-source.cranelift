@@ -661,6 +661,14 @@ impl<'a> Parser<'a> {
         Ok(())
     }
     fn program(mut self) -> Result<Program, String> {
+        // File-scoped namespace is metadata only. Stage-0 still requires one
+        // scalar main, and no implicit cross-file or nominal type resolution.
+        let has_namespace = self.take(Token::Word("use"))?;
+        if has_namespace {
+            self.expect(Token::Word("namespace"))?;
+            let _ = self.name()?;
+            self.expect(Token::Punct(b';'))?;
+        }
         let mut seen_export = false;
         while self.current == Token::Word("export") {
             if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
@@ -889,6 +897,15 @@ impl<'a> Parser<'a> {
         }
         // Scan only already-invalid trailing source, preserving compiler-only
         // macro diagnostics without accepting anything after scalar main.
+        if self.current == Token::Word("use") ||
+            self.current == Token::Word("namespace")
+        {
+            return Err((if has_namespace {
+                "CRANELIFT_NAMESPACE_DUPLICATE: duplicate file-level namespace"
+            } else {
+                "CRANELIFT_NAMESPACE_HEADER_ORDER: namespace must be declared before functions"
+            }).into());
+        }
         if self.current != Token::End {
             let at = self.pos;
             while self.current != Token::End {
