@@ -41,7 +41,7 @@ fn raw_udp_guest_requires_explicit_compiler_lowering() {
     let executed = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run").arg(&scalar.0).output().expect("execute real scalar");
     assert_eq!(executed.status.code(), Some(0), "valid native scalar run failed");
-    assert_eq!(executed.stdout, b"42\\n", "native guest did not return 42");
+    assert_eq!(executed.stdout, b"42\n", "native guest did not return 42");
     assert!(executed.stderr.is_empty());
     for src in [
         "fnc main():int{return network.bind_udp(\"127.0.0.1\",0);}",
