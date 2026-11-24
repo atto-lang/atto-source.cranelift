@@ -171,6 +171,13 @@ pub enum Expr {
 pub struct Program {
     pub parameters: Vec<String>,
     pub result: Expr,
+    pub trace_steps: Vec<TraceStep>,
+}
+
+#[derive(Debug)]
+pub enum TraceStep {
+    Begin(String),
+    End,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -892,10 +899,9 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
-        self.expect(Token::Word("return"))?;
-        let result = self.expr(0, 0)?;
-        self.expect(Token::Punct(b';'))?;
-        self.expect(Token::Punct(b'}'))?;
+        let mut trace_steps = Vec::new();
+        let result = self.scalar_body(&mut trace_steps, &mut Vec::new())?
+            .ok_or("scalar main requires a return")?;
         while self.current == Token::Word("export") {
             if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
             self.file_export()?;
@@ -930,7 +936,61 @@ impl<'a> Parser<'a> {
         Ok(Program {
             parameters: self.parameters,
             result,
+            trace_steps,
         })
+    }
+
+    // The scalar profile supports one reachable return. Each preceding scope
+    // either falls through before that return, or surrounds its evaluation.
+    fn scalar_body(
+        &mut self,
+        trace_steps: &mut Vec<TraceStep>,
+        aliases: &mut Vec<String>,
+    ) -> Result<Option<Expr>, String> {
+        let mut result = None;
+        while self.take(Token::Word("using"))? {
+            if result.is_some() || aliases.len() == 16 || trace_steps.len() >= 128 {
+                return Err("E_TELEMETRY_SCOPE: unreachable scope or scope budget exceeded".into());
+            }
+            self.expect(Token::Word("telemetry"))?;
+            self.expect(Token::Punct(b'.'))?;
+            self.expect(Token::Word("span"))?;
+            self.expect(Token::Punct(b'('))?;
+            let Token::Quoted(raw) = self.current else {
+                return Err("E_TELEMETRY_NAME: expected a span name literal".into());
+            };
+            let operation = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                .filter(|s| !s.is_empty() && s.len() <= 256
+                    && !s.contains('\\') && !s.chars().any(char::is_control))
+                .ok_or("E_TELEMETRY_NAME: expected 1..256 UTF-8 bytes without escapes or controls")?;
+            self.next()?;
+            self.expect(Token::Punct(b')'))?;
+            self.expect(Token::Word("as"))?;
+            let alias = self.name()?;
+            if alias == "_" || aliases.contains(&alias) || self.parameters.contains(&alias) {
+                return Err("E_TELEMETRY_ALIAS: opaque span alias shadows an active binding".into());
+            }
+            self.expect(Token::Punct(b'{'))?;
+            trace_steps.push(TraceStep::Begin(operation.to_owned()));
+            aliases.push(alias);
+            result = self.scalar_body(trace_steps, aliases)?;
+            aliases.pop();
+            if result.is_none() {
+                trace_steps.push(TraceStep::End);
+            }
+        }
+        if self.take(Token::Word("return"))? {
+            let expression = self.expr(0, 0)?;
+            validate_ast_depth(&expression)?;
+            self.expect(Token::Punct(b';'))?;
+            // A tail fallback after a returning using scope is unreachable.
+            // Check its syntax and names without adding it to executable IR.
+            if result.is_none() {
+                result = Some(expression);
+            }
+        }
+        self.expect(Token::Punct(b'}'))?;
+        Ok(result)
     }
 }
 

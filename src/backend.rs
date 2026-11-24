@@ -1,12 +1,16 @@
 //! Native JIT for trusted stage-0 scalar source. Never treat JIT as a sandbox.
-use crate::frontend::{Expr, Program};
+use crate::frontend::{Expr, Program, TraceStep};
 use crate::isolate::{IsolateHandle, OresVM};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::instructions::BlockArg;
-use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlagsData, Value, types};
+use cranelift_codegen::ir::{AbiParam, Block, GlobalValue, InstBuilder, MemFlagsData, Value, types};
+use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
+use cranelift_object::{ObjectBuilder, ObjectModule};
+
+mod telemetry;
 
 pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
@@ -243,9 +247,11 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
-fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context, cranelift_module::FuncId), String> {
-    let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
-    let mut module = JITModule::new(builder);
+fn prepare_ir(
+    source: &Program,
+    module: &mut impl Module,
+    linkage: Linkage,
+) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
     let mut sig = module.make_signature();
     // Stable internal entry ABI: four i64 values + output pointer -> i32 status.
     // 0 succeeds; 1 is checked overflow, 2 divisor zero, 3 negative exponent.
@@ -257,10 +263,39 @@ fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context
         .push(AbiParam::new(module.target_config().pointer_type()));
     sig.returns.push(AbiParam::new(types::I32));
     let id = module
-        .declare_function("oreslang_scalar_entry", Linkage::Local, &sig)
+        .declare_function("oreslang_scalar_entry", linkage, &sig)
         .map_err(|e| e.to_string())?;
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
+    let ptr = module.target_config().pointer_type();
+    let trace = if source.trace_steps.is_empty() {
+        None
+    } else {
+        let mut begin = module.make_signature();
+        begin.params.extend([AbiParam::new(ptr), AbiParam::new(types::I64)]);
+        begin.returns.push(AbiParam::new(types::I64));
+        let mut end = module.make_signature();
+        end.params.push(AbiParam::new(types::I64));
+        let begin = module.declare_function(telemetry::BEGIN, Linkage::Import, &begin)
+            .map_err(|e| e.to_string())?;
+        let end = module.declare_function(telemetry::END, Linkage::Import, &end)
+            .map_err(|e| e.to_string())?;
+        let steps = source.trace_steps.iter().map(|step| match step {
+            TraceStep::Begin(operation) => {
+                let id = module.declare_anonymous_data(false, false).map_err(|e| e.to_string())?;
+                let mut data = DataDescription::new();
+                data.define(operation.as_bytes().into());
+                module.define_data(id, &data).map_err(|e| e.to_string())?;
+                Ok(Some((module.declare_data_in_func(id, &mut ctx.func), operation.len())))
+            }
+            TraceStep::End => Ok(None),
+        }).collect::<Result<Vec<Option<(GlobalValue, usize)>>, String>>()?;
+        Some((
+            module.declare_func_in_func(begin, &mut ctx.func),
+            module.declare_func_in_func(end, &mut ctx.func),
+            steps,
+        ))
+    };
     let mut fbctx = FunctionBuilderContext::new();
     let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
     let entry = b.create_block();
@@ -271,6 +306,28 @@ fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context
     b.switch_to_block(entry);
     b.seal_block(entry);
     let p = b.block_params(entry).to_vec();
+    let mut active = Vec::new();
+    if let Some((begin, end, steps)) = &trace {
+        for step in steps {
+            match step {
+                Some((name, len)) => {
+                    let ptr = b.ins().symbol_value(ptr, *name);
+                    let len = b.ins().iconst(types::I64, *len as i64);
+                    let call = b.ins().call(*begin, &[ptr, len]);
+                    active.push(b.inst_results(call)[0]);
+                }
+                None => {
+                    let token = active.pop().ok_or("missing lexical span for close")?;
+                    b.ins().call(*end, &[token]);
+                }
+            }
+        }
+    }
+    let cleanup = (!active.is_empty()).then(|| {
+        let block = b.create_block();
+        b.append_block_param(block, types::I32);
+        block
+    });
     let value = emit(
         &source.result,
         &mut b,
@@ -280,34 +337,55 @@ fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context
         negative_exponent_error,
     );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
-    let ok = b.ins().iconst(types::I32, 0);
-    b.ins().return_(&[ok]);
-    b.switch_to_block(failure);
-    let fail = b.ins().iconst(types::I32, 1);
-    b.ins().return_(&[fail]);
-    b.switch_to_block(divisor_error);
-    let divisor_zero = b.ins().iconst(types::I32, 2);
-    b.ins().return_(&[divisor_zero]);
-    b.switch_to_block(negative_exponent_error);
-    let negative = b.ins().iconst(types::I32, 3);
-    b.ins().return_(&[negative]);
+    return_status(&mut b, 0, cleanup);
+    for (block, status) in [(failure, 1), (divisor_error, 2), (negative_exponent_error, 3)] {
+        b.switch_to_block(block);
+        return_status(&mut b, status, cleanup);
+    }
+    if let Some(block) = cleanup {
+        b.switch_to_block(block);
+        let status = b.block_params(block)[0];
+        let end = trace.expect("live spans have an end hook").1;
+        for token in active.into_iter().rev() {
+            b.ins().call(end, &[token]);
+        }
+        b.ins().return_(&[status]);
+    }
     b.seal_all_blocks();
     b.finalize(module.target_config());
     // Unconditional SSA, CFG, type and ABI verification before native emission.
     // This must not depend on Cranelift's optional enable_verifier setting.
     validate_ir(&ctx.func, module.isa())?;
-    Ok((module, ctx, id))
+    Ok((ctx, id))
+}
+
+fn return_status(b: &mut FunctionBuilder, status: i64, cleanup: Option<Block>) {
+    let status = b.ins().iconst(types::I32, status);
+    if let Some(block) = cleanup {
+        b.ins().jump(block, &[BlockArg::Value(status)]);
+    } else {
+        b.ins().return_(&[status]);
+    }
+}
+
+fn jit_module() -> Result<JITModule, String> {
+    let mut builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
+    builder.symbol(telemetry::BEGIN, telemetry::begin as *const u8);
+    builder.symbol(telemetry::END, telemetry::end as *const u8);
+    Ok(JITModule::new(builder))
 }
 
 // Constructs and verifies the same CLIF as the native compiler without
 // define_function, finalize_definitions, or executable-code allocation.
 pub fn render_ir(source: &Program) -> Result<String, String> {
-    let (_module, ctx, _id) = prepare_ir(source)?;
+    let mut module = jit_module()?;
+    let (ctx, _) = prepare_ir(source, &mut module, Linkage::Local)?;
     Ok(ctx.func.display().to_string())
 }
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
-    let (mut module, mut ctx, id) = prepare_ir(source)?;
+    let mut module = jit_module()?;
+    let (mut ctx, id) = prepare_ir(source, &mut module, Linkage::Local)?;
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -322,7 +400,28 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
     })
 }
 
+/// Emit a host-target relocatable object for the verified scalar entry ABI.
+/// Native linking uses a caller-supplied host. This path owns no JIT module.
+pub fn emit_object(source: &Program) -> Result<Vec<u8>, String> {
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_scalar", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    let (mut ctx, id) = prepare_ir(source, &mut module, Linkage::Export)?;
+    module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    module.finish().emit().map_err(|e| e.to_string())
+}
+
 impl Compiled {
+    pub fn run_traced(&self, args: &[i64]) -> (Result<i64, String>, Vec<telemetry::Span>) {
+        telemetry::record(|| self.run(args))
+    }
+
     // This is a trusted, host-mediated tenant step, not a native pointer ABI.
     // The same compiled machine code is reused for multiple IsolateVMs while
     // mutable scalar state remains owned by the OresVM tenant host.
@@ -376,6 +475,31 @@ impl Compiled {
 #[cfg(test)]
 mod verification_tests {
     use super::*;
+
+    #[test]
+    fn traced_machine_code_retires_nested_scopes_on_return_and_checked_error() {
+        let source = crate::frontend::parse(r#"
+            pub fnc main(int input): int {
+                using telemetry.span("finished") as finished {}
+                using telemetry.span("outer") as outer {
+                    using telemetry.span("inner") as inner { return input + 1; }
+                }
+                return 0;
+            }
+        "#).unwrap();
+        let guest = compile(&source).unwrap();
+        assert_eq!(guest.run(&[41]), Ok(42));
+        for (input, expected) in [(41, Ok(42)), (i64::MAX, Err("i64 arithmetic overflow".into()))] {
+            let (outcome, spans) = guest.run_traced(&[input]);
+            assert_eq!(outcome, expected);
+            assert_eq!(spans.iter().map(|span| span.operation.as_str()).collect::<Vec<_>>(),
+                ["finished", "inner", "outer"]);
+            assert_eq!(spans[0].parent, 0);
+            assert_eq!(spans[1].parent, spans[2].id);
+            assert_eq!(spans[2].parent, 0);
+        }
+        assert_eq!(guest.run(&[41]), Ok(42));
+    }
 
     #[test]
     fn ir_render_does_not_require_native_finalization_and_matches_compiled_clif() {
