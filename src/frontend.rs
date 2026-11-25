@@ -725,9 +725,37 @@ impl<'a> Parser<'a> {
         Ok(effects)
     }
 
+    fn checked_i64_cast_target(&mut self) -> Result<(), String> {
+        if !self.take(Token::Word("int"))? && !self.take(Token::Word("i64"))? {
+            return Err("unsupported checked cast target (only int/i64 is supported)".into());
+        }
+        self.nodes += 1;
+        if self.nodes > MAX_NODES {
+            return Err("AST node budget exceeded".into());
+        }
+        Ok(())
+    }
+
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
+        let value = self.atom_base(depth)?;
+        while self.current == Token::Punct(b':') && self.next_significant_is(b':') {
+            self.expect(Token::Punct(b':'))?;
+            self.expect(Token::Punct(b':'))?;
+            self.expect(Token::Punct(b'<'))?;
+            self.checked_i64_cast_target()?;
+            self.expect(Token::Punct(b'>'))?;
+        }
+        Ok(value)
+    }
+
+    fn atom_base(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
+        }
+        if self.take(Token::Punct(b'<'))? {
+            self.checked_i64_cast_target()?;
+            self.expect(Token::Punct(b'>'))?;
+            return self.atom(depth + 1);
         }
         if self.take(Token::Punct(b'-'))? {
             if let Token::Number(n) = self.current {
@@ -859,13 +887,7 @@ impl<'a> Parser<'a> {
             // underlying i64 value or using an unchecked reinterpretation.
             if self.current == Token::Word("as") && min_bp <= 5 {
                 self.next()?;
-                if !self.take(Token::Word("int"))? {
-                    return Err("unsupported checked cast target (only int is supported)".into());
-                }
-                self.nodes += 1;
-                if self.nodes > MAX_NODES {
-                    return Err("AST node budget exceeded".into());
-                }
+                self.checked_i64_cast_target()?;
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
