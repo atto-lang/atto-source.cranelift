@@ -86,17 +86,35 @@ pub fnc main(): int {
   return 0;
 }"#,
         ),
-        ("scalar-owner-borrow", "fnc main(x:int):int{return borrow! x;}"),
-        ("unverified-nested-place", "fnc main():int{return root.child.age;}"),
+        (
+            "scalar-owner-borrow",
+            "fnc main(x:int):int{return borrow! x;}",
+        ),
+        (
+            "unverified-nested-place",
+            "fnc main():int{return root.child.age;}",
+        ),
     ];
     for (label, source) in cases {
         for mode in ["check", "ir", "run"] {
             let out = invoke(mode, source);
-            assert!(!out.status.success(), "{label}/{mode} was incorrectly admitted");
-            assert!(out.stdout.is_empty(), "{label}/{mode} emitted scalar/IR output");
+            assert!(
+                !out.status.success(),
+                "{label}/{mode} was incorrectly admitted"
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "{label}/{mode} emitted scalar/IR output"
+            );
             let stderr = String::from_utf8_lossy(&out.stderr);
-            assert!(stderr.starts_with("orescranelift: "), "{label}/{mode}: {stderr}");
-            assert!(!stderr.to_lowercase().contains("panicked"), "{label}/{mode}: {stderr}");
+            assert!(
+                stderr.starts_with("orescranelift: "),
+                "{label}/{mode}: {stderr}"
+            );
+            assert!(
+                !stderr.to_lowercase().contains("panicked"),
+                "{label}/{mode}: {stderr}"
+            );
         }
     }
 }
@@ -104,6 +122,10 @@ pub fnc main(): int {
 #[test]
 fn baseline_signed_i64_guest_still_executes() {
     let out = invoke("run", "pub fnc main():int{return 40+2;}");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(out.stdout, b"42\n");
 }
