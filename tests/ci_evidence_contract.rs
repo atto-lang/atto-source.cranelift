@@ -13,23 +13,43 @@ fn workflow_enforces_exact_head_before_any_compiler_execution() {
     assert!(WORKFLOW.contains("git rev-parse --verify HEAD"));
     assert!(WORKFLOW.contains("git write-tree"));
     assert!(WORKFLOW.contains("git cat-file -t"));
-    let provenance = WORKFLOW.find("name: Verify commit and source tree").unwrap();
-    let physical_check = WORKFLOW.find("name: Verify physical checkout bytes, modes and path ancestry").unwrap();
-    let physical_negative = WORKFLOW.find("name: Test exact-source tamper rejections on synthetic Git fixtures").unwrap();
-    let receipt_tests = WORKFLOW.find("name: Run offline Rust receipt verifier's negative and positive tests").unwrap();
-    let compiler_tests = WORKFLOW.find("name: Compile Rust and execute native positive and negative guest tests").unwrap();
+    let provenance = WORKFLOW
+        .find("name: Verify commit and source tree")
+        .unwrap();
+    let physical_check = WORKFLOW
+        .find("name: Verify physical checkout bytes, modes and path ancestry")
+        .unwrap();
+    let physical_negative = WORKFLOW
+        .find("name: Test exact-source tamper rejections on synthetic Git fixtures")
+        .unwrap();
+    let receipt_tests = WORKFLOW
+        .find("name: Run offline Rust receipt verifier's negative and positive tests")
+        .unwrap();
+    let compiler_tests = WORKFLOW
+        .find("name: Compile Rust and execute native positive and negative guest tests")
+        .unwrap();
     assert!(provenance < physical_check && physical_check < physical_negative);
     assert!(physical_negative < receipt_tests && receipt_tests < compiler_tests);
-    for suspect in ["git status", "git diff", "git add", "git hash-object --path"] {
+    for suspect in [
+        "git status",
+        "git diff",
+        "git add",
+        "git hash-object --path",
+    ] {
         let preflight = &WORKFLOW[provenance..receipt_tests];
-        assert!(!preflight.contains(suspect), "checkout filters in provenance preflight: {suspect}");
+        assert!(
+            !preflight.contains(suspect),
+            "checkout filters in provenance preflight: {suspect}"
+        );
     }
 }
 
 #[test]
 fn rust_only_offline_receipt_tests_are_required() {
     assert!(WORKFLOW.contains("cargo test --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked --all-targets"));
-    assert!(WORKFLOW.contains("cargo run --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked -- --cases"));
+    assert!(WORKFLOW.contains(
+        "cargo run --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked -- --cases"
+    ));
     assert!(WORKFLOW.contains("cargo test --locked --all-targets"));
     assert!(WORKFLOW.contains("cargo run --locked --quiet -- run"));
     assert!(WORKFLOW.contains("test ! -s /tmp/atto-rejected-stdout"));
@@ -37,7 +57,11 @@ fn rust_only_offline_receipt_tests_are_required() {
     assert!(!WORKFLOW.contains("curl | bash"));
     assert!(!WORKFLOW.contains("pip install"));
     assert_eq!(REQUIRED_CASES.lines().count(), 6);
-    assert!(REQUIRED_CASES.lines().all(|line| line.split('\t').count() == 3));
+    assert!(
+        REQUIRED_CASES
+            .lines()
+            .all(|line| line.split('\t').count() == 3)
+    );
 }
 
 #[test]
@@ -52,7 +76,9 @@ fn unexecuted_capability_inventory_remains_unverified() {
 
 #[test]
 fn physical_checkout_integrity_gate_rejects_byte_laundering_before_compilation() {
-    assert!(WORKFLOW.contains("bash verification/source-integrity/verify.sh \"$EXPECTED_HEAD_SHA\""));
+    assert!(
+        WORKFLOW.contains("bash verification/source-integrity/verify.sh \"$EXPECTED_HEAD_SHA\"")
+    );
     assert!(WORKFLOW.contains("bash verification/source-integrity/test.sh"));
     assert!(PHYSICAL_SOURCE.contains("git hash-object --no-filters --"));
     assert!(PHYSICAL_SOURCE.contains("git ls-files --stage -z"));

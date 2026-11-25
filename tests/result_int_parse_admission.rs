@@ -9,7 +9,17 @@ fn compile(mode: &str, source: &[u8]) -> std::process::Output {
     let path = std::env::temp_dir().join(format!(
         "atto-cranelift-result-{}-{id}.atto", std::process::id()
     ));
-    std::fs::write(&path, source).expect("write exact source fixture");
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).expect("exclusive fixture");
+    file.write_all(source).expect("write exact source fixture");
+    drop(file);
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode).arg(&path).output().expect("invoke compiler");
     std::fs::remove_file(path).expect("remove source fixture");
@@ -25,7 +35,7 @@ fn result_question_trap_match_fail_closed_before_jit_or_clif() {
         ("match", include_bytes!("fixtures/result-int-parse-v1/match.atto")),
     ];
     for &(case_name, source) in CASES {
-        for mode in ["run", "ir"] {
+        for mode in ["check", "run", "ir"] {
             let output = compile(mode, source);
             assert_eq!(output.status.code(), Some(1),
                 "{case_name}/{mode}: unsupported syntax unexpectedly executed");
