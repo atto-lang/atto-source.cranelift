@@ -1,0 +1,15 @@
+# Cranelift compiler, native tests and private-CI control plane.
+# These are CODEOWNER review requests, not enforcement until default-main
+# branch protection/rulesets require an independent CODEOWNER approval.
+# Do not count these lines as authorization to mirror private source.
+#
+# GitHub uses the last matching CODEOWNERS rule.
+# Keep private-CI and branch-authorization entries under one accountable owner.
+/src/ @ORESoftware
+/tests/ @ORESoftware
+/contracts/ @ORESoftware
+/Cargo.toml @ORESoftware
+/Cargo.lock @ORESoftware
+/README.md @ORESoftware
+/docs/security/ @ORESoftware
+/.github/ @ORESoftware
