@@ -130,6 +130,10 @@ fn scalar_v5_real_jit_positive_values() {
 
 // Category-specific diagnostics are evidence of the language phase reached.
 // A parser error, CLI usage failure or killed process is not a JIT overflow.
+fn is_native_checked_overflow(stderr: &[u8]) -> bool {
+    stderr == b"orescranelift: i64 arithmetic overflow\n"
+}
+
 fn is_compiler_rejection(id: &str, stderr: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(stderr) else {
         return false;
