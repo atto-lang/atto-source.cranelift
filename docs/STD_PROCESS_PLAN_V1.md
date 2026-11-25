@@ -68,3 +68,7 @@ The module must not recursively resolve `process.spawn` to itself.
 pure admission source until its local resolver, guest compiled fixtures and
 authorized host bridge are implemented and verified.
 
+
+## Source-model gate
+
+`node --test tests/process-policy-source-model.test.mjs` checks the pure candidate against the 25-case fixture and independent BigInt boundary oracle. This does not execute native Atto, launch a process, or grant RUN authority.

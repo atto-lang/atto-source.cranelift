@@ -1,7 +1,7 @@
 // native Cranelift compiler independently owned .atto process admission logic.
 // Host must check actual RUN capability and canonical command grants. Success
 // here never authorizes spawning or grants OS handles.
-define module ProcessPolicy as
+define pub module process_policy as
   // 0=closed, 1=inherit, 2=pipe; other redirections require extra grants.
   pub fnc stdio_mode_valid(int mode): bool {
     return mode >= 0 && mode <= 2;
