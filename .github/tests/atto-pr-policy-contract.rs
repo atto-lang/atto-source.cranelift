@@ -10,37 +10,44 @@ fn block() -> String {
     assert!(start < end, "policy marker order");
     source[start..end].to_string()
 }
-#[test] fn either_human_once_and_persistent() {
+#[test]
+fn either_human_once_and_persistent() {
     let s = block();
     for required in ["either", "the1mills", "ORESoftware", "2148448", "11139560",
-                     "Never require both", "do **not** demand another human approval",
-                     "No self-approval", "CHANGES_REQUESTED"] {
+                     "never both and never additional AI reviews", "author cannot self-approve",
+                     "Retain that approval", "CHANGES_REQUESTED"] {
         assert!(s.contains(required), "human policy missing: {required}");
     }
-    assert!(!s.contains("fresh post-boundary reviews from all four"));
-}
-#[test] fn ready_cycle_review_lanes() {
-    let s = block();
-    for required in ["Ready age 0–72h", "Ready age 72–240h", "Ready age ≥240h",
-                     "OpenAI", "Anthropic", "mandatory competing/overlapping-PR audit",
-                     "latest genuine Draft→Ready event", "resets AI freshness"] {
-        assert!(s.contains(required), "ready-cycle policy missing: {required}");
+    for obsolete in ["Ready age 0–72h", "Ready age 72–240h", "Ready age ≥240h",
+                     "fresh post-boundary reviews from all four"] {
+        assert!(!s.contains(obsolete), "obsolete review tier: {obsolete}");
     }
 }
-#[test] fn holds_and_real_ci() {
+#[test]
+fn all_ready_ages_require_overlap_and_material_checks() {
+    let s = block();
+    for required in ["No Ready-cycle age exempts", "all-Ready pre-merge overlapping-PR audit",
+                     "passing tests", "conflict resolution", "branch protection"] {
+        assert!(s.contains(required), "ready policy missing: {required}");
+    }
+}
+#[test]
+fn holds_and_real_ci() {
     let s = block();
     for required in ["keep-as-draft", "keep-draft", "not-ready",
-                     "passing exact-head material CI", "verified current labels",
-                     "automatic promotion", "automated merging"] {
+                     "exact-current-head material CI really passed", "Recheck labels and head",
+                     "72 hours of the current genuine Draft cycle", "explicit security holds"] {
         assert!(s.contains(required), "draft policy missing: {required}");
     }
 }
-#[test] fn canonical_source_and_private_code_safety() {
+#[test]
+fn canonical_source_and_private_code_safety() {
     let s = block();
     for required in ["https://github.com/atto-lang/.github/blob/main/AGENTS.md",
-                     "CODEOWNERS", "GitHub protections",
-                     "Approval policy text is not merge authorization",
-                     "authorized private SHA-verified Git-tree carrier"] {
+                     "CODEOWNER", "GitHub-enforced restrictions",
+                     "Approval policy text is not merge authorization or private-source export authorization",
+                     "authorized private SHA-verified Git-tree carriers",
+                     "governance/ci-zero-step-recovery.md"] {
         assert!(s.contains(required), "safety policy missing: {required}");
     }
 }
