@@ -2996,5 +2996,4 @@ end"#;
         let commented = parse("fnc main():int { /* do sync task<int> { } */ return 42; }").unwrap();
         assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
-
 }
