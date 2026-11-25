@@ -1278,10 +1278,13 @@ pub fn parse(text: &str) -> Result<Program, String> {
         || text.contains('[')
     {
         let mut scan = Parser::new(text)?;
+        let mut previous = Token::End;
         while scan.current != Token::End {
-            if scan.current == Token::Punct(b'[') {
+            // A visibility qualifier pub[...] is not an indexed expression.
+            if scan.current == Token::Punct(b'[') && previous != Token::Word("pub") {
                 return Err("E_UNSUPPORTED_INDEX_WRITE: indexed Record/Map/Struct access requires checked target typing and guest lowering".into());
             }
+            previous = scan.current;
             scan.next()?;
         }
     }
