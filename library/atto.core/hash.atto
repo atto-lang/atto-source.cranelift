@@ -1,0 +1,24 @@
+// Cranelift backend-local Atto octet hash fold, not cryptographic or safe
+// against adversarial hash flooding. No host hashing or unchecked overflow.
+// The compiler does not yet link this .atto as a Core import.
+define module hash as
+  pub fnc initial_state(): int { return 17; }
+  pub fnc step_byte(int s, int b): int {
+    if s < 0 || s >= 1000000007; do return -1; fi
+    if b < 0 || b > 255; do return -1; fi
+    let int next = s * 31 + b;
+    while next >= 1000000007 {
+      next = next - 1000000007;
+    }
+    return next;
+  }
+  pub fnc two_bytes(int a, int b): int {
+    let int next = step_byte(initial_state(), a);
+    if next < 0; do return -1; fi
+    return step_byte(next, b);
+  }
+  pub fnc from_bool(bool value): int {
+    if value; do return step_byte(initial_state(), 1); fi
+    return step_byte(initial_state(), 0);
+  }
+end

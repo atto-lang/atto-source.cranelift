@@ -661,6 +661,25 @@ impl<'a> Parser<'a> {
         Ok(())
     }
     fn program(mut self) -> Result<Program, String> {
+        // File-scoped namespace is metadata only. Stage-0 still requires one
+        // scalar main, and no implicit cross-file or nominal type resolution.
+        let has_namespace = self.take(Token::Word("use"))?;
+        if has_namespace {
+            self.expect(Token::Word("namespace"))?;
+            let _ = self.name()?;
+            self.expect(Token::Punct(b';'))?;
+        }
+        // Diagnose a repeated header before the generic "expected fnc"
+        // branch consumes the invalid token and loses its exact reason.
+        if self.current == Token::Word("use") ||
+            self.current == Token::Word("namespace")
+        {
+            return Err((if has_namespace {
+                "CRANELIFT_NAMESPACE_DUPLICATE: duplicate file-level namespace"
+            } else {
+                "CRANELIFT_NAMESPACE_HEADER_ORDER: namespace must be declared before functions"
+            }).into());
+        }
         let mut seen_export = false;
         while self.current == Token::Word("export") {
             if seen_export { return Err("EXPORT_DUPLICATE: main".into()); }
@@ -889,6 +908,15 @@ impl<'a> Parser<'a> {
         }
         // Scan only already-invalid trailing source, preserving compiler-only
         // macro diagnostics without accepting anything after scalar main.
+        if self.current == Token::Word("use") ||
+            self.current == Token::Word("namespace")
+        {
+            return Err((if has_namespace {
+                "CRANELIFT_NAMESPACE_DUPLICATE: duplicate file-level namespace"
+            } else {
+                "CRANELIFT_NAMESPACE_HEADER_ORDER: namespace must be declared before functions"
+            }).into());
+        }
         if self.current != Token::End {
             let at = self.pos;
             while self.current != Token::End {
@@ -1754,7 +1782,6 @@ mod tests {
             "fnc main():float{return 1;}",
             "fnc main():int{return x;}",
             "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/",
             "fnc main():int{return 1.0;}",
             "fnc main(x:int,x:int):int{return x;}",
             "fnc main():int{return 1;} unsafe",
@@ -1769,6 +1796,8 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
+        // Well-formed trailing block comments are inert, like trailing line comments.
+        assert!(parse("fnc main():int{return 1;} /*no*/").is_ok());
         assert!(
             parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
                 .is_err()
