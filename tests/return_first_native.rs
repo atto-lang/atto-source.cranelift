@@ -22,7 +22,8 @@ fn guest(source: &str, extension: &str, args: &[&str]) -> Output {
         options.mode(0o600);
     }
     let mut file = options.open(&path).expect("exclusive fixture creation");
-    file.write_all(source.as_bytes()).expect("write source fixture");
+    file.write_all(source.as_bytes())
+        .expect("write source fixture");
     drop(file);
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("run")
@@ -42,7 +43,10 @@ fn accepts(source: &str, args: &[&str], expected: &str) {
             "{extension} should execute; stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(output.stderr.is_empty(), "successful guest emitted diagnostics");
+        assert!(
+            output.stderr.is_empty(),
+            "successful guest emitted diagnostics"
+        );
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     }
 }
@@ -58,8 +62,14 @@ fn refuses(source: &str, args: &[&str], diagnostic: &str) {
         assert!(output.stdout.is_empty(), "rejected guest emitted stdout");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.starts_with("orescranelift: "), "{stderr}");
-        assert!(stderr.contains(diagnostic), "expected {diagnostic}: {stderr}");
-        assert!(!stderr.contains("panicked at"), "compiler panic is not rejection");
+        assert!(
+            stderr.contains(diagnostic),
+            "expected {diagnostic}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked at"),
+            "compiler panic is not rejection"
+        );
     }
 }
 

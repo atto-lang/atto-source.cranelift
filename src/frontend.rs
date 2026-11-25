@@ -1564,6 +1564,8 @@ pub fn parse(text: &str) -> Result<Program, String> {
             || err.starts_with("expected scalar expression")
             || err.starts_with("invalid character")
             || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
+            || err.starts_with("E_LET_UNSUPPORTED")
+            || err.starts_with("expected scalar fnc or int <-/• declaration")
     }) {
         return original;
     }
@@ -2876,5 +2878,13 @@ end"#;
                 assert!(parse(source).is_ok(), "{source}");
             }
         }
+    }
+
+    #[test]
+    fn canonical_scalar_local_slots_distinguish_const_and_val() {
+        let parsed = parse("fnc main(a:int):int{const c=2;val v=a+c;return v;}").unwrap();
+        assert_eq!(parsed.locals.len(), 1);
+        assert_eq!(parsed.result, Expr::Local(0));
+        assert!(parse("fnc main(a:int):int{int c=a;return c;}").is_err());
     }
 }
