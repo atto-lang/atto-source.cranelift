@@ -18,8 +18,8 @@ test('typed runtime assertions are retained as source', () => {
     'pub fnc not_equal<T: Eq>(T expected, T actual): void',
     'pub fnc fail(String message): void'
   ]) assert.ok(code.includes(signature), signature);
-  assert.equal(code.split('throw new AssertionError(').length - 1, 5);
-  for (const forbidden of ['rt fail(', 'abort(', 'panic(', 'raise(']) {
+  assert.equal(code.split('throw! new AssertionError(').length - 1, 5);
+  for (const forbidden of ['rt fail(', 'abort(', 'panic(', 'raise(', 'panic!', 'raise!', 'throw new']) {
     assert.equal(code.includes(forbidden), false, forbidden);
   }
 });
@@ -33,6 +33,7 @@ test('test assertion outcomes and integer bounds are nonthrowing', () => {
     'actual > high_inclusive'
   ]) assert.ok(code.includes(fragment), fragment);
   assert.equal(code.includes('throw new'), false);
+  assert.equal(code.includes('throw!'), false);
   assert.equal(code.includes('rt fail('), false);
 });
 
