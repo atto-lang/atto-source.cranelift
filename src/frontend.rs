@@ -169,6 +169,8 @@ pub enum Expr {
     ShiftRight8(Box<Expr>),
     /// Evaluate checked scalar expressions in order and keep the final value.
     Seq(Vec<Expr>),
+    InlineTask(Box<Expr>),
+    Sequence(Vec<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -265,7 +267,7 @@ impl<'a> Parser<'a> {
 
     /// True when the next significant byte (after whitespace and line
     /// comments) opens a block. Used for contextual `task`/`nb` blocks.
-    fn next_opens_block(&self) -> bool {
+    fn next_significant_is(&self, expected: u8) -> bool {
         let b = self.input.as_bytes();
         let mut at = self.pos;
         loop {
@@ -290,12 +292,48 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
-            return b.get(at) == Some(&b'{');
+            return b.get(at) == Some(&expected);
+        }
+    }
+    fn next_opens_block(&self) -> bool {
+        self.next_significant_is(b'{')
+    }
+
+    fn next_significant_word_is(&self, expected: &str) -> bool {
+        let b = self.input.as_bytes();
+        let mut at = self.pos;
+        loop {
+            while at < b.len() {
+                let width = whitespace_width(b, at);
+                if width == 0 {
+                    break;
+                }
+                at += width;
+            }
+            if b.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
+                at += 2;
+                while at < b.len() && line_break_width(b, at) == 0 {
+                    at += 1;
+                }
+                continue;
+            }
+            if b.get(at..at.saturating_add(2)) == Some(&b"/*"[..]) {
+                at = match skip_block_comment(b, at) {
+                    Ok(end) => end,
+                    Err(_) => return false,
+                };
+                continue;
+            }
+            let word = expected.as_bytes();
+            return b.get(at..at.saturating_add(word.len())) == Some(word)
+                && b.get(at + word.len())
+                    .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_');
         }
     }
 
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
+        let preceded_by_sync = self.current == Token::Word("sync");
         loop {
             while self.pos < b.len() {
                 let width = whitespace_width(b, self.pos);
@@ -482,8 +520,12 @@ impl<'a> Parser<'a> {
                     "EXECUTION_DOMAIN_UNSUPPORTED: execution domain '{word}' is reserved and not lowered by the Cranelift backend; no implicit CPU fallback"
                 ));
             }
-            if matches!(self.current, Token::Word("task" | "nb")) && self.next_opens_block() {
-                return Err("EXECUTION_DOMAIN_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
+            if (self.current == Token::Word("nb") && self.next_opens_block())
+                || (self.current == Token::Word("task")
+                    && (self.next_opens_block() || self.next_significant_is(b'<'))
+                    && !preceded_by_sync)
+            {
+                return Err("EXECUTION_DOMAIN_UNSUPPORTED: E_TASK_UNSUPPORTED: execution task requires scheduler-aware Future lowering; no implicit inline execution".into());
             }
         } else if matches!(first, b'\'' | b'"' | b'`') {
             self.pos = quoted_source::scan_quoted(self.input, start)?;
@@ -584,6 +626,98 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b')'))?;
         self.node(Expr::Seq(expressions))
     }
+    // Deliberately bounded to the trusted, non-suspending scalar subset.
+    // Every inline return exits this lexical body, not the enclosing main().
+    // Unknown-effect calls, child spawns, loans, cleanup and suspension reject.
+    fn inline_task(&mut self, depth: usize, discard: bool) -> Result<Expr, String> {
+        if depth > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        self.expect(Token::Word("sync"))?;
+        self.expect(Token::Word("task"))?;
+        let payload = if self.take(Token::Punct(b'<'))? {
+            let is_int = if self.take(Token::Word("int"))? {
+                true
+            } else if self.take(Token::Word("void"))? {
+                false
+            } else {
+                return Err(
+                    "E_TASK_RETURN_TYPE: inline scalar tasks accept int or void only".into(),
+                );
+            };
+            self.expect(Token::Punct(b'>'))?;
+            Some(is_int)
+        } else {
+            None
+        };
+        // A discarded inline task is a void-only statement: do not erase
+        // nonvoid payload types, even if the task body has no return.
+        if discard && payload == Some(true) {
+            return Err("E_TASK_RETURN_TYPE: do sync task requires void".into());
+        }
+        self.expect(Token::Punct(b'{'))?;
+        let effects = self.inline_statements(depth + 1)?;
+        let value = if self.take(Token::Word("return"))? {
+            if self.take(Token::Punct(b';'))? {
+                None
+            } else {
+                let value = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b';'))?;
+                Some(value)
+            }
+        } else {
+            None
+        };
+        self.expect(Token::Punct(b'}'))?;
+        if (payload == Some(true) && value.is_none()) || (payload == Some(false) && value.is_some())
+        {
+            return Err("E_TASK_RETURN_TYPE: inline task payload and return do not agree".into());
+        }
+        if discard && value.is_some() {
+            return Err("E_TASK_RETURN_TYPE: do sync task cannot return a value".into());
+        }
+        if !discard && value.is_none() {
+            return Err("E_TASK_RETURN_TYPE: void inline task cannot be used as int".into());
+        }
+        // Internal sentinel is unobservable: void tasks occur only in
+        // discarded statement context, and their result never escapes.
+        let value = match value {
+            Some(v) => v,
+            None => self.node(Expr::Literal(0))?,
+        };
+        let body = if effects.is_empty() {
+            value
+        } else {
+            self.node(Expr::Sequence(effects, Box::new(value)))?
+        };
+        self.node(Expr::InlineTask(Box::new(body)))
+    }
+
+    fn inline_statements(&mut self, depth: usize) -> Result<Vec<Expr>, String> {
+        let mut effects = Vec::new();
+        loop {
+            let do_prefix = self.take(Token::Word("do"))?;
+            if self.current != Token::Word("sync") {
+                if do_prefix {
+                    return Err(
+                        "E_TASK_UNSUPPORTED: do task requires cancellable child lowering".into(),
+                    );
+                }
+                break;
+            }
+            if !do_prefix {
+                return Err("E_SYNTAX: void sync task statement requires do".into());
+            }
+            effects.push(self.inline_task(depth + 1, true)?);
+            // A semicolon after do sync task is optional in the canonical grammar.
+            self.take(Token::Punct(b';'))?;
+            if effects.len() > MAX_NODES {
+                return Err("AST node budget exceeded".into());
+            }
+        }
+        Ok(effects)
+    }
+
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -624,6 +758,12 @@ impl<'a> Parser<'a> {
                     .map_err(|_| "i64 literal out of range")?;
                 self.next()?;
                 self.node(Expr::Literal(value))
+            }
+            Token::Word("sync") => {
+                if !self.next_significant_word_is("task") {
+                    return Err("E_RESERVED: sync is reserved for inline task execution".into());
+                }
+                self.inline_task(depth + 1, false)
             }
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
@@ -926,6 +1066,9 @@ impl<'a> Parser<'a> {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
+                if name == "sync" {
+                    return Err("E_RESERVED: sync is not a legal parameter".into());
+                }
                 if is_java_v1_reserved_parameter_name(&name)
                     || matches!(
                         name.as_str(),
@@ -1101,8 +1244,14 @@ impl<'a> Parser<'a> {
         ) {
             return Err("E_IMMUTABLE_REBIND: local const/val is not rebindable".into());
         }
+        let inline_effects = self.inline_statements(0)?;
         self.expect(Token::Word("return"))?;
-        let result = self.expr(0, 0)?;
+        let value = self.expr(0, 0)?;
+        let result = if inline_effects.is_empty() {
+            value
+        } else {
+            self.node(Expr::Sequence(inline_effects, Box::new(value)))?
+        };
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         while self.current == Token::Word("export") {
@@ -1353,7 +1502,16 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((item, level + 1));
                 }
             }
-            Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
+            Expr::Sequence(prefix, last) => {
+                if prefix.len() > MAX_NODES {
+                    return Err("AST node budget exceeded".into());
+                }
+                pending.push((last.as_ref(), level + 1));
+                for part in prefix {
+                    pending.push((part, level + 1));
+                }
+            }
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
             Expr::Add(left, right)
@@ -1391,6 +1549,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
             }
             Ok(last)
         }
+        Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
@@ -1513,7 +1672,6 @@ pub fn parse(text: &str) -> Result<Program, String> {
             || err.starts_with("invalid character")
             || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
             || err.starts_with("E_LET_UNSUPPORTED")
-            || err.starts_with("expected scalar fnc or int <-/• declaration")
     }) {
         return original;
     }
@@ -1987,6 +2145,14 @@ end"#;
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
             Expr::Local(_) => Err("test evaluator does not execute runtime local sequences"),
+            Expr::InlineTask(body) => eval(body, args),
+            Expr::Sequence(prefix, last) => {
+                for part in prefix {
+                    eval(part, args)?;
+                }
+                eval(last, args)
+            }
+
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
@@ -2733,5 +2899,101 @@ end"#;
         assert_eq!(parsed.locals.len(), 1);
         assert_eq!(parsed.result, Expr::Local(0));
         assert!(parse("fnc main(a:int):int{int c=a;return c;}").is_err());
+    }
+
+    #[test]
+    fn inline_sync_task_scalar_semantics_and_fail_closed_admission() {
+        for (source, arguments, expected) in [
+            (
+                "fnc main():int { do sync task {}; return 42; }",
+                &[][..],
+                42,
+            ),
+            (
+                "fnc main():int { do sync task<void> { return; }; return 42; }",
+                &[],
+                42,
+            ),
+            (
+                "fnc main():int { return sync task<int> { return 40+2; }; }",
+                &[],
+                42,
+            ),
+            (
+                "fnc main(x:int):int { return 1 + sync /*ok*/ task<int> { return x; }; }",
+                &[41],
+                42,
+            ),
+            (
+                "fnc main():int { return sync task { return sync task<int> { return 42; }; }; }",
+                &[],
+                42,
+            ),
+            (
+                "fnc main():int { do sync task { do sync task<void> { return; }; return; }; return 42; }",
+                &[],
+                42,
+            ),
+            (
+                "fnc main():int { do sync task { do sync task {}; return; } return 42; }",
+                &[],
+                42,
+            ),
+        ] {
+            let p = parse(source).expect("non-suspending inline scalar task");
+            assert_eq!(eval(&p.result, arguments), Ok(expected), "{source}");
+        }
+        for source in [
+            "fnc main():int { return task<int> { return 42; }; }",
+            "fnc main():int { return task /*c*/ <int> { return 42; }; }",
+            "fnc main():int { do task<int> { return 42; }; return 0; }",
+            "fnc main():int { return await task<int> { return 42; }; }",
+            "fnc main():int { sync task {}; return 42; }",
+            "fnc main():int { sync task<void> {}; return 42; }",
+            "fnc main():int { return sync task {}; }",
+            "fnc main():int { return sync task<void> { return; }; }",
+            "fnc main():int { return sync task<int> {}; }",
+            "fnc main():int { return sync task<int> { return; }; }",
+            "fnc main():int { do sync task<int> {}; return 0; }",
+            "fnc main():int { do sync task<int> { return 7; }; return 0; }",
+            "fnc main():int { do sync task { return 7; }; return 0; }",
+            "fnc main():int { do sync task { return sync task<int> { return 7; }; }; return 0; }",
+            "fnc main():int { do sync task<void> { return 7; }; return 0; }",
+            "fnc main():int { do sync task { await task<int> { return 1; }; } return 0; }",
+            "fnc main():int { return sync task<int> { defer 1; return 42; }; }",
+            "fnc main():int { return sync task<int> { task<int> {return 1;}; return 42; }; }",
+            "fnc main():int { return sync task<int> { return 7; }; sync task {}; }",
+        ] {
+            assert!(
+                parse(source).is_err(),
+                "unsupported guest task admitted: {source}"
+            );
+        }
+        for source in [
+            "fnc main():int { do sync task<int> {}; return 42; }",
+            "fnc main():int { do sync task<int> { return 1; }; return 42; }",
+            "fnc main():int { do sync task { return 1; }; return 42; }",
+            "fnc main():int { do sync task<void> { return 1; }; return 42; }",
+        ] {
+            let diagnostic = parse(source).expect_err("nonvoid do-sync must be rejected");
+            assert!(
+                diagnostic.contains("E_TASK_RETURN_TYPE"),
+                "{source}: {diagnostic}"
+            );
+        }
+        for source in [
+            "fnc main():int { sync task {}; return 42; }",
+            "fnc main():int { sync task<void> {}; return 42; }",
+        ] {
+            let diagnostic = parse(source).expect_err("bare inline-void task must be rejected");
+            assert!(diagnostic.contains("E_SYNTAX"), "{source}: {diagnostic}");
+        }
+        let e = parse("fnc main(sync:int):int { return sync; }")
+            .expect_err("reserved sync cannot be a parameter");
+        assert!(e.contains("E_RESERVED"), "{e}");
+        let good = parse("fnc main(sync_data:int):int { return sync_data; }").unwrap();
+        assert_eq!(eval(&good.result, &[42]), Ok(42));
+        let commented = parse("fnc main():int { /* do sync task<int> { } */ return 42; }").unwrap();
+        assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
 }

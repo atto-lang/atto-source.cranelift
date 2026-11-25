@@ -202,7 +202,16 @@ fn validate_guest_expr(
             Expr::Local(_) => {
                 return Err("invalid or forward local reference before native codegen".into());
             }
-            Expr::Neg(x) | Expr::ShiftRight8(x) => work.push((x, depth + 1)),
+            Expr::Sequence(prefix, last) => {
+                if prefix.len() > 4096 {
+                    return Err("AST node budget exceeded before native codegen".into());
+                }
+                work.push((last, depth + 1));
+                for part in prefix.iter().rev() {
+                    work.push((part, depth + 1));
+                }
+            }
+            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -234,6 +243,37 @@ fn emit(
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         Local(i) => locals[*i],
+        InlineTask(body) => emit(
+            body,
+            b,
+            params,
+            locals,
+            error,
+            divisor_error,
+            negative_exponent_error,
+        ),
+        Sequence(prefix, last) => {
+            for part in prefix {
+                emit(
+                    part,
+                    b,
+                    params,
+                    locals,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                );
+            }
+            emit(
+                last,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            )
+        }
         Seq(parts) => {
             // The source/host-AST gate guarantees a nonempty bounded list.
             // Emit every member: checked errors on discarded entries MUST
