@@ -180,7 +180,9 @@ fn run_linked_native(
         return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
     }
     if !matches!(mode, "check" | "ir" | "run") {
-        return Err("E_LINK_MODE_UNSUPPORTED: linked scalar graphs support check, ir, and run only".into());
+        return Err(
+            "E_LINK_MODE_UNSUPPORTED: linked scalar graphs support check, ir, and run only".into(),
+        );
     }
     linked_native::validate(functions)?;
     if mode == "check" {
