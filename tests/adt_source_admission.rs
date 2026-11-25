@@ -118,7 +118,7 @@ fn scalar_control_still_executes_and_emits_clif() {
 
 #[test]
 fn type_only_patterns_refuse_before_ir_or_jit() {
-    for (source, expected_diagnostic) in [
+    for (source, diagnostic) in [
         (
             b"define pattern P as end".as_slice(),
             "native type-only ADT pattern lowering unsupported",
@@ -132,7 +132,8 @@ fn type_only_patterns_refuse_before_ir_or_jit() {
             let output = invoke(mode, source);
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());
-            assert!(String::from_utf8_lossy(&output.stderr).contains(expected_diagnostic));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(diagnostic), "{mode}: {stderr}");
         }
     }
 }
