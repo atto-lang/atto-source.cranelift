@@ -165,6 +165,8 @@ pub enum Expr {
     NamedMod(Box<Expr>, Box<Expr>),
     NamedPow(Box<Expr>, Box<Expr>),
     ShiftRight8(Box<Expr>),
+    /// Evaluate checked scalar expressions in order and keep the final value.
+    Seq(Vec<Expr>),
 }
 
 #[derive(Debug)]
@@ -550,6 +552,31 @@ impl<'a> Parser<'a> {
         }
         Ok(x)
     }
+    /// Sequences are scoped, never tuples or callable argument lists.
+    /// Even unused earlier values must retain arithmetic trap behavior.
+    fn sequence(&mut self, depth: usize) -> Result<Expr, String> {
+        if depth > MAX_DEPTH {
+            return Err("expression depth budget exceeded".into());
+        }
+        if self.current == Token::Punct(b')') {
+            return Err("E_SEQ_EMPTY: sequence must have at least one expression".into());
+        }
+        let mut expressions = Vec::new();
+        loop {
+            if expressions.len() >= 16 {
+                return Err("E_SEQ_LIMIT: at most 16 scalar expressions per sequence".into());
+            }
+            if matches!(self.current, Token::Punct(b',' | b';' | b')') | Token::End) {
+                return Err("E_SEQ_COMMA: missing scalar sequence expression".into());
+            }
+            expressions.push(self.expr(0, depth + 1)?);
+            if !self.take(Token::Punct(b','))? {
+                break;
+            }
+        }
+        self.expect(Token::Punct(b')'))?;
+        self.node(Expr::Seq(expressions))
+    }
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -568,7 +595,14 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'+'))? {
             return self.atom(depth + 1);
         }
+        if self.take(Token::Word("seq"))? {
+            self.expect(Token::Punct(b'('))?;
+            return self.sequence(depth + 1);
+        }
         if self.take(Token::Punct(b'('))? {
+            if self.take(Token::Punct(b'>'))? {
+                return self.sequence(depth + 1);
+            }
             let e = self.expr(0, depth + 1)?;
             self.expect(Token::Punct(b')'))?;
             return Ok(e);
@@ -913,6 +947,7 @@ impl<'a> Parser<'a> {
                             | "io"
                             | "stdio"
                             | "print"
+                            | "seq"
                     )
                     || self.parameters.contains(&name)
                 {
@@ -1186,14 +1221,29 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
 
 // The parser recursion budget does not bound a long left-associative chain.
 // This bounded, iterative traversal rejects an oversized constructed AST.
-fn validate_ast_depth(root: &Expr) -> Result<(), String> {
+pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
     let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    let mut counted_nodes = 0usize;
     while let Some((expr, level)) = pending.pop() {
+        counted_nodes += 1;
+        if counted_nodes > MAX_NODES {
+            return Err("AST node budget exceeded".into());
+        }
         if level > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
         }
         match expr {
-            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Literal(_) => {}
+            Expr::Param(i) if *i < MAX_PARAMS => {}
+            Expr::Param(_) => return Err("invalid scalar parameter index".into()),
+            Expr::Seq(items) => {
+                if items.is_empty() || items.len() > 16 {
+                    return Err("E_SEQ_LIMIT: invalid scalar sequence arity".into());
+                }
+                for item in items.iter().rev() {
+                    pending.push((item, level + 1));
+                }
+            }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
@@ -1799,6 +1849,13 @@ end"#;
             }
             Expr::NamedPow(a, b) => checked_pow(eval(a, args)?, eval(b, args)?),
             Expr::ShiftRight8(x) => Ok(eval(x, args)? >> 8),
+            Expr::Seq(parts) => {
+                let mut result = None;
+                for part in parts {
+                    result = Some(eval(part, args)?);
+                }
+                result.ok_or("invalid_sequence")
+            }
         }
     }
     #[test]
@@ -2458,5 +2515,55 @@ end"#;
         assert!(!has_actor_pubsub_surface(
             "// runtime_pubsub.publish\rfnc main():int{return 1;}"
         ));
+    }
+
+    #[test]
+    fn scoped_scalar_seq_model_preserves_source_order_and_rejects_invalid_arity() {
+        for expression in [
+            "seq(42)",
+            "seq(1,2,42)",
+            "(> 1,2,42)",
+            "seq(1,seq(2,42))",
+            "seq(1,(> 2,42))",
+            "seq(1,2)+40",
+            "seq(1,Integer.bitAnd(3,1),42)",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let parsed = parse(&source).expect("scoped scalar seq must parse");
+            assert_eq!(eval(&parsed.result, &[]), Ok(42), "{source}");
+        }
+        for expression in [
+            "seq()",
+            "(>)",
+            "seq(1,)",
+            "(> 1,)",
+            "seq(,1)",
+            "seq(1,,2)",
+            "seq(1;2)",
+            "(1,2)",
+            "seq 1,2",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            assert!(
+                parse(&source).is_err(),
+                "{source}: invalid seq was admitted"
+            );
+        }
+        let too_many = format!(
+            "fnc main():int{{return seq({});}}",
+            (0..17).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
+        assert!(parse(&too_many).unwrap_err().contains("E_SEQ_LIMIT"));
+        assert!(parse("fnc main(seq:int):int{return seq;}").is_err());
+        let model_trap = parse("fnc main():int{return seq(9223372036854775807+1,42);}")
+            .expect("arithmetic trapping sequence has valid syntax");
+        assert_eq!(eval(&model_trap.result, &[]), Err("overflow"));
+        let zero_divisor = parse("fnc main():int{return seq(Integer.rem(8,0),42);}")
+            .expect("guarded remainder syntax");
+        assert_eq!(eval(&zero_divisor.result, &[]), Err("divisor_zero"));
+        // These Program expressions may also be constructed without parsing;
+        // the recursive native emitter must never receive unsafe arities.
+        assert!(validate_ast_depth(&Expr::Seq(vec![])).is_err());
+        assert!(validate_ast_depth(&Expr::Seq(vec![Expr::Literal(1); 17])).is_err());
     }
 }
