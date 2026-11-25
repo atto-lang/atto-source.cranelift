@@ -41,7 +41,10 @@ fn accepts(source: &str, args: &[&str], expected: &str) {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
-        assert!(out.stderr.is_empty(), "successful guest emitted diagnostics");
+        assert!(
+            out.stderr.is_empty(),
+            "successful guest emitted diagnostics"
+        );
     }
 }
 
@@ -53,11 +56,17 @@ fn refuses(source: &str, args: &[&str], category: &str) {
             Some(1),
             "{extension}: compiler rejection must exit(1)"
         );
-        assert!(out.stdout.is_empty(), "rejected source produced guest stdout");
+        assert!(
+            out.stdout.is_empty(),
+            "rejected source produced guest stdout"
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.starts_with("orescranelift: "), "{stderr}");
         assert!(stderr.contains(category), "expected {category}: {stderr}");
-        assert!(!stderr.contains("panicked at"), "compiler panic is not rejection");
+        assert!(
+            !stderr.contains("panicked at"),
+            "compiler panic is not rejection"
+        );
     }
 }
 
@@ -65,16 +74,48 @@ fn refuses(source: &str, args: &[&str], category: &str) {
 fn local_immutable_ssa_executes_in_native_jit() {
     for (source, args, expected) in [
         ("fnc main():int{int a=7;return a*6;}", &[][..], "42\n"),
-        ("fnc main():int{int a=7;val b=a+35;return b;}", &[][..], "42\n"),
-        ("fnc main():int{const a=7;const b=a*6;return b;}", &[][..], "42\n"),
+        (
+            "fnc main():int{int a=7;val b=a+35;return b;}",
+            &[][..],
+            "42\n",
+        ),
+        (
+            "fnc main():int{const a=7;const b=a*6;return b;}",
+            &[][..],
+            "42\n",
+        ),
         ("fnc main():int{const int a=7;return a*6;}", &[][..], "42\n"),
         ("fnc main():int{const a:int=7;return a*6;}", &[][..], "42\n"),
-        ("fnc main():int{val a=7 as int;return a*6;}", &[][..], "42\n"),
-        ("fnc main(x:int):int{val a=x+1;val b=a*2;return b;}", &["20"][..], "42\n"),
-        ("fnc main(a:int,b:int):int{val c=Integer.rem(a,b);return c+41;}", &["9", "4"][..], "42\n"),
-        ("fnc main():int{int x=42;int y=1;return x;}", &[][..], "42\n"),
-        ("fnc main():int{const x=-9223372036854775808;return x;}", &[][..], "-9223372036854775808\n"),
-        ("fnc main():int{int x=7;return x as int * 6;}", &[][..], "42\n"),
+        (
+            "fnc main():int{val a=7 as int;return a*6;}",
+            &[][..],
+            "42\n",
+        ),
+        (
+            "fnc main(x:int):int{val a=x+1;val b=a*2;return b;}",
+            &["20"][..],
+            "42\n",
+        ),
+        (
+            "fnc main(a:int,b:int):int{val c=Integer.rem(a,b);return c+41;}",
+            &["9", "4"][..],
+            "42\n",
+        ),
+        (
+            "fnc main():int{int x=42;int y=1;return x;}",
+            &[][..],
+            "42\n",
+        ),
+        (
+            "fnc main():int{const x=-9223372036854775808;return x;}",
+            &[][..],
+            "-9223372036854775808\n",
+        ),
+        (
+            "fnc main():int{int x=7;return x as int * 6;}",
+            &[][..],
+            "42\n",
+        ),
     ] {
         accepts(source, args, expected);
     }
@@ -87,11 +128,26 @@ fn invalid_local_declarations_fail_before_jit() {
         ("fnc main():int{int a=b;int b=7;return a;}", "unbound"),
         ("fnc main():int{int a=7;val a=8;return a;}", "duplicate"),
         ("fnc main(x:int):int{int x=7;return x;}", "duplicate"),
-        ("fnc main(x:int):int{const a=x;return a;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main(x:int):int{int a=x+1;val b=a*2;return b;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main(x:int):int{val a=x;const b=a;return b;}", "E_NON_CONST_INITIALIZER"),
-        ("fnc main():int{const a=9223372036854775807+1;return a;}", "E_CONST_OVERFLOW"),
-        ("fnc main():int{int a=1;a=2;return a;}", "E_IMMUTABLE_REBIND"),
+        (
+            "fnc main(x:int):int{const a=x;return a;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main(x:int):int{int a=x+1;val b=a*2;return b;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main(x:int):int{val a=x;const b=a;return b;}",
+            "E_NON_CONST_INITIALIZER",
+        ),
+        (
+            "fnc main():int{const a=9223372036854775807+1;return a;}",
+            "E_CONST_OVERFLOW",
+        ),
+        (
+            "fnc main():int{int a=1;a=2;return a;}",
+            "E_IMMUTABLE_REBIND",
+        ),
         ("fnc main():int{let a=1;return a;}", "E_LET_UNSUPPORTED"),
     ] {
         refuses(source, &[], category);
