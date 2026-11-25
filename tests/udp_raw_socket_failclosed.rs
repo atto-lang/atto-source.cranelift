@@ -48,7 +48,7 @@ fn raw_udp_guest_requires_explicit_compiler_lowering() {
         "fnc main():int{return std.net.udp.bind(0);}",
     ] {
         let source = Input::new(src);
-        for mode in ["check", "run"] {
+        for mode in ["check", "run", "ir"] {
             let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
                 .arg(mode).arg(&source.0).output()
                 .expect("launch actual Cranelift compiler");
