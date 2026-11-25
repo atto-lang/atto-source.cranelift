@@ -67,3 +67,26 @@ cargo run --locked -- ir tests/fixtures/clients-scalar-v1/01-precedence.ores
 **Evidence status:** these commands are test instructions, not a claim they ran successfully in this canonical repository. The [native GitHub Actions workflow](.github/workflows/native-cranelift.yml) must show assigned jobs, nonzero executed steps, native guest results and an exact source SHA before recording any capability as passed. A mirror in another private organization requires the same blob SHA proof and explicit runner logs. The repository inventory remains `NOT_CERTIFIED` with `not_executed` statuses until then.
 
 This compiler does **not** currently support full AOT, actor-language compilation, untrusted-isolate sandboxing, ownership-bang lowering, the complete Atto parser, or five-backend parity. It is a stage-0 **trusted** scalar JIT, not a substitute for LLVM/Forge/Java backend verification. No Python scripts or test harnesses are imported.
+
+### Scalar AOT objects and scoped spans
+
+`emit-object file.atto > guest.o` compiles a verified scalar function to a
+relocatable object for the host target. Link it to a native host that calls
+`int32_t oreslang_scalar_entry(int64_t a, int64_t b, int64_t c, int64_t d,
+int64_t *result)`. Supply the declared source arguments in order and pad
+unused arguments with zero. Status 0 writes a result. Status 1, 2 or 3
+signals checked overflow, division by zero or a negative exponent.
+
+The scalar body admits nested and fallthrough
+`using telemetry.span("checkout") as span { ... }` scopes with literal names.
+The object references `ores_native_telemetry_span_begin` and
+`ores_native_telemetry_span_end` when the guest uses spans. Link those
+symbols from a compatible hosted runtime. The compiler closes live scopes
+before returning a result or a checked error status.
+
+`run-traced file.atto [i64 args...]` runs the scalar JIT and writes bounded
+span receipts to stderr. Ordinary `run` defaults to recording off. The
+`full-aot` command remains reserved for executable linking and whole-program
+closure.
+
+Current scoped spans are brace-delimited; runtime local initializers and inline-prefix composition with scoped spans remain unsupported. Full executable linking remains denied.

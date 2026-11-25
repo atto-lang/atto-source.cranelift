@@ -178,6 +178,13 @@ pub struct Program {
     pub parameters: Vec<String>,
     pub locals: Vec<Expr>,
     pub result: Expr,
+    pub trace_steps: Vec<TraceStep>,
+}
+
+#[derive(Debug)]
+pub enum TraceStep {
+    Begin(String),
+    End,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1244,16 +1251,26 @@ impl<'a> Parser<'a> {
         ) {
             return Err("E_IMMUTABLE_REBIND: local const/val is not rebindable".into());
         }
-        let inline_effects = self.inline_statements(0)?;
-        self.expect(Token::Word("return"))?;
-        let value = self.expr(0, 0)?;
-        let result = if inline_effects.is_empty() {
-            value
+        let mut trace_steps = Vec::new();
+        let result = if self.current == Token::Word("using") {
+            if !self.local_initializers.is_empty() {
+                return Err("E_TELEMETRY_SCOPE: scoped telemetry with runtime local initializers is not lowered".into());
+            }
+            self.scalar_body(&mut trace_steps, &mut Vec::new())?
+                .ok_or("scalar main requires a return")?
         } else {
-            self.node(Expr::Sequence(inline_effects, Box::new(value)))?
+            let inline_effects = self.inline_statements(0)?;
+            self.expect(Token::Word("return"))?;
+            let value = self.expr(0, 0)?;
+            let result = if inline_effects.is_empty() {
+                value
+            } else {
+                self.node(Expr::Sequence(inline_effects, Box::new(value)))?
+            };
+            self.expect(Token::Punct(b';'))?;
+            self.expect(Token::Punct(b'}'))?;
+            result
         };
-        self.expect(Token::Punct(b';'))?;
-        self.expect(Token::Punct(b'}'))?;
         while self.current == Token::Word("export") {
             if seen_export {
                 return Err("EXPORT_DUPLICATE: main".into());
@@ -1290,7 +1307,78 @@ impl<'a> Parser<'a> {
             parameters: self.parameters,
             locals: self.local_initializers,
             result,
+            trace_steps,
         })
+    }
+    // The scalar profile supports one reachable return. Each preceding scope
+    // either falls through before that return, or surrounds its evaluation.
+    fn scalar_body(
+        &mut self,
+        trace_steps: &mut Vec<TraceStep>,
+        aliases: &mut Vec<String>,
+    ) -> Result<Option<Expr>, String> {
+        let mut result = None;
+        while self.take(Token::Word("using"))? {
+            if result.is_some() || aliases.len() == 16 || trace_steps.len() >= 128 {
+                return Err("E_TELEMETRY_SCOPE: unreachable scope or scope budget exceeded".into());
+            }
+            self.expect(Token::Word("telemetry"))?;
+            self.expect(Token::Punct(b'.'))?;
+            self.expect(Token::Word("span"))?;
+            self.expect(Token::Punct(b'('))?;
+            let Token::Quoted(raw) = self.current else {
+                return Err("E_TELEMETRY_NAME: expected a span name literal".into());
+            };
+            let operation = raw
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 256
+                        && !s.contains('\\')
+                        && !s.chars().any(char::is_control)
+                })
+                .ok_or(
+                    "E_TELEMETRY_NAME: expected 1..256 UTF-8 bytes without escapes or controls",
+                )?;
+            self.next()?;
+            self.expect(Token::Punct(b')'))?;
+            self.expect(Token::Word("as"))?;
+            let alias = self.name()?;
+            if alias == "_"
+                || aliases.contains(&alias)
+                || self.parameters.contains(&alias)
+                || self.bindings.iter().any(|(name, _, _)| name == &alias)
+                || is_java_v1_reserved_parameter_name(&alias)
+            {
+                return Err(
+                    "E_TELEMETRY_ALIAS: opaque span alias shadows an active binding".into(),
+                );
+            }
+            self.expect(Token::Punct(b'{'))?;
+            trace_steps.push(TraceStep::Begin(operation.to_owned()));
+            aliases.push(alias);
+            result = self.scalar_body(trace_steps, aliases)?;
+            aliases.pop();
+            if result.is_none() {
+                if trace_steps.len() >= 128 {
+                    return Err("E_TELEMETRY_SCOPE: scope budget exceeded".into());
+                }
+                trace_steps.push(TraceStep::End);
+            }
+        }
+        if self.take(Token::Word("return"))? {
+            let expression = self.expr(0, 0)?;
+            validate_ast_depth(&expression)?;
+            self.expect(Token::Punct(b';'))?;
+            // A tail fallback after a returning using scope is unreachable.
+            // Check its syntax and names without adding it to executable IR.
+            if result.is_none() {
+                result = Some(expression);
+            }
+        }
+        self.expect(Token::Punct(b'}'))?;
+        Ok(result)
     }
 }
 
@@ -2995,5 +3083,21 @@ end"#;
         assert_eq!(eval(&good.result, &[42]), Ok(42));
         let commented = parse("fnc main():int { /* do sync task<int> { } */ return 42; }").unwrap();
         assert_eq!(eval(&commented.result, &[]), Ok(42));
+    }
+
+    #[test]
+    fn scoped_telemetry_is_bounded_and_does_not_hide_runtime_locals() {
+        let program =
+            parse("fnc main():int{using telemetry.span(\"outer\") as span{return 42;}}").unwrap();
+        assert!(matches!(&program.trace_steps[..], [TraceStep::Begin(name)] if name == "outer"));
+        let plain = parse("fnc main():int{return 42;}").unwrap();
+        assert!(plain.trace_steps.is_empty());
+        for source in [
+            "fnc main(a:int):int{val x=a;using telemetry.span(\"s\") as span{return x;}}",
+            "fnc main():int{using telemetry.span(\"\") as span{return 42;}}",
+            "fnc main(a:int):int{using telemetry.span(\"s\") as a{return 42;}}",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
     }
 }

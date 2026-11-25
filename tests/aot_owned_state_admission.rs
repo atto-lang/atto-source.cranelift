@@ -38,7 +38,7 @@ fn full_aot_requests_cannot_fall_back_to_jit_or_create_artifacts() {
         assert!(output.stdout.is_empty(), "{mode}: unexpected guest result");
         let diagnostic = String::from_utf8_lossy(&output.stderr);
         assert!(
-            diagnostic.contains("full AOT object/executable emission is not implemented")
+            diagnostic.contains("full AOT executable linking is not implemented")
                 && diagnostic.contains("refusing JIT fallback"),
             "{mode}: {diagnostic}"
         );

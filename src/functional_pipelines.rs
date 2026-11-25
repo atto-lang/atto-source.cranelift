@@ -527,5 +527,6 @@ pub fn parse(source: &str) -> Result<Program, String> {
         parameters: Vec::new(),
         locals: Vec::new(),
         result,
+        trace_steps: Vec::new(),
     })
 }
