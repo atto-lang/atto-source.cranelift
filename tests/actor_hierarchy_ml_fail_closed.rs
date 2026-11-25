@@ -449,7 +449,7 @@ fn input_rejection_is_specific_and_emits_no_guest_output() {
         (
             "nul-source",
             b"fnc main():int{return 42;}\0".to_vec(),
-            "source contains NUL byte",
+            "source_nul at byte 26",
         ),
     ];
     for (label, bytes, diagnostic) in cases {

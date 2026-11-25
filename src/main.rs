@@ -1,24 +1,101 @@
 // Host-only STOP ledger; no guest supervisor lowering.
+#[allow(dead_code)]
+mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
+mod functional_pipelines;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
 mod owned_region;
 #[allow(dead_code)]
-mod actor_isolation_access_v1;
+mod result_int_parse_v1;
+// Backend-local trusted host primitive; guest lowering pending.
+mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
 pub mod uhl1;
 use std::io::Read;
 
+// Resolve source paths through openat directory descriptors with O_NOFOLLOW at
+// EVERY component, not just the leaf. A symlink swap between path validation
+// and open must not redirect compiler input outside the expected tree.
+#[cfg(unix)]
+fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut directory = std::fs::File::open(if path.is_absolute() { "/" } else { "." })
+        .map_err(|e| format!("source root: {e}"))?;
+    let mut segments = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => segments.push(name),
+            // No ambiguous escape or normalization through ".." is accepted.
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err("source parent traversal is unsupported".into());
+            }
+        }
+    }
+    if segments.is_empty() {
+        return Err("source file path is empty".into());
+    }
+
+    for (index, segment) in segments.iter().enumerate() {
+        let name = CString::new(segment.as_bytes()).map_err(|_| "source path contains NUL")?;
+        let final_component = index + 1 == segments.len();
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | if final_component {
+                libc::O_NONBLOCK
+            } else {
+                libc::O_DIRECTORY
+            };
+        // SAFETY: directory is an owned live descriptor; name is a valid NUL-
+        // terminated segment. File::from_raw_fd takes ownership of successful fd.
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            if final_component && error.raw_os_error() == Some(libc::ELOOP) {
+                return Err("source must be a regular file (symlinks forbidden)".into());
+            }
+            return Err(format!("source path component denied: {error}"));
+        }
+        directory = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    if !directory.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("source must be a regular file".into());
+    }
+    Ok(directory)
+}
+
+#[cfg(not(unix))]
+fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    if std::fs::symlink_metadata(path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("source symlinks forbidden".into());
+    }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("source must be a regular file".into());
+    }
+    Ok(file)
+}
+
 fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
     let mode = argv.next().ok_or(
-        "usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+        "usage: orescranelift run|ir|isolate|check <file.atto|file.ores> [i64 args...] or hotload-capabilities",
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
@@ -34,8 +111,8 @@ fn run() -> Result<(), String> {
     if mode == "aot" || mode == "full-aot" {
         return Err("full AOT object/executable emission is not implemented by the Cranelift scalar backend; refusing JIT fallback".into());
     }
-    if mode != "run" && mode != "ir" && mode != "isolate" {
-        return Err("usage: orescranelift run|ir|isolate <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
+    if mode != "run" && mode != "ir" && mode != "isolate" && mode != "check" {
+        return Err("usage: orescranelift run|ir|isolate|check <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
@@ -43,8 +120,8 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if mode == "ir" && !supplied.is_empty() {
-        return Err("ir mode does not accept arguments".into());
+    if (mode == "ir" || mode == "check") && !supplied.is_empty() {
+        return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
@@ -60,31 +137,7 @@ fn run() -> Result<(), String> {
                 .map_err(|_| "invalid i64 argument".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // Nonblocking admission is essential before descriptor-level validation:
-    // File::open on a FIFO (including a symlink to a FIFO) otherwise parks.
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Reject a symlink leaf to prevent a caller-controlled source path from
-        // resolving to a different file (or a special device) at open time.
-        options.custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    }
-    // Reject a final-component symlink before opening. On Unix O_NOFOLLOW
-    // closes the check/open race, including a symlink swapped in afterward.
-    // Intermediate path-component symlinks remain outside this boundary.
-    if std::fs::symlink_metadata(&path)
-        .map_err(|e| e.to_string())?
-        .file_type()
-        .is_symlink()
-    {
-        return Err("source must be a regular file (symlinks forbidden)".into());
-    }
-    let file = options.open(&path).map_err(|e| e.to_string())?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-        return Err("source must be a regular file".into());
-    }
+    let file = open_source_file(&path)?;
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1)
         .read_to_end(&mut bytes)
@@ -93,7 +146,23 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
-    let parsed = frontend::parse(source)?;
+    let parsed = match frontend::parse(source) {
+        Ok(program) => program,
+        Err(original)
+            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+        {
+            // The independent pure parser must share the outer admission gates.
+            frontend::validate_source_envelope(source)?;
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+        }
+        Err(original) => return Err(original),
+    };
+    // Parser-only admission: never create a JIT module, write CLIF or execute.
+    // A successful check is NOT a native compilation or guest-execution receipt.
+    if mode == "check" {
+        return Ok(());
+    }
     if mode == "run" && values.len() != parsed.parameters.len() {
         return Err("runtime argument count mismatch".into());
     }
@@ -102,13 +171,18 @@ fn run() -> Result<(), String> {
             "isolate mode expects a two-argument (old, delta) entry and two tenant deltas".into(),
         );
     }
+    // IR inspection must not allocate/finalize executable JIT memory.
+    if mode == "ir" {
+        print!("{}", backend::render_ir(&parsed)?);
+        return Ok(());
+    }
     let compiled = backend::compile(&parsed)?;
     if mode == "isolate" {
         // Experimental *trusted* native scalar VM entry. The source must
         // accept (old, delta) i64; this is NOT a sandbox or actor scheduler.
         let vm = isolate::OresVM::new(2)?;
-        let a = vm.create_isolate("tenant-a", 1, 1)?;
-        let b = vm.create_isolate("tenant-b", 1, 1)?;
+        let a = vm.create_tenant_vm("tenant-a", 1, 1)?;
+        let b = vm.create_tenant_vm("tenant-b", 1, 1)?;
         vm.start(&a)?;
         vm.start(&b)?;
         let actor_a = vm.register_actor(&a, 1)?;
@@ -146,8 +220,6 @@ fn run() -> Result<(), String> {
         vm.complete_shutdown(&b)?;
         vm.destroy(&b)?;
         println!("{left} {right}");
-    } else if mode == "ir" {
-        print!("{}", compiled.clif);
     } else {
         println!("{}", compiled.run(&values)?);
     }

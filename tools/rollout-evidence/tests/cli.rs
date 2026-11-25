@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const REPOSITORY: &str = "ores-truffle-oreslang/oreslang-source.cranelift";
+const REPOSITORY: &str = "atto-lang/atto-source.cranelift";
 const CASES: &str = include_str!("../cases.tsv");
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -9,7 +9,7 @@ struct Receipt(std::path::PathBuf);
 impl Receipt {
     fn new(contents: &[u8]) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "ores-receipt-{}-{}",
+            "atto-receipt-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -35,7 +35,7 @@ impl Drop for Receipt {
     }
 }
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ores-rollout-evidence"))
+    Command::new(env!("CARGO_BIN_EXE_atto-rollout-evidence"))
 }
 
 #[test]

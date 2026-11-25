@@ -2,7 +2,7 @@
 use std::collections::BTreeSet;
 use std::io::Read;
 
-const REPOSITORY: &str = "ores-truffle-oreslang/oreslang-source.cranelift";
+const REPOSITORY: &str = "atto-lang/atto-source.cranelift";
 const CASES: &str = include_str!("../cases.tsv");
 const LIMIT: u64 = 1024 * 1024;
 const HEADER: &str = "repository\tsuite\tbackend\tphase\toutcome\tcommit\ttree\tcorpus_sha256\trun_id\tjob_id\tsteps\ttests\texit_code\tartifact_sha256";
@@ -109,7 +109,7 @@ fn run() -> Result<(), String> {
     }
     if args.len() != 4 {
         return Err(
-            "usage: ores-rollout-evidence RECEIPT.tsv COMMIT TREE CORPUS_SHA256; or --cases".into(),
+            "usage: atto-rollout-evidence RECEIPT.tsv COMMIT TREE CORPUS_SHA256; or --cases".into(),
         );
     }
     let file = std::fs::File::open(&args[0]).map_err(|e| e.to_string())?;
