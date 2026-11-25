@@ -9,7 +9,17 @@ fn invoke(source: &str, mode: &str) -> std::process::Output {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path=std::env::temp_dir().join(format!(
         "atto-cranelift-library-{}-{id}.atto",std::process::id()));
-    std::fs::write(&path,source).expect("write isolated candidate");
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).expect("exclusive candidate");
+    file.write_all(source.as_bytes()).expect("write candidate");
+    drop(file);
     let output=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg(mode).arg(&path).output().expect("run compiler");
     std::fs::remove_file(path).expect("cleanup");
@@ -27,7 +37,7 @@ fn canonical_and_legacy_library_imports_are_rejected_before_ir() {
         let source=format!(
             "import module library from \"{spec}\";\nfnc main(): int {{ return 42; }}"
         );
-        for mode in ["run","ir"] {
+        for mode in ["check", "run", "ir"] {
             let output=invoke(&source,mode);
             assert!(!output.status.success(), "{mode} accepted {spec}");
             assert!(output.stdout.is_empty(), "{mode} emitted an artifact for {spec}");
