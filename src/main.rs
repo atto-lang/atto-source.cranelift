@@ -1,13 +1,18 @@
 // Host-only STOP ledger; no guest supervisor lowering.
+#[allow(dead_code)]
+mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
+mod functional_pipelines;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
 mod owned_region;
 #[allow(dead_code)]
-mod actor_isolation_access_v1;
+mod result_int_parse_v1;
+// Backend-local trusted host primitive; guest lowering pending.
+mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
@@ -32,8 +37,9 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
             Component::RootDir | Component::CurDir => {}
             Component::Normal(name) => segments.push(name),
             // No ambiguous escape or normalization through ".." is accepted.
-            Component::ParentDir | Component::Prefix(_) =>
-                return Err("source parent traversal is unsupported".into()),
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err("source parent traversal is unsupported".into());
+            }
         }
     }
     if segments.is_empty() {
@@ -41,16 +47,25 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
     }
 
     for (index, segment) in segments.iter().enumerate() {
-        let name = CString::new(segment.as_bytes())
-            .map_err(|_| "source path contains NUL")?;
+        let name = CString::new(segment.as_bytes()).map_err(|_| "source path contains NUL")?;
         let final_component = index + 1 == segments.len();
-        let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW
-            | if final_component { libc::O_NONBLOCK } else { libc::O_DIRECTORY };
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | if final_component {
+                libc::O_NONBLOCK
+            } else {
+                libc::O_DIRECTORY
+            };
         // SAFETY: directory is an owned live descriptor; name is a valid NUL-
         // terminated segment. File::from_raw_fd takes ownership of successful fd.
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return Err(format!("source path component denied: {}", std::io::Error::last_os_error()));
+            let error = std::io::Error::last_os_error();
+            if final_component && error.raw_os_error() == Some(libc::ELOOP) {
+                return Err("source must be a regular file (symlinks forbidden)".into());
+            }
+            return Err(format!("source path component denied: {error}"));
         }
         directory = unsafe { std::fs::File::from_raw_fd(fd) };
     }
@@ -62,8 +77,11 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
 
 #[cfg(not(unix))]
 fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
-    if std::fs::symlink_metadata(path).map_err(|e| e.to_string())?
-        .file_type().is_symlink() {
+    if std::fs::symlink_metadata(path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_symlink()
+    {
         return Err("source symlinks forbidden".into());
     }
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -103,7 +121,7 @@ fn run() -> Result<(), String> {
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
     if matches!(mode.as_str(), "ir" | "check" | "emit-object") && !supplied.is_empty() {
-        return Err("ir/check/emit-object mode does not accept runtime arguments".into());
+        return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
@@ -128,7 +146,18 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
-    let parsed = frontend::parse(source)?;
+    let parsed = match frontend::parse(source) {
+        Ok(program) => program,
+        Err(original)
+            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+        {
+            // The independent pure parser must share the outer admission gates.
+            frontend::validate_source_envelope(source)?;
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+        }
+        Err(original) => return Err(original),
+    };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
     if mode == "check" {
@@ -156,8 +185,8 @@ fn run() -> Result<(), String> {
         // Experimental *trusted* native scalar VM entry. The source must
         // accept (old, delta) i64; this is NOT a sandbox or actor scheduler.
         let vm = isolate::OresVM::new(2)?;
-        let a = vm.create_isolate("tenant-a", 1, 1)?;
-        let b = vm.create_isolate("tenant-b", 1, 1)?;
+        let a = vm.create_tenant_vm("tenant-a", 1, 1)?;
+        let b = vm.create_tenant_vm("tenant-b", 1, 1)?;
         vm.start(&a)?;
         vm.start(&b)?;
         let actor_a = vm.register_actor(&a, 1)?;

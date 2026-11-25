@@ -88,3 +88,5 @@ before returning a result or a checked error status.
 span receipts to stderr. Ordinary `run` defaults to recording off. The
 `full-aot` command remains reserved for executable linking and whole-program
 closure.
+
+Current scoped spans are brace-delimited; runtime local initializers and inline-prefix composition with scoped spans remain unsupported. Full executable linking remains denied.
