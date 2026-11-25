@@ -7,6 +7,8 @@ mod frontend;
 mod functional_pipelines;
 mod isolate;
 pub mod layout;
+mod linked_native;
+mod module_link;
 #[allow(dead_code)]
 mod owned_region;
 #[allow(dead_code)]
@@ -91,6 +93,113 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+// Dispatch to the package-authorized linker only for a real import header.
+// A line inside a multiline comment is not an import, and its text must not
+// cause the otherwise valid single-unit scalar compiler to require a package
+// manifest. This is a routing check, NOT an alternate import parser: the
+// restricted module linker still validates every admitted header and forbids
+// unsupported block-comment syntax within imported source graphs.
+fn has_real_import_header(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut pos = 0;
+    let mut block_depth = 0usize;
+    let mut line_comment = false;
+    let mut quote = false;
+    let mut escaped = false;
+    let mut at_line_start = true;
+    while pos < bytes.len() {
+        let current = bytes[pos];
+        if current == b'\n' {
+            line_comment = false;
+            at_line_start = true;
+            pos += 1;
+            continue;
+        }
+        if line_comment {
+            pos += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            if bytes[pos..].starts_with(b"/*") {
+                block_depth += 1;
+                pos += 2;
+            } else if bytes[pos..].starts_with(b"*/") {
+                block_depth -= 1;
+                pos += 2;
+            } else {
+                pos += 1;
+            }
+            continue;
+        }
+        if quote {
+            if escaped {
+                escaped = false;
+            } else if current == b'\\' {
+                escaped = true;
+            } else if current == b'"' {
+                quote = false;
+            }
+            pos += 1;
+            continue;
+        }
+        if bytes[pos..].starts_with(b"//") {
+            line_comment = true;
+            pos += 2;
+            continue;
+        }
+        if bytes[pos..].starts_with(b"/*") {
+            block_depth = 1;
+            pos += 2;
+            continue;
+        }
+        if at_line_start && matches!(current, b' ' | b'\t' | b'\r') {
+            pos += 1;
+            continue;
+        }
+        if at_line_start && bytes[pos..].starts_with(b"import ") {
+            return true;
+        }
+        at_line_start = false;
+        if current == b'"' {
+            quote = true;
+        }
+        pos += 1;
+    }
+    false
+}
+
+// Only trusted native scalar programs enter this ABI. Imported modules and
+// standalone multi-function sources share exactly the same IR validator,
+// checked call-status propagation and non-executing IR inspection path.
+fn run_linked_native(
+    mode: &str,
+    values: &[i64],
+    functions: &[functional_pipelines::Fn],
+) -> Result<(), String> {
+    if mode == "isolate" {
+        return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
+    }
+    if !matches!(mode, "check" | "ir" | "run") {
+        return Err(
+            "E_LINK_MODE_UNSUPPORTED: linked scalar graphs support check, ir, and run only".into(),
+        );
+    }
+    linked_native::validate(functions)?;
+    if mode == "check" {
+        return Ok(());
+    }
+    if mode == "run" && !values.is_empty() {
+        return Err("runtime argument count mismatch".into());
+    }
+    if mode == "ir" {
+        print!("{}", linked_native::render_ir(functions)?);
+        return Ok(());
+    }
+    let compiled = linked_native::compile(functions)?;
+    println!("{}", compiled.run(&[])?);
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
@@ -149,6 +258,39 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
+    // Imported and standalone multi-function scalar graphs use separate
+    // checked native functions. Legacy single-main and strict pure-pipeline
+    // paths continue to lower to the stage-0 scalar Program shape.
+    frontend::validate_source_envelope(source)?;
+    let linked_source = has_real_import_header(source);
+    if linked_source {
+        // Module graphs must not enter the experimental host-mediated
+        // TenantVM isolate lane, even before reading imported source files.
+        if mode == "isolate" {
+            return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
+        }
+        let functions = module_link::parse(&path, source)?;
+        return run_linked_native(&mode, &values, &functions);
+    }
+    // A valid standalone multi-function .atto translation unit must reach the
+    // same real native call ABI used by imported public helpers, even when its
+    // expressions happen to be safe to inline. The legacy pure-pipeline
+    // expander is retained for single-function compatibility only.
+    //
+    // Parse the *entire* restricted source before choosing this path: lexical
+    // counts of "fnc" (including strings/comments) cannot grant JIT admission.
+    // Any linked-native validation failure is returned by run_linked_native;
+    // it may never fall back to an inliner or a different semantic profile.
+    // Keep explicit pipe/inline-arrow syntax on the existing pure pipeline lane.
+    if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
+        && !source.contains("|>")
+        && !source.contains("<|")
+        && !source.contains(": int ->")
+        && let Ok(functions) = functional_pipelines::parse_linked_native(source, &[])
+        && functions.len() > 1
+    {
+        return run_linked_native(&mode, &values, &functions);
+    }
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
         Err(original)

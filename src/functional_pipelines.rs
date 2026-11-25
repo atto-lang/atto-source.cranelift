@@ -14,7 +14,7 @@ const MAX_DEPTH: usize = 32;
 const MAX_EXPANSION: usize = 2048;
 
 #[derive(Clone)]
-enum Raw {
+pub(crate) enum Raw {
     Literal(i64),
     Name(String),
     Add(Box<Raw>, Box<Raw>),
@@ -22,11 +22,12 @@ enum Raw {
     Mul(Box<Raw>, Box<Raw>),
     Call(String, Vec<Raw>),
 }
-struct Fn {
-    name: String,
-    params: Vec<String>,
-    locals: Vec<(String, Raw)>,
-    result: Raw,
+pub(crate) struct Fn {
+    pub(crate) public: bool,
+    pub(crate) name: String,
+    pub(crate) params: Vec<String>,
+    pub(crate) locals: Vec<(String, Raw)>,
+    pub(crate) result: Raw,
 }
 fn lex(text: &str) -> Result<Vec<String>, String> {
     if text.len() > MAX_SOURCE {
@@ -325,15 +326,24 @@ impl Parser {
     fn parse(mut self) -> Result<Vec<Fn>, String> {
         let mut fns = Vec::new();
         while self.peek() != "<eof>" {
-            self.eat("pub");
+            let public = self.eat("pub");
             self.need("fnc")?;
             let name = self.name()?;
             self.need("(")?;
             let mut params = Vec::new();
             if self.peek() != ")" {
                 loop {
-                    self.need("int")?;
-                    let n = self.name()?;
+                    // The normative scalar declaration allows both
+                    // type-first `int x` and name-first `x: int` formals.
+                    // Never infer an omitted type in this native i64 ABI.
+                    let n = if self.eat("int") {
+                        self.name()?
+                    } else {
+                        let n = self.name()?;
+                        self.need(":")?;
+                        self.need("int")?;
+                        n
+                    };
                     if params.contains(&n) {
                         return Err("E_PIPE_DUP_PARAM".into());
                     }
@@ -367,6 +377,7 @@ impl Parser {
                 return Err("E_PIPE_BODY".into());
             };
             fns.push(Fn {
+                public,
                 name,
                 params,
                 locals,
@@ -492,7 +503,47 @@ impl Lower<'_> {
 /// machine code. This path is NOT an interpreter, general linker, or AOT.
 pub fn parse(source: &str) -> Result<Program, String> {
     validate_source_envelope(source)?;
-    let functions = Parser::new(source)?.parse()?;
+    compile_functions(Parser::new(source)?.parse()?)
+}
+
+/// Preserve the separately parsed function graph and symbolic calls for
+/// real native function lowering. This path never substitutes argument trees.
+pub(crate) fn parse_linked_native(
+    entry: &str,
+    units: &[(String, String, String)],
+) -> Result<Vec<Fn>, String> {
+    if units.len() > 8 {
+        return Err("E_LINK_IMPORT_LIMIT".into());
+    }
+    validate_source_envelope(entry)?;
+    let mut selected = Parser::new(entry)?.parse()?;
+    for (requested, local, text) in units {
+        validate_source_envelope(text)?;
+        let candidates = Parser::new(text)?.parse()?;
+        let mut exported = candidates
+            .into_iter()
+            .filter(|f| f.name == *requested && f.public);
+        let mut func = exported
+            .next()
+            .ok_or("E_LINK_EXPORT_NOT_PUBLIC_OR_MISSING")?;
+        if exported.next().is_some() {
+            return Err("E_LINK_AMBIGUOUS_EXPORT".into());
+        }
+        if func.name == "main" || local == "main" {
+            return Err("E_LINK_IMPORTED_ENTRY".into());
+        }
+        // Rename the selected symbol in this closed-world linked scope only.
+        // Private and unimported declarations stay unreachable.
+        func.name = local.clone();
+        selected.push(func);
+    }
+    Ok(selected)
+}
+
+fn compile_functions(functions: Vec<Fn>) -> Result<Program, String> {
+    if functions.len() > 16 {
+        return Err("E_PIPE_FUNCTION_LIMIT".into());
+    }
     let mut names = HashMap::new();
     for f in functions {
         if names.insert(f.name.clone(), f).is_some() {

@@ -15,9 +15,9 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 mod telemetry;
 
 pub struct Compiled {
-    module: JITModule, // Own executable allocations until after every native call.
-    id: cranelift_module::FuncId,
-    arity: usize,
+    pub(crate) module: JITModule, // Own executable allocations until after every native call.
+    pub(crate) id: cranelift_module::FuncId,
+    pub(crate) arity: usize,
     #[cfg(test)]
     pub clif: String,
 }
