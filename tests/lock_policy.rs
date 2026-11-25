@@ -18,7 +18,10 @@ fn quoted(value: &str) -> Result<String, String> {
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .ok_or("expected quoted TOML string")?;
-    if value.chars().any(|ch| matches!(ch, '"' | '\\' | '\r' | '\n' | '\0')) {
+    if value
+        .chars()
+        .any(|ch| matches!(ch, '"' | '\\' | '\r' | '\n' | '\0'))
+    {
         return Err("unsupported TOML string escape/control".into());
     }
     Ok(value.to_owned())
@@ -39,7 +42,9 @@ fn parse_lock(text: &str) -> Result<(Vec<Package>, u32), String> {
                 reading_dependencies = false;
                 continue;
             }
-            let item = line.strip_suffix(',').ok_or("invalid dependency array item")?;
+            let item = line
+                .strip_suffix(',')
+                .ok_or("invalid dependency array item")?;
             let name = quoted(item)?;
             current
                 .as_mut()
@@ -64,11 +69,7 @@ fn parse_lock(text: &str) -> Result<(Vec<Package>, u32), String> {
         if let Some(package) = current.as_mut() {
             match key {
                 "name" | "version" | "source" | "checksum" => {
-                    if package
-                        .fields
-                        .insert(key.into(), quoted(value)?)
-                        .is_some()
-                    {
+                    if package.fields.insert(key.into(), quoted(value)?).is_some() {
                         return Err("duplicate lockfile key".into());
                     }
                 }
@@ -82,7 +83,11 @@ fn parse_lock(text: &str) -> Result<(Vec<Package>, u32), String> {
                 _ => return Err("unapproved lockfile field".into()),
             }
         } else if key == "version" && version.is_none() {
-            version = Some(value.parse::<u32>().map_err(|_| "invalid lock format version")?);
+            version = Some(
+                value
+                    .parse::<u32>()
+                    .map_err(|_| "invalid lock format version")?,
+            );
         } else {
             return Err("invalid top-level lockfile field".into());
         }
@@ -162,7 +167,10 @@ fn validate(lock: &str, manifest: &str) -> Result<usize, String> {
     let mut root_deps: Option<&Vec<String>> = None;
     for package in &packages {
         let name = package.fields.get("name").ok_or("missing package name")?;
-        let pkg_version = package.fields.get("version").ok_or("missing package version")?;
+        let pkg_version = package
+            .fields
+            .get("version")
+            .ok_or("missing package version")?;
         if !seen.insert((name, pkg_version)) {
             return Err("duplicate locked package".into());
         }
@@ -173,14 +181,17 @@ fn validate(lock: &str, manifest: &str) -> Result<usize, String> {
             }
             let checksum = package.fields.get("checksum").ok_or("missing checksum")?;
             if checksum.len() != 64
-                || !checksum.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                || !checksum
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
             {
                 return Err("missing/invalid SHA-256 checksum".into());
             }
             if name.starts_with("cranelift-") && pkg_version != CRANELIFT_VERSION {
                 return Err("Cranelift version drift".into());
             }
-        } else if name == &root_name && pkg_version == &root_version
+        } else if name == &root_name
+            && pkg_version == &root_version
             && !package.fields.contains_key("checksum")
         {
             roots += 1;
@@ -199,9 +210,13 @@ fn validate(lock: &str, manifest: &str) -> Result<usize, String> {
         return Err("root locked dependencies differ from Cargo.toml".into());
     }
     for (name, pin) in &direct {
-        let wanted = pin.strip_prefix('=').filter(|value| !value.is_empty())
+        let wanted = pin
+            .strip_prefix('=')
+            .filter(|value| !value.is_empty())
             .ok_or("direct dependency is not exactly pinned")?;
-        let versions = locked.get(name.as_str()).ok_or("missing direct lock dependency")?;
+        let versions = locked
+            .get(name.as_str())
+            .ok_or("missing direct lock dependency")?;
         if versions.len() != 1 || !versions.contains(wanted) {
             return Err("direct dependency lock mismatch".into());
         }
@@ -249,8 +264,16 @@ fn basic_valid_registry_fixture() {
 #[test]
 fn rejects_unapproved_sources_checksums_and_cranelift_drift() {
     for (find, replacement, expected) in [
-        (REGISTRY, "git+https://example.invalid/repo", "non-crates.io"),
-        (REGISTRY, "registry+https://github.com/rust-lang/crates.io-index/extra", "non-crates.io"),
+        (
+            REGISTRY,
+            "git+https://example.invalid/repo",
+            "non-crates.io",
+        ),
+        (
+            REGISTRY,
+            "registry+https://github.com/rust-lang/crates.io-index/extra",
+            "non-crates.io",
+        ),
         (
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -268,7 +291,11 @@ fn rejects_unapproved_sources_checksums_and_cranelift_drift() {
         ),
     ] {
         let rejected = FIXTURE_LOCK.replacen(find, replacement, 1);
-        assert!(validate(&rejected, FIXTURE_MANIFEST).unwrap_err().contains(expected));
+        assert!(
+            validate(&rejected, FIXTURE_MANIFEST)
+                .unwrap_err()
+                .contains(expected)
+        );
     }
 }
 
@@ -288,9 +315,17 @@ fn rejects_direct_pin_drift_and_unpinned_manifest() {
 fn rejects_duplicate_local_and_wrong_root_dependencies() {
     let duplicate =
         format!("{FIXTURE_LOCK}[[package]]\nname = \"orescranelift\"\nversion = \"0.1.0\"\n");
-    assert!(validate(&duplicate, FIXTURE_MANIFEST).unwrap_err().contains("duplicate"));
+    assert!(
+        validate(&duplicate, FIXTURE_MANIFEST)
+            .unwrap_err()
+            .contains("duplicate")
+    );
     let shadow = format!("{FIXTURE_LOCK}[[package]]\nname = \"shadow\"\nversion = \"0.1.0\"\n");
-    assert!(validate(&shadow, FIXTURE_MANIFEST).unwrap_err().contains("local/path"));
+    assert!(
+        validate(&shadow, FIXTURE_MANIFEST)
+            .unwrap_err()
+            .contains("local/path")
+    );
     let omitted = FIXTURE_LOCK.replace(" \"libc\",\n", "");
     assert!(
         validate(&omitted, FIXTURE_MANIFEST)
@@ -331,7 +366,11 @@ fn rejects_malformed_lock_tables_and_non_v4_formats() {
 fn rejects_unreviewed_manifest_dependency_sections() {
     let injected =
         format!("{FIXTURE_MANIFEST}\n[target.'cfg(unix)'.dependencies]\nmalicious = \"*\"\n");
-    assert!(validate(FIXTURE_LOCK, &injected).unwrap_err().contains("unapproved manifest section"));
+    assert!(
+        validate(FIXTURE_LOCK, &injected)
+            .unwrap_err()
+            .contains("unapproved manifest section")
+    );
 }
 
 #[test]

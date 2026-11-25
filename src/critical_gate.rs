@@ -196,13 +196,22 @@ mod tests {
         let cancelled = gate.request().unwrap().ticket;
         let successor = gate.request().unwrap().ticket;
         assert_eq!(gate.release(cancelled), Ok(None));
-        assert!(gate.release(cancelled).is_err(), "double cancellation acknowledged");
+        assert!(
+            gate.release(cancelled).is_err(),
+            "double cancellation acknowledged"
+        );
         assert!(gate.holds(owner).unwrap());
         assert_eq!(gate.release(owner), Ok(Some(successor)));
-        assert!(gate.release(owner).is_err(), "old owner re-release acknowledged");
+        assert!(
+            gate.release(owner).is_err(),
+            "old owner re-release acknowledged"
+        );
         assert!(gate.holds(successor).unwrap());
         assert_eq!(gate.release(successor), Ok(None));
-        assert!(gate.release(successor).is_err(), "double release acknowledged");
+        assert!(
+            gate.release(successor).is_err(),
+            "double release acknowledged"
+        );
         assert_eq!(gate.waiting(), Ok(0));
     }
 
