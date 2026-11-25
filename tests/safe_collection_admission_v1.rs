@@ -140,9 +140,11 @@ fn both_entry_ascriptions_and_map_mutation_reject_before_clif_or_jit() {
             assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
             assert!(output.stdout.is_empty(), "unsupported guest emitted output");
             let diagnostic = String::from_utf8_lossy(&output.stderr);
-            assert!(diagnostic.contains("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED")
+            assert!(
+                diagnostic.contains("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED")
                     || diagnostic.contains("E_UNSUPPORTED_MAP_ENTRY"),
-                "{mode}: missing intentional typed feature denial: {diagnostic}");
+                "{mode}: missing intentional typed feature denial: {diagnostic}"
+            );
         }
     }
 }
@@ -150,20 +152,32 @@ fn both_entry_ascriptions_and_map_mutation_reject_before_clif_or_jit() {
 #[test]
 fn closed_record_and_nominal_struct_bracket_writes_never_get_scalar_authority() {
     for (source, diagnostic) in [
-        (r#"pub fnc main(): int {
+        (
+            r#"pub fnc main(): int {
             let mut Record r = {foo: 1}; r["foo"] = 3; return r["foo"];
-        }"#, "E_SAFE_COLLECTION_ACCESS_UNSUPPORTED"),
-        (r#"define struct Point as int foo; end
+        }"#,
+            "E_SAFE_COLLECTION_ACCESS_UNSUPPORTED",
+        ),
+        (
+            r#"define struct Point as int foo; end
             pub fnc main(): int {
               let mut Point p = Point{foo: 1}; p["foo"] = 3; return 0;
-            }"#, "E_UNSUPPORTED_INDEX_WRITE"),
+            }"#,
+            "E_UNSUPPORTED_INDEX_WRITE",
+        ),
     ] {
         for mode in ["check", "run", "ir"] {
             let output = execute(mode, source);
             assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
-            assert!(output.stdout.is_empty(), "{mode}: unsupported guest emitted output");
-            assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic),
-                "{mode}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.stdout.is_empty(),
+                "{mode}: unsupported guest emitted output"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+                "{mode}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 }
@@ -174,6 +188,10 @@ fn commented_entry_record_and_brackets_cannot_spoof_real_tokens() {
         /* Map<string,int> Record Entry => [x] nested /* Entry => */ */
         pub fnc main(): int { return 42; }"#;
     let output = execute("run", source);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(output.stdout, b"42\n");
 }
