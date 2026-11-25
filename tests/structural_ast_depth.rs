@@ -29,12 +29,22 @@ fn bounded_associative_chains_admit_native_guest_and_verified_ir() {
     let source = addition_chain(32);
     for extension in ["atto", "ores"] {
         let run = invoke("run", extension, &source);
-        assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
         assert_eq!(run.stdout, b"32\n");
         assert!(run.stderr.is_empty());
 
         let ir = invoke("ir", extension, &source);
-        assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
+        assert_eq!(
+            ir.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
         assert!(!ir.stdout.is_empty(), "successful IR must not be empty");
         assert!(ir.stderr.is_empty());
     }
@@ -48,8 +58,16 @@ fn long_left_spines_reject_before_ir_or_jit_without_stdout() {
     for extension in ["atto", "ores"] {
         for mode in ["run", "ir"] {
             let output = invoke(mode, extension, &source);
-            assert_eq!(output.status.code(), Some(1), "{mode} {extension}: {}", String::from_utf8_lossy(&output.stderr));
-            assert!(output.stdout.is_empty(), "{mode} {extension} emitted output");
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} {extension}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} {extension} emitted output"
+            );
             assert_eq!(
                 String::from_utf8_lossy(&output.stderr),
                 "orescranelift: expression depth budget exceeded\n",
@@ -58,7 +76,6 @@ fn long_left_spines_reject_before_ir_or_jit_without_stdout() {
         }
     }
 }
-
 
 #[test]
 fn exact_structural_depth_budget_is_inclusive_in_native_cli() {
