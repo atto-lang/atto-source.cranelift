@@ -525,6 +525,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
     validate_ast_depth(&result)?;
     Ok(Program {
         parameters: Vec::new(),
+        locals: Vec::new(),
         result,
     })
 }
