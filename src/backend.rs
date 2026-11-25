@@ -12,7 +12,29 @@ pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
     arity: usize,
+    trapped_numeric: bool,
     pub clif: String,
+}
+
+// These numeric identities match the Java candidate registry. This is a
+// native entry representation, not a serialized Error or general guest ABI.
+pub const ARITHMETIC_OVERFLOW: i64 = 65537;
+pub const DIVISION_BY_ZERO: i64 = 65538;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum NumericResult {
+    Ok(i64),
+    Err { code: i64 },
+}
+
+// Native layout for the trapped entry: tag, payload, error identity.
+// Scalar entries retain the original single-i64 output ABI.
+fn store_numeric_result(b: &mut FunctionBuilder, out: Value, tag: i64, payload: Value, code: i64) {
+    let tag_value = b.ins().iconst(types::I64, tag);
+    let code_value = b.ins().iconst(types::I64, code);
+    b.ins().store(MemFlagsData::new(), tag_value, out, 0);
+    b.ins().store(MemFlagsData::new(), payload, out, 8);
+    b.ins().store(MemFlagsData::new(), code_value, out, 16);
 }
 
 // All signed remainder paths guard the dangerous (MIN, -1) pair before
@@ -297,14 +319,26 @@ fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context
         divisor_error,
         negative_exponent_error,
     );
-    b.ins().store(MemFlagsData::new(), value, p[4], 0);
+    if source.trapped_numeric {
+        store_numeric_result(&mut b, p[4], 0, value, 0);
+    } else {
+        b.ins().store(MemFlagsData::new(), value, p[4], 0);
+    }
     let ok = b.ins().iconst(types::I32, 0);
     b.ins().return_(&[ok]);
     b.switch_to_block(failure);
-    let fail = b.ins().iconst(types::I32, 1);
+    if source.trapped_numeric {
+        let empty = b.ins().iconst(types::I64, 0);
+        store_numeric_result(&mut b, p[4], 1, empty, ARITHMETIC_OVERFLOW);
+    }
+    let fail = b.ins().iconst(types::I32, if source.trapped_numeric { 0 } else { 1 });
     b.ins().return_(&[fail]);
     b.switch_to_block(divisor_error);
-    let divisor_zero = b.ins().iconst(types::I32, 2);
+    if source.trapped_numeric {
+        let empty = b.ins().iconst(types::I64, 0);
+        store_numeric_result(&mut b, p[4], 1, empty, DIVISION_BY_ZERO);
+    }
+    let divisor_zero = b.ins().iconst(types::I32, if source.trapped_numeric { 0 } else { 2 });
     b.ins().return_(&[divisor_zero]);
     b.switch_to_block(negative_exponent_error);
     let negative = b.ins().iconst(types::I32, 3);
@@ -336,6 +370,7 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         module,
         id,
         arity: source.parameters.len(),
+        trapped_numeric: source.trapped_numeric,
         clif,
     })
 }
@@ -350,13 +385,43 @@ impl Compiled {
         handle: &IsolateHandle,
         delta: i64,
     ) -> Result<i64, String> {
-        if self.arity != 2 {
+        if self.trapped_numeric || self.arity != 2 {
             return Err("isolate scalar entry requires (old, delta)".into());
         }
         vm.invoke_trusted_step(handle, delta, |old, change| self.run(&[old, change]))
     }
 
     pub fn run(&self, args: &[i64]) -> Result<i64, String> {
+        if self.trapped_numeric {
+            return Err("numeric Result entry requires tagged output".into());
+        }
+        let mut out = [0_i64; 3];
+        let status = self.invoke(args, &mut out)?;
+        if status == 0 {
+            Ok(out[0])
+        } else {
+            Err(Self::status_error(status))
+        }
+    }
+
+    pub fn run_numeric_result(&self, args: &[i64]) -> Result<NumericResult, String> {
+        if !self.trapped_numeric {
+            return Err("scalar entry does not return numeric Result".into());
+        }
+        let mut out = [i64::MIN; 3];
+        let status = self.invoke(args, &mut out)?;
+        if status != 0 {
+            return Err(Self::status_error(status));
+        }
+        match out {
+            [0, value, 0] => Ok(NumericResult::Ok(value)),
+            [1, 0, code] if matches!(code, ARITHMETIC_OVERFLOW | DIVISION_BY_ZERO) =>
+                Ok(NumericResult::Err { code }),
+            _ => Err("invalid generated numeric Result tag or payload".into()),
+        }
+    }
+
+    fn invoke(&self, args: &[i64], out: &mut [i64; 3]) -> Result<i32, String> {
         if args.len() > 4 {
             return Err("too many runtime arguments".into());
         }
@@ -375,19 +440,16 @@ impl Compiled {
         // boundary for hostile Oreslang code or actor heaps.
         type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
         let function: Entry = unsafe { std::mem::transmute(code) };
-        let mut out = 0_i64;
-        let status = unsafe { function(padded[0], padded[1], padded[2], padded[3], &mut out) };
-        if status == 0 {
-            Ok(out)
-        } else if status == 1 {
-            Err("i64 arithmetic overflow".into())
-        } else if status == 2 {
-            Err("integer divisor zero".into())
-        } else if status == 3 {
-            Err("negative integer exponent".into())
-        } else {
-            Err("invalid generated native status".into())
-        }
+        Ok(unsafe { function(padded[0], padded[1], padded[2], padded[3], out.as_mut_ptr()) })
+    }
+
+    fn status_error(status: i32) -> String {
+        match status {
+            1 => "i64 arithmetic overflow",
+            2 => "integer divisor zero",
+            3 => "negative integer exponent",
+            _ => "invalid generated native status",
+        }.into()
     }
 }
 

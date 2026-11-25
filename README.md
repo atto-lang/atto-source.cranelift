@@ -78,3 +78,20 @@ The draft canonical scalar-v5 corpus in `contracts/parity/portable-scalar-v5-202
 This is an **i64-only, limited stage-0 compiler**. Its legacy `>> 8` facility is not proof of canonical typed stream I/O or checked triple shifts. The [November 23 numeric decision](https://github.com/atto-lang/atto-spec/blob/main/language/cross-backend-semantics-reconciliation-v1.md) supersedes the historical scalar-v5 manifest's float-quotient sentence: signed `int / int` truncates toward zero. Native `sdiv` is guarded for zero divisors and MIN/-1, with distinct existing scalar status codes. The added native CLI tests are authored, not yet executed at this head. Recoverable guest Error/Result/trap and floating signatures remain unsupported; native status codes are not guest error ABI certification. The historical manifest is retained unchanged.
 
 These changes are authored in [Cranelift #39](https://github.com/atto-lang/atto-source.cranelift/pull/39). **No exact-head Cargo/JIT guest execution has been observed** after these edits, and no release support is claimed. Do not mark any corresponding [11-backend conformance #236](https://github.com/atto-lang/atto-platform-conformance/pull/236) cells as passing without authenticated execution receipts. Preserve security-governed CI admission and independent review; keep draft.
+
+
+### Experimental numeric Result entry (candidate, NOT EXECUTED)
+
+The stage-0 entry may explicitly return `Result<int, Error>` using
+`return trap!(a / b);` or `return trap (a / b);`. Both evaluate the
+parenthesized scalar expression once. The generated native entry writes three
+i64 slots (tag, payload, error code): Ok uses tag 0 and code 0; Err uses tag 1,
+zero payload, and candidate identity 65537 (ArithmeticOverflowError) or 65538
+(DivisionByZeroError). Native entry status 0 means a completed tagged result,
+including Err; unknown statuses/tags fail closed. CLI renders Ok(value) or
+Err(code) for evidence, not a standardized wire format. Scalar entry ABI and
+isolate path remain separate. General Result constructors, Option, nested
+traps, arbitrary guest throw/raise/panic, callable propagation, cleanup,
+postfix ?, floating values and Integer.pow inside trap are unsupported.
+The latter has a third error category without an agreed numeric identity.
+Do not certify this narrow candidate as full guest error or backend parity.

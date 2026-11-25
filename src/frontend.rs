@@ -172,6 +172,7 @@ pub enum Expr {
 pub struct Program {
     pub parameters: Vec<String>,
     pub result: Expr,
+    pub trapped_numeric: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +190,7 @@ struct Parser<'a> {
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
+    numeric_result_context: bool,
 }
 
 // Shared block-comment cursor for the scalar lexer and contextual lookahead.
@@ -234,6 +236,7 @@ impl<'a> Parser<'a> {
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
+            numeric_result_context: false,
         };
         p.next()?;
         Ok(p)
@@ -325,6 +328,12 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            if self.numeric_result_context && self.current == Token::Word("trap")
+                && b.get(self.pos) == Some(&b'!')
+            {
+                self.pos += 1;
+                self.current = Token::Word("trap!");
+            }
             // Typed ownership bangs must never be interpreted as scalar
             // identifiers or a runtime macro call. Detect the contiguous
             // operator before scalar AST admission, including borrow! mut.
@@ -383,13 +392,12 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.current,
                 Token::Word("Option")
-                    | Token::Word("Result")
                     | Token::Word("Some")
                     | Token::Word("None")
                     | Token::Word("Ok")
                     | Token::Word("Err")
-                    | Token::Word("trap")
-            ) {
+            ) || (!self.numeric_result_context
+                && matches!(self.current, Token::Word("Result" | "trap" | "trap!"))) {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
             }
             // Collection and borrow syntax are not represented by scalar
@@ -450,7 +458,9 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*/{}[];:,>.^".contains(&first) {
+        } else if b"()+-*/{}[];:,>.^".contains(&first)
+            || (self.numeric_result_context && first == b'<') {
+
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -866,14 +876,29 @@ impl<'a> Parser<'a> {
         // Scalar entry has one proven result type: signed i64. `infer`
         // therefore infers i64 here; it does not admit nominal types or
         // general type inference. All supported return spellings are equivalent.
+        self.numeric_result_context = true;
         let colon_form = self.take(Token::Punct(b':'))?;
         if !colon_form {
             self.expect(Token::Punct(b'-'))?;
             self.expect(Token::Punct(b'>'))?;
         }
-        if !self.take(Token::Word("infer"))? {
+        let trapped_numeric = self.current == Token::Word("Result");
+        if trapped_numeric {
+            // Admit only the closed numeric Result<int, Error> entry slice.
+            // All general sum types, constructors and callable traps stay gated.
+            self.next()?;
+            if !self.take(Token::Punct(b'<'))?
+                || !self.take(Token::Word("int"))?
+                || !self.take(Token::Punct(b','))?
+                || !self.take(Token::Word("Error"))?
+                || !self.take(Token::Punct(b'>'))?
+            {
+                return Err("typed Option/Result/trap is unsupported outside Result<int, Error> numeric entry".into());
+            }
+        } else if !self.take(Token::Word("infer"))? {
             self.expect(Token::Word("int"))?;
         }
+        self.numeric_result_context = trapped_numeric;
         // Allow the explicit return/body separator only for colon-form
         // declarations: `: int -> { ... }` and `: infer -> { ... }`.
         if colon_form && self.take(Token::Punct(b'-'))? {
@@ -896,7 +921,22 @@ impl<'a> Parser<'a> {
         } else {
             self.expect(Token::Word("return"))?;
         }
-        let result = self.expr(0, 0)?;
+        let result = if trapped_numeric {
+            if !matches!(self.current, Token::Word("trap" | "trap!")) {
+                return Err("typed Option/Result/trap is unsupported outside a parenthesized numeric trap return".into());
+            }
+            self.numeric_result_context = false;
+            self.next()?;
+            self.expect(Token::Punct(b'('))?;
+            let expr = self.expr(0, 0)?;
+            self.expect(Token::Punct(b')'))?;
+            // Negative exponent has no agreed guest Error identity yet.
+            // Do not silently catch it or recode it as an arithmetic error.
+            validate_numeric_trap(&expr)?;
+            expr
+        } else {
+            self.expr(0, 0)?
+        };
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         while self.current == Token::Word("export") {
@@ -924,6 +964,7 @@ impl<'a> Parser<'a> {
         Ok(Program {
             parameters: self.parameters,
             result,
+            trapped_numeric,
         })
     }
 }
@@ -1122,6 +1163,28 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             | Expr::NamedPow(left, right) => {
                 pending.push((left.as_ref(), level + 1));
                 pending.push((right.as_ref(), level + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+// Check depth before recursive lowering, and reject the one intrinsic with
+// a third, not-yet-standardized error category.
+fn validate_numeric_trap(root: &Expr) -> Result<(), String> {
+    validate_ast_depth(root)?;
+    let mut pending = vec![root];
+    while let Some(expr) = pending.pop() {
+        match expr {
+            Expr::NamedPow(_, _) => return Err("E_NUMERIC_TRAP_UNSUPPORTED: Integer.pow error identity is not defined in this slice".into()),
+            Expr::Literal(_) | Expr::Param(_) => {}
+            Expr::Neg(inner) | Expr::ShiftRight8(inner) => pending.push(inner),
+            Expr::Add(left, right) | Expr::Sub(left, right) | Expr::Mul(left, right)
+            | Expr::Div(left, right) | Expr::BitXor(left, right)
+            | Expr::BitAnd(left, right) | Expr::BitOr(left, right)
+            | Expr::NamedRem(left, right) | Expr::NamedMod(left, right) => {
+                pending.push(left);
+                pending.push(right);
             }
         }
     }

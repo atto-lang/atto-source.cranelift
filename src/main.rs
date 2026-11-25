@@ -137,7 +137,7 @@ fn run() -> Result<(), String> {
     if mode == "run" && values.len() != parsed.parameters.len() {
         return Err("runtime argument count mismatch".into());
     }
-    if mode == "isolate" && (parsed.parameters.len() != 2 || values.len() != 2) {
+    if mode == "isolate" && (parsed.trapped_numeric || parsed.parameters.len() != 2 || values.len() != 2) {
         return Err(
             "isolate mode expects a two-argument (old, delta) entry and two tenant deltas".into(),
         );
@@ -191,6 +191,11 @@ fn run() -> Result<(), String> {
         vm.complete_shutdown(&b)?;
         vm.destroy(&b)?;
         println!("{left} {right}");
+    } else if parsed.trapped_numeric {
+        match compiled.run_numeric_result(&values)? {
+            backend::NumericResult::Ok(value) => println!("Ok({value})"),
+            backend::NumericResult::Err { code } => println!("Err({code})"),
+        }
     } else {
         println!("{}", compiled.run(&values)?);
     }
