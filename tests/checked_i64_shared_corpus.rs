@@ -42,7 +42,9 @@ impl SourceFile {
     }
 }
 impl Drop for SourceFile {
-    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 // This mapping is intentionally explicit: a single-expression Cranelift JIT
@@ -153,4 +155,10 @@ fn exact_shared_checked_i64_corpus_executes_as_native_jit_guests() {
     // This is a source-derived single-entry JIT **adapter** test. It is not
     // the unchanged multi-function Java/JS source, compiler-isolate security,
     // full AOT, actor runtime, or exact-head CI certification.
+}
+
+#[test]
+#[should_panic(expected = "unreviewed checked-i64 case/semantic mapping")]
+fn mutated_expression_cannot_reuse_reviewed_case_identity() {
+    adapted("safe-zero", "sum(0,1)");
 }

@@ -14,9 +14,13 @@ fn pull_push_remains_fail_closed_until_native_lowering_exists() {
         "fnc main():int { return rt take owner; }",
     ];
     for source in unsupported {
-        assert!(frontend::parse(source).is_err(),
-            "Cranelift parser silently accepted unsupported pull/push: {source}");
+        assert!(
+            frontend::parse(source).is_err(),
+            "Cranelift parser silently accepted unsupported pull/push: {source}"
+        );
     }
-    assert!(frontend::parse("fnc main():int{return 42;}").is_ok(),
-        "negative gate must preserve scalar JIT admission");
+    assert!(
+        frontend::parse("fnc main():int{return 42;}").is_ok(),
+        "negative gate must preserve scalar JIT admission"
+    );
 }
