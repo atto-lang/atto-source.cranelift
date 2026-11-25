@@ -61,7 +61,11 @@ impl ActorIsolationAccessV1 {
         if self.live.len() >= MAX_LIVE_GRANTS {
             return Err("actor allocation grant budget exhausted");
         }
-        if !start.is_multiple_of(8) || length == 0 || start > self.span || length > self.span - start {
+        if !start.is_multiple_of(8)
+            || length == 0
+            || start > self.span
+            || length > self.span - start
+        {
             return Err("invalid actor allocation bounds");
         }
         let end = start + length; // safe after subtract-first check
