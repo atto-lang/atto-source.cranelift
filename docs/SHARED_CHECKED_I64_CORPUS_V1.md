@@ -1,6 +1,6 @@
 # Shared checked-i64 corpus via real native Cranelift JIT
 
-**Status: draft; exact-head execution not yet certified.** This adapter builds actual native Cranelift JIT code, rather than evaluating arithmetic with Rust host helpers.
+**Scope: native single-entry checked-i64 adapter; not full source-language parity.** This adapter builds actual native Cranelift JIT code, rather than evaluating arithmetic with Rust host helpers.
 
 The case file `contracts/checked-i64-all-backends-v1/cases.tsv` has exact Git blob `71309fac2ab6b2191a0056c84d78987bd342dce0` and is byte-identical to Java [#66](https://github.com/atto-lang/atto-source.java/pull/66), JavaScript [#69](https://github.com/atto-lang/atto-source.js/pull/69), and the central 11-lane [conformance #235](https://github.com/atto-lang/atto-platform-conformance/pull/235). It remains the same seven values, seven runtime overflow, one zero divisor.
 
@@ -22,6 +22,6 @@ cargo clippy --locked --all-targets -- -D warnings
 
 The existing `.github/workflows/native-cranelift.yml` and `.github/workflows/ci.yml` both run `cargo test --locked --all-targets`, so this new test is integrated into the existing CI source tree, not a duplicate workflow.
 
-**Execution truth:** test source is authored and blob identity verified. No stepful GitHub Actions, local Rust compiler, native JIT executable output, or cross-backend result from this new test has been obtained yet. Keep the PR draft until exact-head real compiler execution, negative mutation, repository security policy and independent review are satisfied.
+**Execution evidence:** [alternate-runner CI 45547035646](https://github.com/22-factor-apps/atto-ci/actions/runs/45547035646) on source commit `1c074512807cf66c869b8c287ebc9f97e9135447` verified the exact corpus blob, all 15 adapted native JIT cases, the changed-expression negative mutation, existing scalar regression tests, and strict Clippy. The only failing gate was Rustfmt; its exact output was applied afterward. Final exact-head checks must pass before merge. No full unchanged multi-function guest parity is claimed.
 
 **Further scope:** add production source function-declaration/call lowering and general module graphs only with type/ownership proofs. Then compile the exact unchanged shared Java/JS function-bearing `.atto` guest source, rather than this adapter, to promote true source-level parity. Do not treat this trusted JIT as a secure untrusted TenantVM sandbox, full AOT, hard-real-time implementation or actor runtime.
