@@ -863,11 +863,48 @@ mod native_named_signed64_differential {
             );
         }
     }
-}
 
-#[cfg(test)]
-mod local_ast_security_tests {
-    use super::*;
+    #[test]
+    fn checked_sequence_jit_matches_reference_and_rejects_forged_ast() {
+        for expression in [
+            "seq(42)",
+            "seq(1,2,42)",
+            "(> 1,2,42)",
+            "seq(1, (> 2,42))",
+            "seq(1,Integer.bitAnd(7,3),42)",
+            "seq(1,2)+40",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let parsed = crate::frontend::parse(&source).expect("valid sequence");
+            let checked_ir = render_ir(&parsed).expect("verified native IR");
+            let compiled = compile(&parsed).expect("real Cranelift JIT");
+            assert_eq!(checked_ir, compiled.clif, "IR/JIT drift for {source}");
+            assert_eq!(compiled.run(&[]), Ok(42), "{source}");
+        }
+        for (expression, error) in [
+            ("seq(9223372036854775807+1,42)", "i64 arithmetic overflow"),
+            ("(> 9223372036854775807+1,42)", "i64 arithmetic overflow"),
+            ("seq(Integer.rem(8,0),42)", "integer divisor zero"),
+            ("(> Integer.mod(8,0),42)", "integer divisor zero"),
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let parsed = crate::frontend::parse(&source).expect("valid but trapping sequence");
+            let compiled = compile(&parsed).expect("checked guest IR");
+            assert_eq!(compiled.run(&[]), Err(error.to_owned()), "{source}");
+        }
+        for result in [Expr::Seq(vec![]), Expr::Seq(vec![Expr::Literal(42); 17])] {
+            let forged = Program {
+                parameters: vec![],
+                locals: vec![],
+                result,
+            };
+            assert!(
+                render_ir(&forged).is_err(),
+                "invalid AST admitted to CLIF IR"
+            );
+            assert!(compile(&forged).is_err(), "invalid AST reached JIT");
+        }
+    }
 
     #[test]
     fn host_constructed_forward_or_forged_references_fail_before_clif() {
@@ -891,6 +928,68 @@ mod local_ast_security_tests {
             render_ir(&forged_parameter)
                 .unwrap_err()
                 .contains("invalid parameter reference")
+        );
+    }
+
+    #[test]
+    fn forged_native_abi_arity_and_balanced_node_budget_fail_before_jit() {
+        // Port the unique source-AST security cases from overlapping #75,
+        // without importing its obsolete runtime type-first local semantics.
+        let excess = Program {
+            parameters: (0..5).map(|index| format!("p{index}")).collect(),
+            locals: Vec::new(),
+            result: Expr::Literal(42),
+        };
+        for outcome in [
+            render_ir(&excess).err(),
+            compile(&excess).err().map(|e| e.to_string()),
+        ] {
+            assert!(
+                outcome
+                    .expect("five parameter ABI must be rejected")
+                    .contains("parameter count exceeds four")
+            );
+        }
+
+        fn balanced(depth: usize) -> Expr {
+            if depth == 0 {
+                Expr::Literal(1)
+            } else {
+                Expr::Add(Box::new(balanced(depth - 1)), Box::new(balanced(depth - 1)))
+            }
+        }
+        let oversized = Program {
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            result: balanced(12),
+        };
+        assert!(
+            render_ir(&oversized)
+                .unwrap_err()
+                .contains("AST node budget exceeded")
+        );
+        assert!(
+            compile(&oversized)
+                .err()
+                .expect("forged balanced AST must not emit code")
+                .contains("AST node budget exceeded")
+        );
+    }
+
+    #[test]
+    fn unused_runtime_val_overflow_preserves_native_output_sentinel() {
+        let source = crate::frontend::parse("fnc main(x:int):int{val unused=x+1;return 42;}")
+            .expect("runtime val may depend on a parameter");
+        let compiled = compile(&source).expect("native verified CLIF/JIT");
+        type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
+        let function: Entry =
+            unsafe { std::mem::transmute(compiled.module.get_finalized_function(compiled.id)) };
+        let mut output = 0x1122_3344_5566_7788_i64;
+        let status = unsafe { function(i64::MAX, 0, 0, 0, &mut output) };
+        assert_eq!(status, 1, "overflow must return a native error status");
+        assert_eq!(
+            output, 0x1122_3344_5566_7788_i64,
+            "failed unused initializer must not publish a guest value"
         );
     }
 

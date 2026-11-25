@@ -379,7 +379,9 @@ fn authority_and_task_words_are_not_scalar_function_parameter_or_local_names() {
         let samples = [
             format!("fnc {name}(int x): int -> x; pub fnc main(): int -> 42 |> {name};"),
             format!("fnc f(int {name}): int -> 42; pub fnc main(): int -> f(1);"),
-            format!("pub fnc main(): int {{ val {name} = 42; return {name}; }}"),
+            format!(
+                "fnc id(int x): int -> x; pub fnc main(): int {{ val {name} = 42; return {name} |> id; }}"
+            ),
         ];
         for source in samples {
             let file = Source::new(&source);
@@ -397,6 +399,25 @@ fn authority_and_task_words_are_not_scalar_function_parameter_or_local_names() {
                     String::from_utf8_lossy(&result.stderr).contains("E_PIPE_NAME"),
                     "{name}: expected a source-level authority rejection"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn standalone_scalar_reserved_bindings_remain_unadmitted() {
+    // The task word remains contextual in the legacy scalar grammar.
+    for name in ["sync", "yield"] {
+        for source in [
+            format!("fnc main({name}:int):int{{return {name};}}"),
+            format!("pub fnc main(): int {{ val {name} = 42; return {name}; }}"),
+        ] {
+            let file = Source::new(&source);
+            for mode in ["check", "ir", "run"] {
+                let result = invoke(mode, &file.0);
+                assert_eq!(result.status.code(), Some(1), "{name}: {mode}");
+                assert!(result.stdout.is_empty());
+                assert!(!result.stderr.is_empty());
             }
         }
     }

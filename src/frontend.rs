@@ -167,7 +167,7 @@ pub enum Expr {
     NamedMod(Box<Expr>, Box<Expr>),
     NamedPow(Box<Expr>, Box<Expr>),
     ShiftRight8(Box<Expr>),
-    // Source-ordered, bounded scalar sequence; trap checks are not discardable.
+    /// Evaluate checked scalar expressions in order and keep the final value.
     Seq(Vec<Expr>),
 }
 
@@ -193,15 +193,25 @@ struct Parser<'a> {
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
-    // (name, constexpr value if static, runtime slot for val otherwise)
+    mutex_scan: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
+}
+
+fn is_comparison_bang(suffix: &str) -> bool {
+    suffix.starts_with("!=")
+        || suffix.strip_prefix("!eq").is_some_and(|tail| {
+            !tail
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        })
 }
 
 // Shared block-comment cursor for the scalar lexer and contextual lookahead.
 // The actor preflight already recognizes nested block comments; the main lexer
 // must not interpret code inside them, and must fail on unterminated/nested bombs.
-fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
+pub(crate) fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
     if bytes.get(start..start.saturating_add(2)) != Some(&b"/*"[..]) {
         return Err("expected block comment".into());
     }
@@ -229,6 +239,10 @@ fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Result<Self, String> {
+        Self::with_mutex_scan(input, false)
+    }
+
+    fn with_mutex_scan(input: &'a str, mutex_scan: bool) -> Result<Self, String> {
         if input.len() > MAX_SOURCE {
             return Err("source exceeds 1 MiB limit".into());
         }
@@ -241,6 +255,7 @@ impl<'a> Parser<'a> {
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
+            mutex_scan,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
         };
@@ -338,38 +353,54 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
-            // A compiler-only bang invocation is not an ordinary unresolved
-            // identifier, even when optional whitespace separates its name
-            // from '!'. Reject before scalar expression lowering / CLIF.
-            // Ownership bangs retain their more specific admission denial.
-            let mut bang_at = self.pos;
-            while bang_at < b.len() {
-                let width = whitespace_width(b, bang_at);
-                if width == 0 {
-                    break;
-                }
-                bang_at += width;
+            // Scalar stage-0 has no compiler-owned library linker.
+            if self.current == Token::Word("import") {
+                return Err("E_LIBRARY_PROFILE_UNSUPPORTED: atto.core/alloc/std and actor modules require verified import/profile lowering".into());
             }
-            if b.get(bang_at) == Some(&b'!') {
-                if matches!(
-                    self.current,
-                    Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
-                ) {
-                    return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
-                }
-                return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compiler-time AST expansion before native IR".into());
+            // Distinguish contextual bangs from comparisons.
+            let suffix = &self.input[self.pos..];
+            let comparison = is_comparison_bang(suffix);
+            if matches!(
+                self.current,
+                Token::Word(
+                    "copy"
+                        | "take"
+                        | "borrow"
+                        | "share"
+                        | "pin"
+                        | "drop"
+                        | "freeze"
+                        | "weak"
+                        | "ref"
+                        | "deref"
+                        | "unref"
+                )
+            ) && b.get(self.pos) == Some(&b'!')
+                && !comparison
+            {
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
-            // The 'mut borrow!' form also must fail with an ownership-specific
-            // diagnostic: without lookahead the parser would reject 'mut'
-            // generically before advancing to the borrow token.
+            if matches!(
+                self.current,
+                Token::Word("trap" | "throw" | "raise" | "panic")
+            ) && b.get(self.pos) == Some(&b'!')
+                && !comparison
+            {
+                return Err("EXCEPTION_BANG_BACKEND_UNSUPPORTED: typed guest Error/Result, unwind and actor supervisor lowering required".into());
+            }
             if self.current == Token::Word("mut") {
                 let mut at = self.pos;
                 while b.get(at).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
                     at += 1;
                 }
-                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..]) {
+                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..])
+                    && !is_comparison_bang(&self.input[at + 6..])
+                {
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
+            }
+            if self.current == Token::Word("new") && !self.mutex_scan {
+                return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
             }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
@@ -433,6 +464,8 @@ impl<'a> Parser<'a> {
                         | "Slice"
                         | "Tuple"
                         | "Map"
+                        | "Entry"
+                        | "Record"
                         | "Set"
                         | "ReadLoan"
                         | "WriteLoan"
@@ -481,10 +514,12 @@ impl<'a> Parser<'a> {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
             ));
+        } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
+            return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.=".contains(&first) {
+        } else if b"()+-*{}[];:,><=.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -524,8 +559,8 @@ impl<'a> Parser<'a> {
         }
         Ok(x)
     }
-    // Scalar-only expression sequence shared with the separate pipeline branch.
-    // A discarded value may still trap, so every entry is evaluated in order.
+    /// Sequences are scoped, never tuples or callable argument lists.
+    /// Even unused earlier values must retain arithmetic trap behavior.
     fn sequence(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -533,23 +568,22 @@ impl<'a> Parser<'a> {
         if self.current == Token::Punct(b')') {
             return Err("E_SEQ_EMPTY: sequence must have at least one expression".into());
         }
-        let mut items = Vec::new();
+        let mut expressions = Vec::new();
         loop {
-            if items.len() >= 16 {
-                return Err("E_SEQ_LIMIT: at most sixteen scalar sequence expressions".into());
+            if expressions.len() >= 16 {
+                return Err("E_SEQ_LIMIT: at most 16 scalar expressions per sequence".into());
             }
             if matches!(self.current, Token::Punct(b',' | b';' | b')') | Token::End) {
-                return Err("E_SEQ_COMMA: missing sequence expression".into());
+                return Err("E_SEQ_COMMA: missing scalar sequence expression".into());
             }
-            items.push(self.expr(0, depth + 1)?);
+            expressions.push(self.expr(0, depth + 1)?);
             if !self.take(Token::Punct(b','))? {
                 break;
             }
         }
         self.expect(Token::Punct(b')'))?;
-        self.node(Expr::Seq(items))
+        self.node(Expr::Seq(expressions))
     }
-
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -644,6 +678,7 @@ impl<'a> Parser<'a> {
                 Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
+                self.next()?;
                 let value = if let Some(index) = self.parameters.iter().position(|p| p == s) {
                     Expr::Param(index)
                 } else if let Some((_, constant, runtime_slot)) =
@@ -658,7 +693,6 @@ impl<'a> Parser<'a> {
                 } else {
                     return Err(format!("unbound or unsupported identifier: {s}"));
                 };
-                self.next()?;
                 self.node(value)
             }
             _ => Err(format!("expected scalar expression at byte {}", self.pos)),
@@ -681,8 +715,6 @@ impl<'a> Parser<'a> {
                 if !self.take(Token::Word("int"))? {
                     return Err("unsupported checked cast target (only int is supported)".into());
                 }
-                // No IR instruction for an identity cast, but every cast
-                // still consumes a source/AST complexity admission unit.
                 self.nodes += 1;
                 if self.nodes > MAX_NODES {
                     return Err("AST node budget exceeded".into());
@@ -746,6 +778,24 @@ impl<'a> Parser<'a> {
         Ok(())
     }
     fn program(mut self) -> Result<Program, String> {
+        // File-scoped namespace is metadata only. Stage-0 still requires one
+        // scalar main, and no implicit cross-file or nominal type resolution.
+        let has_namespace = self.take(Token::Word("use"))?;
+        if has_namespace {
+            self.expect(Token::Word("namespace"))?;
+            let _ = self.name()?;
+            self.expect(Token::Punct(b';'))?;
+        }
+        // Diagnose a repeated header before the generic "expected fnc"
+        // branch consumes the invalid token and loses its exact reason.
+        if self.current == Token::Word("use") || self.current == Token::Word("namespace") {
+            return Err((if has_namespace {
+                "CRANELIFT_NAMESPACE_DUPLICATE: duplicate file-level namespace"
+            } else {
+                "CRANELIFT_NAMESPACE_HEADER_ORDER: namespace must be declared before functions"
+            })
+            .into());
+        }
         let mut seen_export = false;
         while self.current == Token::Word("export") {
             if seen_export {
@@ -876,9 +926,6 @@ impl<'a> Parser<'a> {
             loop {
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
-                if matches!(name.as_str(), "sync" | "task" | "yield") {
-                    return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
-                }
                 if is_java_v1_reserved_parameter_name(&name)
                     || matches!(
                         name.as_str(),
@@ -920,7 +967,6 @@ impl<'a> Parser<'a> {
                             | "print"
                             | "seq"
                             | "sync"
-                            | "task"
                             | "yield"
                     )
                     || self.parameters.contains(&name)
@@ -1073,6 +1119,14 @@ impl<'a> Parser<'a> {
         }
         // Scan only already-invalid trailing source, preserving compiler-only
         // macro diagnostics without accepting anything after scalar main.
+        if self.current == Token::Word("use") || self.current == Token::Word("namespace") {
+            return Err((if has_namespace {
+                "CRANELIFT_NAMESPACE_DUPLICATE: duplicate file-level namespace"
+            } else {
+                "CRANELIFT_NAMESPACE_HEADER_ORDER: namespace must be declared before functions"
+            })
+            .into());
+        }
         if self.current != Token::End {
             let at = self.pos;
             while self.current != Token::End {
@@ -1122,6 +1176,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
     let mut before_previous: Option<Tok<'_>> = None;
     let mut third_previous: Option<Tok<'_>> = None;
     let mut pending_pipe = false;
+    let mut last_token_end = 0usize;
 
     while index < bytes.len() {
         let byte = bytes[index];
@@ -1168,6 +1223,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             continue;
         }
 
+        let token_start = index;
         let current = if is_ident_start(byte) {
             let start = index;
             index += 1;
@@ -1191,6 +1247,11 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             ) => true,
             (Some(Tok::Id("actor")), Some(Tok::Sym(b'.')), Tok::Id("group")) => true,
             (_, Some(Tok::Sym(b'.')), Tok::Id("pubsub")) => true,
+            // A local/imported Topic handle need not spell Topic<T> or
+            // actor.group in the same file. Do not let its publication
+            // fall through to scalar CLIF/JIT or produce a misleading
+            // unknown-member error. A free fnc try_publish remains legal.
+            (_, Some(Tok::Sym(b'.')), Tok::Id("try_publish")) => true,
             (_, Some(Tok::Id("Topic" | "Subscription")), Tok::Sym(b'<')) => true,
             (Some(Tok::Sym(b'.')), Some(Tok::Id("topic")), Tok::Sym(b'<')) => true,
             _ => false,
@@ -1199,12 +1260,16 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
             return true;
         }
         if detect_pipe {
+            let contiguous_pipe_bang = pending_pipe
+                && matches!(previous, Some(Tok::Id("pipe" | "rpipe")))
+                && matches!(current, Tok::Sym(b'!'))
+                && token_start == last_token_end;
             let static_dot = matches!(
                 (before_previous, previous, current),
                 (
                     Some(Tok::Id("ActorUtils")),
                     Some(Tok::Sym(b'.')),
-                    Tok::Id("pipe")
+                    Tok::Id("pipe" | "rpipe")
                 )
             );
             let static_colon = matches!(
@@ -1213,7 +1278,7 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                     Some(Tok::Id("ActorUtils")),
                     Some(Tok::Sym(b':')),
                     Some(Tok::Sym(b':')),
-                    Tok::Id("pipe")
+                    Tok::Id("pipe" | "rpipe")
                 )
             );
             let right_start = match current {
@@ -1243,15 +1308,18 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                         | "return"
                         | "spawn"
                         | "pipe"
+                        | "rpipe"
                         | "as"
                         | "case"
                 ),
                 Some(Tok::Sym(b')' | b']' | b'}')) => true,
                 _ => false,
             };
-            pending_pipe = matches!(current, Tok::Id("pipe")) && left_end;
+            pending_pipe =
+                (matches!(current, Tok::Id("pipe" | "rpipe")) && left_end) || contiguous_pipe_bang;
         }
 
+        last_token_end = index;
         third_previous = before_previous;
         before_previous = previous;
         previous = Some(current);
@@ -1262,20 +1330,27 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
 
 // The parser recursion budget does not bound a long left-associative chain.
 // This bounded, iterative traversal rejects an oversized constructed AST.
-fn validate_ast_depth(root: &Expr) -> Result<(), String> {
+pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
     let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    let mut counted_nodes = 0usize;
     while let Some((expr, level)) = pending.pop() {
+        counted_nodes += 1;
+        if counted_nodes > MAX_NODES {
+            return Err("AST node budget exceeded".into());
+        }
         if level > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
         }
         match expr {
-            Expr::Literal(_) | Expr::Param(_) | Expr::Local(_) => {}
-            Expr::Seq(parts) => {
-                if parts.is_empty() || parts.len() > 16 {
-                    return Err("E_SEQ_LIMIT: forged scalar sequence arity".into());
+            Expr::Literal(_) | Expr::Local(_) => {}
+            Expr::Param(i) if *i < MAX_PARAMS => {}
+            Expr::Param(_) => return Err("invalid scalar parameter index".into()),
+            Expr::Seq(items) => {
+                if items.is_empty() || items.len() > 16 {
+                    return Err("E_SEQ_LIMIT: invalid scalar sequence arity".into());
                 }
-                for part in parts.iter().rev() {
-                    pending.push((part, level + 1));
+                for item in items.iter().rev() {
+                    pending.push((item, level + 1));
                 }
             }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) => {
@@ -1368,61 +1443,169 @@ fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-// A source-level type-only ADT match is an unsupported declaration surface,
-// not a nested expression in the scalar `fnc main` profile. Determine only
-// the first significant keyword; do not scan inside a function or reorder
-// existing match/actor/enum diagnostic precedence.
-fn has_leading_type_only_match(text: &str) -> Result<bool, String> {
-    let bytes = text.as_bytes();
-    let mut at = 0usize;
+/// Token-aware resource-class constructor admission for the currently
+/// scalar-only backend. No Mutex runtime, waiter or guest lease exists here.
+/// Source is scanned with the existing bounded lexer so commented-out
+/// constructors never create false positives or new permissions.
+fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
+    // This scanner only classifies constructors, never admits executable code.
+    let mut scan = Parser::with_mutex_scan(text, true)?;
+    let mut window = [Token::End; 6];
     loop {
-        let width = whitespace_width(bytes, at);
-        if width != 0 {
-            at += width;
-            continue;
+        let token = scan.current;
+        if token == Token::End {
+            break;
         }
-        if bytes.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
-            at += 2;
-            while at < bytes.len() && line_break_width(bytes, at) == 0 {
-                at += 1;
+        window.rotate_left(1);
+        window[5] = token;
+        if matches!(
+            &window[1..],
+            [
+                Token::Word("Mutex"),
+                Token::Punct(b'<'),
+                Token::Word(_),
+                Token::Punct(b'>'),
+                Token::Punct(b'(')
+            ]
+        ) {
+            if window[0] == Token::Word("new") {
+                return Err(
+                    "E_LOCK_UNSUPPORTED: no compiled MutexLease or scheduler exists for Cranelift"
+                        .into(),
+                );
             }
-            continue;
+            return Err(
+                "E_NEW_REQUIRED: Mutex<T> is a nominal resource class; use new Mutex<int>(value)"
+                    .into(),
+            );
         }
-        if bytes.get(at..at.saturating_add(2)) == Some(&b"/*"[..]) {
-            at = skip_block_comment(bytes, at)?;
-            continue;
-        }
-        break;
+        scan.next()?;
     }
-    let key = b"match";
-    Ok(
-        bytes.get(at..at.saturating_add(key.len())) == Some(&key[..])
-            && !bytes
-                .get(at.saturating_add(key.len()))
-                .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_'),
-    )
+    Ok(())
 }
 
-pub fn parse(text: &str) -> Result<Program, String> {
+pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
-    if has_leading_type_only_match(text)? {
-        return Err("native type-only ADT pattern lowering unsupported".into());
-    }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
     }
-    Parser::new(text)?.program()
+    if text.contains("Mutex") {
+        reject_unimplemented_mutex_construction(text)?;
+    }
+    Ok(())
+}
+
+pub fn parse(text: &str) -> Result<Program, String> {
+    validate_source_envelope(text)?;
+    let original = Parser::new(text)?.program();
+    // Preserve authoritative declaration/effect/export diagnostics. Refine
+    // only generic grammar denials (or the specific unsupported Struct case).
+    if !original.as_ref().is_err_and(|err| {
+        err.starts_with("unexpected token")
+            || err.starts_with("unbound or unsupported identifier")
+            || err.starts_with("expected scalar expression")
+            || err.starts_with("invalid character")
+            || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
+            || err.starts_with("E_LET_UNSUPPORTED")
+            || err.starts_with("expected scalar fnc or int <-/• declaration")
+    }) {
+        return original;
+    }
+    // The narrow scalar grammar must not hide unsupported collection syntax
+    // behind an earlier local declaration. Candidate text only triggers a
+    // bounded token scan; quotes and comments are handled by the lexer.
+    if text.contains("Map")
+        || text.contains("Entry")
+        || text.contains("Record")
+        || text.contains("=>")
+        || text.contains('[')
+    {
+        let mut scan = Parser::new(text)?;
+        let mut previous = Token::End;
+        while scan.current != Token::End {
+            // A visibility qualifier pub[...] is not an indexed expression.
+            if scan.current == Token::Punct(b'[') && previous != Token::Word("pub") {
+                return Err("E_UNSUPPORTED_INDEX_WRITE: indexed Record/Map/Struct access requires checked target typing and guest lowering".into());
+            }
+            previous = scan.current;
+            scan.next()?;
+        }
+    }
+    original
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mutex_new_constructor_is_required_but_not_yet_runtime_supported() {
+        // Constructor grammar applies to all simple nominal type arguments,
+        // not just the currently executable scalar int. Nested type arguments
+        // remain outside this narrowly bounded source admission gate.
+        for ty in ["int", "bool", "float", "Buffer"] {
+            let old = format!("pub fnc main():int {{ val counter = Mutex<{ty}>(0); return 0; }}");
+            let canonical =
+                format!("pub fnc main():int {{ val counter = new Mutex<{ty}>(0); return 0; }}");
+            assert!(parse(&old).unwrap_err().contains("E_NEW_REQUIRED"), "{ty}");
+            assert!(
+                parse(&canonical)
+                    .unwrap_err()
+                    .contains("E_LOCK_UNSUPPORTED"),
+                "{ty}"
+            );
+        }
+        assert_eq!(
+            eval(
+                &parse("// Mutex<int>(0) is a comment\nfnc main():int{return 42;}")
+                    .unwrap()
+                    .result,
+                &[]
+            ),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn actor_heap_guest_fails_closed_before_cranelift_jit() {
+        let node = r#"define class Node as
+    int value
+    Node? next
+end
+define actor HeapGraphProbe as
+    receive(int message) {
+        let first = new Node(42, none)
+        let second = new Node(99, first)
+        assert(second.next?.value == 42)
+    }
+end"#;
+        let error = parse(node).unwrap_err();
+        assert!(error.contains("DECL_KIND_UNSUPPORTED: class"), "{error}");
+
+        for src in [
+            "fnc main():int{return new Node(7);}",
+            "fnc main():int{return 42;} new Node(7)",
+        ] {
+            let error = parse(src).unwrap_err();
+            assert!(
+                error.contains("E_ACTOR_MEMORY_GUEST_UNSUPPORTED"),
+                "{src}: {error}"
+            );
+        }
+        for inert in [
+            "fnc main():int{return 42;} // new Node(7)",
+            "fnc main():int{return 42;} /* new Node(7) */",
+            "fnc main():int{return 42;} /* define actor A as end */",
+        ] {
+            assert!(parse(inert).is_ok(), "inert actor memory comment: {inert}");
+        }
+    }
+
     #[test]
     fn nested_block_comments_are_inert_but_bounded_and_well_terminated() {
         let guest = "/* define actor Worker */ fnc main(/* ignored */):int { /* outer /* inner */ rest */ return 42; }";
@@ -1934,6 +2117,70 @@ mod tests {
         assert!(parse("fnc main():int{return 42;} // 100% comment").is_ok());
     }
     #[test]
+    fn exceptional_bang_keywords_fail_closed_before_clif() {
+        for op in ["trap!", "throw!", "raise!", "panic!"] {
+            let src = format!("fnc main():int{{return {op} value;}}");
+            let error = parse(&src).expect_err("unlowered bang effect must fail");
+            assert!(
+                error.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                "unexpected diagnostic for {op}: {error}"
+            );
+        }
+        assert!(parse("fnc main():int{return 7;} // throw!").is_ok());
+    }
+
+    #[test]
+    fn eighteen_case_exception_bang_boundaries_never_forge_native_clif_effects() {
+        // 18 spec #146 lexical vectors: six backend-denied canonical forms,
+        // nine collision/legacy forms, one string and two comments.
+        for expr in [
+            "trap! parse_id(\"42\")",
+            "trap!parse_id(\"42\")",
+            "throw! Error(\"bad\")",
+            "raise! Error(\"bad\")",
+            "panic! Error(\"bad\")",
+            "throw!Error(\"bad\")",
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            let err = parse(&source).expect_err("unimplemented effect must fail closed");
+            assert!(
+                err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                "wrong diagnostic for {expr:?}: {err}"
+            );
+        }
+        for expr in [
+            "trap parse_id(\"42\")",
+            "throw Error(\"bad\")",
+            "raise Error(\"bad\")",
+            "panic Error(\"bad\")",
+            "trap !ready",
+            "trap!=next",
+            "trap!eq next",
+            "trapped! parse_id()",
+            "copy! owned",
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            if let Err(err) = parse(&source) {
+                assert!(
+                    !err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                    "false exceptional bang in {expr:?}: {err}"
+                );
+            }
+        }
+        for source in [
+            "fnc main():int{return 7;} // trap! throw! raise! panic!",
+            "fnc main():int{/* trap! throw! raise! panic! */return 7;}",
+            "fnc main():int{return \"trap! throw! raise! panic!\";}",
+        ] {
+            if let Err(err) = parse(source) {
+                assert!(
+                    !err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                    "trivia falsely reclassified as control: {err}"
+                );
+            }
+        }
+    }
+    #[test]
     fn option_result_trap_fail_closed_until_native_tagged_lowering() {
         // Only the scalar contract is executable; these are unsupported
         // features, NOT passing semantic Option/Result/trap conformance cases.
@@ -2108,7 +2355,7 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
-        // A valid trailing block comment must not cause a false rejection.
+        // Well-formed trailing block comments are inert, like trailing line comments.
         assert!(parse("fnc main():int{return 1;} /*no*/").is_ok());
         assert!(
             parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
@@ -2234,6 +2481,56 @@ mod tests {
         }
     }
     #[test]
+    fn actor_pubsub_alias_try_publish_denied_before_scalar_clif() {
+        // Identical Git blob across LLVM/Wasm/.NET/JS/HDL/Forge/central:
+        // c562ad380bb283da9ffa26160653c1186ab63462.
+        // This target is scalar-only; it must not pretend to implement
+        // Result<PublishReceipt,PublishError> or checked share! lowering.
+        let canonical =
+            include_str!("../tests/fixtures/atto-ensemble-v1/canonical-unlowered-try-publish.atto");
+        for source in [
+            canonical,
+            "val receipt=imported_topic.try_publish(share! event)?;",
+            "val receipt=local /* outer /* nested */ end */ . try_publish(share! event)?;",
+            "val receipt=local?.try_publish(rt share event);",
+            "val method=topic.try_publish;",
+            "val receipt=topic.\ntry_publish(event);",
+            "val receipt=topic.// inert .try_publish\ntry_publish(event);",
+        ] {
+            assert!(
+                has_actor_pubsub_surface(source),
+                "unlowered aliased Topic member was accepted by source gate: {source}"
+            );
+            assert_eq!(
+                parse(source).unwrap_err(),
+                "native ActorGroup/Topic source lowering unsupported",
+                "no scalar CLIF, JIT, or artifact should be produced"
+            );
+        }
+    }
+
+    #[test]
+    fn actor_pubsub_alias_preflight_ignores_inert_tokens() {
+        for inert in [
+            "fnc try_publish(value:int):int{return value;}",
+            "fnc main():int{return 42;} // topic.try_publish(share! event)?",
+            "fnc main():int{return 42;} /* nested /* x.try_publish() */ tail */",
+            r#"fnc main():int{return 42;} "topic.try_publish(share! event)?""#,
+            "fnc main(topic:int):int{return topic;}",
+            "fnc main():int{return 42;} /* .try_publish member reference */",
+            "fnc main():int{return 42;} /* topic. */ try_publish",
+            "fnc main():int{return 42;} // imported_topic.try_publish\n",
+        ] {
+            assert!(
+                !has_actor_pubsub_surface(inert),
+                "inert syntax must not forge typed pub/sub capability: {inert}"
+            );
+        }
+        let scalar = parse("fnc main():int{return 42;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[]), Ok(42));
+    }
+
+    #[test]
     fn actor_pubsub_preflight_ignores_inert_text_and_accepts_spacing() {
         assert!(!has_actor_pubsub_surface(
             "fnc main():int{return 42;} // actor.group(x) Topic<String>"
@@ -2277,6 +2574,14 @@ mod tests {
             "return ActorUtils::pipe(spawn Source(), spawn Sink());",
             "return ActorUtils.pipe(spawn Source(), spawn Sink());",
             "return first pipe second;",
+            "return first rpipe second;",
+            "return sink rpipe source;",
+            "return spawn Producer() pipe! spawn Consumer();",
+            "return first pipe! second;",
+            "return sink rpipe! source;",
+            "return consumer rpipe! producer;",
+            "return ActorUtils.rpipe(source, sink);",
+            "return ActorUtils::rpipe(source, sink);",
         ] {
             assert!(has_actor_pipe_surface(src), "must reject actor pipe: {src}");
             assert!(
@@ -2288,6 +2593,13 @@ mod tests {
         for inert in [
             "fnc pipe(x:int):int{return x;}",
             "fnc main(pipe:int):int{return pipe+1;}",
+            "fnc main(rpipe:int):int{return rpipe+1;}",
+            "fnc main():int{return 42;} // sink rpipe source",
+            "fnc main():int{return 42;} // first pipe! second",
+            "fnc main():int{return 42;} /* sink rpipe! source */",
+            r#"fnc main():int{return 42;} "first pipe! second""#,
+            "return first pipe ! second;",
+            "return sink rpipe /* gap */ ! source;",
             "fnc main():int{return 42;} // spawn A() pipe spawn B()",
             r#"fnc main():int{return 42;} "ActorUtils::pipe(A,B)""#,
             "fnc main(x:int):int{return x |> add_one;}",
@@ -2363,5 +2675,63 @@ mod tests {
         assert!(!has_actor_pubsub_surface(
             "// runtime_pubsub.publish\rfnc main():int{return 1;}"
         ));
+    }
+
+    #[test]
+    fn scoped_scalar_seq_model_preserves_source_order_and_rejects_invalid_arity() {
+        for expression in [
+            "seq(42)",
+            "seq(1,2,42)",
+            "(> 1,2,42)",
+            "seq(1,seq(2,42))",
+            "seq(1,(> 2,42))",
+            "seq(1,2)+40",
+            "seq(1,Integer.bitAnd(3,1),42)",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            let parsed = parse(&source).expect("scoped scalar seq must parse");
+            assert_eq!(eval(&parsed.result, &[]), Ok(42), "{source}");
+        }
+        for expression in [
+            "seq()",
+            "(>)",
+            "seq(1,)",
+            "(> 1,)",
+            "seq(,1)",
+            "seq(1,,2)",
+            "seq(1;2)",
+            "(1,2)",
+            "seq 1,2",
+        ] {
+            let source = format!("fnc main():int{{return {expression};}}");
+            assert!(
+                parse(&source).is_err(),
+                "{source}: invalid seq was admitted"
+            );
+        }
+        let too_many = format!(
+            "fnc main():int{{return seq({});}}",
+            (0..17).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
+        assert!(parse(&too_many).unwrap_err().contains("E_SEQ_LIMIT"));
+        assert!(parse("fnc main(seq:int):int{return seq;}").is_err());
+        let model_trap = parse("fnc main():int{return seq(9223372036854775807+1,42);}")
+            .expect("arithmetic trapping sequence has valid syntax");
+        assert_eq!(eval(&model_trap.result, &[]), Err("overflow"));
+        let zero_divisor = parse("fnc main():int{return seq(Integer.rem(8,0),42);}")
+            .expect("guarded remainder syntax");
+        assert_eq!(eval(&zero_divisor.result, &[]), Err("divisor_zero"));
+        // These Program expressions may also be constructed without parsing;
+        // the recursive native emitter must never receive unsafe arities.
+        assert!(validate_ast_depth(&Expr::Seq(vec![])).is_err());
+        assert!(validate_ast_depth(&Expr::Seq(vec![Expr::Literal(1); 17])).is_err());
+    }
+
+    #[test]
+    fn canonical_scalar_local_slots_distinguish_const_and_val() {
+        let parsed = parse("fnc main(a:int):int{const c=2;val v=a+c;return v;}").unwrap();
+        assert_eq!(parsed.locals.len(), 1);
+        assert_eq!(parsed.result, Expr::Local(0));
+        assert!(parse("fnc main(a:int):int{int c=a;return c;}").is_err());
     }
 }

@@ -25,8 +25,8 @@ Checked compile-time overflow rejects **before IR**, including unused constexpr 
 
 ## Overlap disposition
 
-- Atto Cranelift **#52** modifies the scalar frontend/backend to support ordered sequence expressions. It is a **separate feature with overlapping files**; neither branch supersedes the other. Integrate and rerun native full-suite tests before merging either into a combined tree.
-- **#50** uses a separate functional pipeline parser and constrained lexical `val` expansion, not these general local bindings. Verify composition explicitly; this PR does not claim it.
+- Atto Cranelift **#52**'s bounded ordered sequence implementation was reconciled into this draft in the combined scalar frontend/backend. #52 remains an overlapping, separately open draft; do not merge that older tree independently. Verify checked discarded-prefix traps in a real native suite.
+- Atto Cranelift **#50**'s separate pure functional pipeline parser and fixtures are now incorporated into this draft with an explicit combined driver. Its linear-use expansion remains distinct from general scalar-local and sequence lowering; mixed pipeline-plus-seq guests must reject until separately implemented and tested.
 - Atto **#39** currently proposes `^` as integer XOR, but this conflicts with the later language decision reserving `^ expr;` for return and using `^^` for integer bitwise XOR. The checked-in bitwise spec still contains the old infix-XOR text. **Do not merge #39 or claim operator parity from this PR** until the canonical spec, parser, formatter and regression corpus agree.
 - Do not privately mirror legacy archived source into another organization. This branch is an independent implementation in the active Atto repo.
 
@@ -93,3 +93,11 @@ v1/v2 selector in `atto-spec#86` is not implemented or inferred.
 
 **Test status:** all tests are authored but NOT_EXECUTED on this exact integrated
 head. Require Cargo, Clippy and real native guest run/IR evidence before review.
+
+### #75 legacy implementation extraction — 2026-11-20 integration
+
+The [#75](https://github.com/atto-lang/atto-source.cranelift/pull/75) stage-0 implementation is **not semantically mergeable as written**: its parser permits runtime-dependent `int x = argument + 1;`, whereas the accepted Atto `compile-time-constants-v1` and `local-binding-mutability-v1` require that type-first `int` behave exactly like constexpr `const int`. Use `val int x = argument + 1;` for an immutable runtime local. This is a semantic divergence, not an ordinary file conflict.
+
+Preserved the **unique security behaviors** from #75 in this canonical #58 head, specifically manually forged five-parameter native ABI admission, balanced >4096-node AST denial, and failed unused runtime-`val` initializer output-pointer sentinel preservation. These are native backend regression **tests authored**, not executed run evidence. Existing #58 tests already cover bad forward/self references, 64-local and depth-128 guards, const overflow and runtime-`val` traps. Do not copy #75's now-invalid runtime type-first positive guest tests.
+
+[#76](https://github.com/atto-lang/atto-source.cranelift/pull/76) remains stacked on #75's incompatible branch even though its separate parser was updated to accept same-line `begin/end`, brace return-first bodies and bare `return ...; end`. Port that grammar and its tests onto this #58 base only after integration validation, rather than assuming an automatic GitHub restack. **No CI was executed for these new heads.**

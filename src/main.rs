@@ -11,6 +11,10 @@ mod isolate;
 pub mod layout;
 #[allow(dead_code)]
 mod owned_region;
+#[allow(dead_code)]
+mod result_int_parse_v1;
+// Backend-local trusted host primitive; guest lowering pending.
+mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
@@ -60,9 +64,6 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
             let error = std::io::Error::last_os_error();
-            // Linux openat(O_NOFOLLOW) reports ELOOP for a symlink leaf.
-            // Preserve a stable explicit security rejection across kernels;
-            // never retry without O_NOFOLLOW or follow the target.
             if final_component && error.raw_os_error() == Some(libc::ELOOP) {
                 return Err("source must be a regular file (symlinks forbidden)".into());
             }
@@ -223,11 +224,8 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if mode == "ir" && !supplied.is_empty() {
-        return Err("ir mode does not accept arguments".into());
-    }
-    if mode == "check" && !supplied.is_empty() {
-        return Err("check mode does not accept runtime arguments".into());
+    if (mode == "ir" || mode == "check") && !supplied.is_empty() {
+        return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
         return Err("too many runtime arguments".into());
@@ -255,6 +253,7 @@ fn run() -> Result<(), String> {
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
+    frontend::validate_source_envelope(source)?;
     let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated
@@ -274,7 +273,12 @@ fn run() -> Result<(), String> {
     // counts of "fnc" (including strings/comments) cannot grant JIT admission.
     // Any linked-native validation failure is returned by run_linked_native;
     // it may never fall back to an inliner or a different semantic profile.
-    if path.extension().and_then(|ext| ext.to_str()) == Some("atto") {
+    // Keep explicit pipe/inline-arrow syntax on the existing pure pipeline lane.
+    if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
+        && !source.contains("|>")
+        && !source.contains("<|")
+        && !source.contains(": int ->")
+    {
         if let Ok(functions) = functional_pipelines::parse_linked_native(source, &[]) {
             if functions.len() > 1 {
                 return run_linked_native(&mode, &values, &functions);
@@ -286,6 +290,8 @@ fn run() -> Result<(), String> {
         Err(original)
             if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
         {
+            // The independent pure parser must share the outer admission gates.
+            frontend::validate_source_envelope(source)?;
             functional_pipelines::parse(source)
                 .map_err(|reason| format!("{reason} (stage-0: {original})"))?
         }
@@ -314,8 +320,8 @@ fn run() -> Result<(), String> {
         // Experimental *trusted* native scalar VM entry. The source must
         // accept (old, delta) i64; this is NOT a sandbox or actor scheduler.
         let vm = isolate::OresVM::new(2)?;
-        let a: isolate::TenantVMHandle = vm.create_tenant_vm("tenant-a", 1, 1)?;
-        let b: isolate::TenantVMHandle = vm.create_tenant_vm("tenant-b", 1, 1)?;
+        let a = vm.create_tenant_vm("tenant-a", 1, 1)?;
+        let b = vm.create_tenant_vm("tenant-b", 1, 1)?;
         vm.start(&a)?;
         vm.start(&b)?;
         let actor_a = vm.register_actor(&a, 1)?;
