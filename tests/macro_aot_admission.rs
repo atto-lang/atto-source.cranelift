@@ -81,8 +81,15 @@ fn comments_do_not_mint_macros_or_block_ordinary_scalar_aot_inputs() {
             );
             assert_eq!(output.stdout, b"42\n");
             let ir = compile(source, "ir", ext);
-            assert!(ir.status.success(), "IR rejected: {}", String::from_utf8_lossy(&ir.stderr));
-            assert!(!ir.stdout.is_empty(), "ordinary scalar CLIF must be emitted");
+            assert!(
+                ir.status.success(),
+                "IR rejected: {}",
+                String::from_utf8_lossy(&ir.stderr)
+            );
+            assert!(
+                !ir.stdout.is_empty(),
+                "ordinary scalar CLIF must be emitted"
+            );
         }
     }
 }
