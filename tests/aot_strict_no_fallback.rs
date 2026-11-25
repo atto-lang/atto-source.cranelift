@@ -13,7 +13,10 @@ fn unsupported_aot_modes_fail_before_source_access_or_jit() {
             .output()
             .expect("launch actual native Cranelift CLI");
         assert_eq!(out.status.code(), Some(1), "{mode} must be rejected");
-        assert!(out.stdout.is_empty(), "{mode} must not print a guest result");
+        assert!(
+            out.stdout.is_empty(),
+            "{mode} must not print a guest result"
+        );
         let diagnostic = String::from_utf8_lossy(&out.stderr);
         assert!(
             diagnostic.starts_with("orescranelift: ")
