@@ -1,8 +1,8 @@
 //! Bounded, explicitly-authorized source graph for the trusted scalar JIT.
 //! This is NOT a general Atto package resolver or a native tenant sandbox.
 //! No fallback to ambient ORES_PATHS, user directories, or arbitrary imports.
-use crate::functional_pipelines::Fn as ScalarFn;
 use crate::functional_pipelines;
+use crate::functional_pipelines::Fn as ScalarFn;
 use crate::open_source_file;
 use std::collections::HashSet;
 use std::io::Read;
@@ -30,9 +30,10 @@ fn valid_identifier(text: &str) -> bool {
 
 fn parse_import_line(line: &str) -> Result<NamedImport, String> {
     let line = line.trim();
-    let remainder = line
-        .strip_prefix("import ")
-        .ok_or("E_LINK_IMPORT_SYNTAX")?;
+    let remainder = line.strip_prefix("import ").ok_or("E_LINK_IMPORT_SYNTAX")?;
+    if remainder.starts_with("module ") {
+        return Err("E_LIBRARY_PROFILE_UNSUPPORTED: compiler-owned modules require verified profile lowering".into());
+    }
     let (name, path) = remainder
         .split_once(" from ")
         .ok_or("E_LINK_IMPORT_SYNTAX")?;
@@ -182,7 +183,10 @@ fn manifest_has_package_name(source: &str) -> bool {
 
 fn absolute_entry(path: &Path) -> Result<PathBuf, String> {
     // Do not normalize a lexical .. that the CLI's no-follow policy rejected.
-    if path.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_))) {
+    if path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
         return Err("E_LINK_ENTRY_TRAVERSAL".into());
     }
     if path.is_absolute() {
@@ -194,7 +198,10 @@ fn absolute_entry(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn package_root(entry: &Path) -> Result<PathBuf, String> {
-    let mut directory = entry.parent().ok_or("E_LINK_ENTRY_DIRECTORY")?.to_path_buf();
+    let mut directory = entry
+        .parent()
+        .ok_or("E_LINK_ENTRY_DIRECTORY")?
+        .to_path_buf();
     loop {
         let marker = directory.join(".ores.pkg.toml");
         match std::fs::symlink_metadata(&marker) {
@@ -301,11 +308,16 @@ mod tests {
     use super::*;
     #[test]
     fn all_invalid_path_spellings_fail_closed() {
-        for path in ["+/src/lib/helpers.atto", "+src/../lib/helpers.atto",
-                     "+src//lib/helpers.atto", "+src\\lib\\helpers.atto",
-                     "+src/lib/helpers.ores", "+src/lib/./helpers.atto"] {
-            let result = parse_import_line(&format!("import helper from \"{path}\";"))
-                .and_then(|import| {
+        for path in [
+            "+/src/lib/helpers.atto",
+            "+src/../lib/helpers.atto",
+            "+src//lib/helpers.atto",
+            "+src\\lib\\helpers.atto",
+            "+src/lib/helpers.ores",
+            "+src/lib/./helpers.atto",
+        ] {
+            let result =
+                parse_import_line(&format!("import helper from \"{path}\";")).and_then(|import| {
                     if let Some(suffix) = import.specifier.strip_prefix('+') {
                         checked_path_suffix(suffix).map(|_| ())
                     } else {
@@ -318,8 +330,13 @@ mod tests {
     #[test]
     fn duplicate_import_names_and_missing_imports_are_rejected() {
         assert!(split_entry("fnc main(): int { return 42; }").is_err());
-        assert!(split_entry("import a from \"./lib/a.atto\";\n\
+        assert!(
+            split_entry(
+                "import a from \"./lib/a.atto\";\n\
             import a from \"./lib/b.atto\";\n\
-            fnc main(): int { return 42; }").is_err());
+            fnc main(): int { return 42; }"
+            )
+            .is_err()
+        );
     }
 }

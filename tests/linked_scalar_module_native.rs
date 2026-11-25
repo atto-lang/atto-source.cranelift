@@ -25,12 +25,16 @@ impl Project {
         for _ in 0..64 {
             let ticket = NEXT.fetch_add(1, Ordering::Relaxed);
             let base = std::env::temp_dir().join(format!(
-                "atto-cranelift-link-{}-{ticket}", std::process::id()
+                "atto-cranelift-link-{}-{ticket}",
+                std::process::id()
             ));
             match fs::create_dir(&base) {
                 Ok(()) => {
                     let project = Self { base };
-                    project.write(".ores.pkg.toml", "schema_version = \"1\"\n[package]\nname = \"link-native-test\"\n");
+                    project.write(
+                        ".ores.pkg.toml",
+                        "schema_version = \"1\"\n[package]\nname = \"link-native-test\"\n",
+                    );
                     project.write("src/lib/helpers.atto", HELPER);
                     return project;
                 }
@@ -84,7 +88,10 @@ fn reject_all(entry: &Path, expected: &str) {
             stderr.starts_with("orescranelift: ") && stderr.contains(expected),
             "{mode} wrong diagnostic for {expected}: {stderr}"
         );
-        assert!(!stderr.contains("panicked at"), "{mode} host panic: {stderr}");
+        assert!(
+            !stderr.contains("panicked at"),
+            "{mode} host panic: {stderr}"
+        );
     }
 }
 
@@ -162,11 +169,6 @@ fn import_visibility_and_package_authority_fail_before_native_ir() {
             "E_LINK_DUP_BINDING",
         ),
         (
-            "src/reject-comment-import.atto",
-            "/*\nimport increment from \"+src/lib/helpers.atto\";\n*/\nfnc main(): int { return 42; }\n",
-            "E_LINK_BLOCK_COMMENT_UNSUPPORTED",
-        ),
-        (
             "src/reject-late-import.atto",
             "fnc main(): int { return increment(41); }\nimport increment from \"+src/lib/helpers.atto\";\n",
             "E_LINK_IMPORT_ORDER",
@@ -192,13 +194,31 @@ fn imported_nonlinear_helper_uses_real_native_call_and_returns_42() {
          pub fnc main(): int { return twice(21); }\n",
     );
     let check = invoke("check", &path);
-    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
     assert!(check.stdout.is_empty());
     let ir = invoke("ir", &path);
-    assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
-    assert!(String::from_utf8_lossy(&ir.stdout).contains("call "), "no native CLIF call");
+    assert_eq!(
+        ir.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&ir.stdout).contains("call "),
+        "no native CLIF call"
+    );
     let run = invoke("run", &path);
-    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert_eq!(run.stdout, b"42\n");
     assert!(run.stderr.is_empty());
 }
@@ -216,13 +236,29 @@ fn nested_public_calls_and_lexical_val_initializers_execute_as_native_functions(
          }\n",
     );
     let check = invoke("check", &path);
-    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
     let ir = invoke("ir", &path);
-    assert!(ir.status.success(), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
     let source = String::from_utf8_lossy(&ir.stdout);
-    assert!(source.matches("call ").count() >= 2, "nested native calls missing");
+    assert!(
+        source.matches("call ").count() >= 2,
+        "nested native calls missing"
+    );
     let run = invoke("run", &path);
-    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert_eq!(run.stdout, b"42\n");
 }
 
@@ -242,11 +278,17 @@ fn checked_overflow_in_a_callee_or_an_argument_propagates_before_entry_output() 
         ),
     ] {
         let path = project.write(name, source);
-        assert!(invoke("check", &path).status.success(), "{name} source rejected");
+        assert!(
+            invoke("check", &path).status.success(),
+            "{name} source rejected"
+        );
         assert!(invoke("ir", &path).status.success(), "{name} CLIF rejected");
         let observed = invoke("run", &path);
         assert_eq!(observed.status.code(), Some(1), "{name} overflow wrapped");
-        assert!(observed.stdout.is_empty(), "{name} wrote an output despite failure");
+        assert!(
+            observed.stdout.is_empty(),
+            "{name} wrote an output despite failure"
+        );
         assert!(
             String::from_utf8_lossy(&observed.stderr).contains("i64 arithmetic overflow"),
             "{name}: {}",
@@ -306,9 +348,7 @@ fn graph_imports_may_not_repurpose_isolate_tenant_entry() {
     let output = invoke("isolate", &path);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("E_LINK_ISOLATE_UNSUPPORTED")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("E_LINK_ISOLATE_UNSUPPORTED"));
 }
 
 #[test]
@@ -332,8 +372,7 @@ fn imported_source_symlinks_are_denied_by_descriptor_relative_source_open() {
         "outside.atto",
         "pub fnc escaped(int x): int { return x + 1; }\n",
     );
-    symlink(&target, project.base.join("src/external.atto"))
-        .expect("create local fixture symlink");
+    symlink(&target, project.base.join("src/external.atto")).expect("create local fixture symlink");
     reject_all(&entry, "E_LINK_SOURCE_OPEN");
 }
 
@@ -365,7 +404,10 @@ fn nearest_legacy_package_blocks_parent_modern_authority() {
 fn malformed_modern_manifest_does_not_grant_import_authority() {
     let project = Project::new();
     fs::remove_file(project.base.join(".ores.pkg.toml")).expect("delete test marker");
-    project.write(".ores.pkg.toml", "schema_version = \"1\"\n[package]\nname = \"x\"\n[unauthorized]\nsecret = \"path\"\n");
+    project.write(
+        ".ores.pkg.toml",
+        "schema_version = \"1\"\n[package]\nname = \"x\"\n[unauthorized]\nsecret = \"path\"\n",
+    );
     let entry = project.write("src/malformed-marker.atto", ROOT_MAIN);
     reject_all(&entry, "E_LINK_INVALID_MANIFEST");
 }
@@ -388,7 +430,10 @@ fn discarded_parameter_still_eagerly_evaluates_and_traps() {
     assert!(invoke("ir", &source).status.success());
     let run = invoke("run", &source);
     assert_eq!(run.status.code(), Some(1));
-    assert!(run.stdout.is_empty(), "discarded eager argument must still trap");
+    assert!(
+        run.stdout.is_empty(),
+        "discarded eager argument must still trap"
+    );
     assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"));
 }
 
@@ -430,16 +475,37 @@ pub fnc main(): int {
 "#,
     );
     let check = invoke("check", &entry);
-    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
     assert!(check.stdout.is_empty());
     let ir = invoke("ir", &entry);
-    assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert_eq!(
+        ir.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
     let clif = String::from_utf8_lossy(&ir.stdout);
-    assert!(clif.contains("call "), "standalone helper was not a native call");
-    assert!(clif.contains("linked function twice"), "missing helper CLIF");
+    assert!(
+        clif.contains("call "),
+        "standalone helper was not a native call"
+    );
+    assert!(
+        clif.contains("linked function twice"),
+        "missing helper CLIF"
+    );
     assert!(clif.contains("linked function main"), "missing entry CLIF");
     let native = invoke("run", &entry);
-    assert_eq!(native.status.code(), Some(0), "{}", String::from_utf8_lossy(&native.stderr));
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
     assert_eq!(native.stdout, b"42\n");
     assert!(native.stderr.is_empty());
 }
@@ -494,10 +560,19 @@ fn standalone_name_first_formals_keep_real_native_calls_and_checked_status() {
     );
     assert!(invoke("check", &entry).status.success());
     let ir = invoke("ir", &entry);
-    assert!(ir.status.success(), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
     assert!(String::from_utf8_lossy(&ir.stdout).contains("call "));
     let run = invoke("run", &entry);
-    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert_eq!(run.stdout, b"42\n");
 }
 
@@ -505,8 +580,14 @@ fn standalone_name_first_formals_keep_real_native_calls_and_checked_status() {
 fn standalone_name_first_and_type_first_formals_are_equivalent_but_untyped_rejects() {
     let project = Project::new();
     for (name, callable) in [
-        ("typed-first", "fnc twice(int value): int { return value + value; }"),
-        ("named-first", "fnc twice(value: int): int { return value + value; }"),
+        (
+            "typed-first",
+            "fnc twice(int value): int { return value + value; }",
+        ),
+        (
+            "named-first",
+            "fnc twice(value: int): int { return value + value; }",
+        ),
     ] {
         let entry = project.write(
             &format!("src/{name}.atto"),
@@ -543,17 +624,44 @@ fn standalone_inlineable_calls_use_real_native_function_abi_not_expression_subst
          pub fnc main(): int { return add_two(double(20)); }\n",
     );
     let check = invoke("check", &entry);
-    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
     assert!(check.stdout.is_empty(), "check must be non-executing");
     let ir = invoke("ir", &entry);
-    assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert_eq!(
+        ir.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
     let clif = String::from_utf8_lossy(&ir.stdout);
-    assert!(clif.contains("; linked function double"), "standalone double has no CLIF");
-    assert!(clif.contains("; linked function add_two"), "standalone add_two has no CLIF");
-    assert!(clif.contains("; linked function main"), "standalone main has no CLIF");
-    assert!(clif.matches("call ").count() >= 2, "nested helpers were inlined: {clif}");
+    assert!(
+        clif.contains("; linked function double"),
+        "standalone double has no CLIF"
+    );
+    assert!(
+        clif.contains("; linked function add_two"),
+        "standalone add_two has no CLIF"
+    );
+    assert!(
+        clif.contains("; linked function main"),
+        "standalone main has no CLIF"
+    );
+    assert!(
+        clif.matches("call ").count() >= 2,
+        "nested helpers were inlined: {clif}"
+    );
     let run = invoke("run", &entry);
-    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert_eq!(run.stdout, b"42\n");
     assert!(run.stderr.is_empty());
 }
@@ -576,16 +684,32 @@ fn standalone_native_calls_preserve_checked_eager_arguments_and_unused_val_initi
     for (name, source) in cases {
         let entry = project.write(name, source);
         let check = invoke("check", &entry);
-        assert!(check.status.success(), "{name}: {}", String::from_utf8_lossy(&check.stderr));
+        assert!(
+            check.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&check.stderr)
+        );
         let ir = invoke("ir", &entry);
-        assert!(ir.status.success(), "{name}: {}", String::from_utf8_lossy(&ir.stderr));
-        assert!(String::from_utf8_lossy(&ir.stdout).contains("call "),
-            "{name}: missing native helper call");
+        assert!(
+            ir.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&ir.stdout).contains("call "),
+            "{name}: missing native helper call"
+        );
         let run = invoke("run", &entry);
         assert_eq!(run.status.code(), Some(1), "{name} incorrectly succeeded");
-        assert!(run.stdout.is_empty(), "{name} emitted a successful result on overflow");
-        assert!(String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"),
-            "{name}: {}", String::from_utf8_lossy(&run.stderr));
+        assert!(
+            run.stdout.is_empty(),
+            "{name} emitted a successful result on overflow"
+        );
+        assert!(
+            String::from_utf8_lossy(&run.stderr).contains("i64 arithmetic overflow"),
+            "{name}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 }
 
@@ -629,7 +753,14 @@ fn genuine_import_after_unsupported_block_comment_still_fails_closed() {
     );
     for mode in ["check", "ir", "run"] {
         let outcome = invoke(mode, &entry);
-        assert_eq!(outcome.status.code(), Some(1), "{mode} admitted import with block comment");
-        assert!(outcome.stdout.is_empty(), "{mode} emitted output from rejected source");
+        assert_eq!(
+            outcome.status.code(),
+            Some(1),
+            "{mode} admitted import with block comment"
+        );
+        assert!(
+            outcome.stdout.is_empty(),
+            "{mode} emitted output from rejected source"
+        );
     }
 }

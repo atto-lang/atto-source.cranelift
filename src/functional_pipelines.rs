@@ -523,7 +523,9 @@ pub(crate) fn parse_linked_native(
         let mut exported = candidates
             .into_iter()
             .filter(|f| f.name == *requested && f.public);
-        let mut func = exported.next().ok_or("E_LINK_EXPORT_NOT_PUBLIC_OR_MISSING")?;
+        let mut func = exported
+            .next()
+            .ok_or("E_LINK_EXPORT_NOT_PUBLIC_OR_MISSING")?;
         if exported.next().is_some() {
             return Err("E_LINK_AMBIGUOUS_EXPORT".into());
         }
@@ -576,5 +578,6 @@ fn compile_functions(functions: Vec<Fn>) -> Result<Program, String> {
         parameters: Vec::new(),
         locals: Vec::new(),
         result,
+        trace_steps: Vec::new(),
     })
 }

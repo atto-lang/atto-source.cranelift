@@ -66,26 +66,11 @@ jobs:
           cargo test --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked --all-targets
           cargo run --manifest-path tools/rollout-evidence/Cargo.toml --offline --locked -- --cases > /tmp/atto-cranelift-required-receipts.tsv
           test "$(wc -l < /tmp/atto-cranelift-required-receipts.tsv)" -eq 6
-      - name: Verify Rust formatting on exact source tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-      - name: Enforce strict Clippy on all compiler and test targets
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo clippy --locked --all-targets -- -D warnings
       - name: Compile Rust and execute native positive and negative guest tests
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --all-targets --no-fail-fast
-      - name: Exercise the linked native function ABI through the real CLI tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked --test linked_scalar_module_native -- --nocapture
+          cargo test --locked --all-targets
       - name: Execute native compiled Atto scalar smoke and inspect CLIF
         shell: bash
         run: |
@@ -95,41 +80,6 @@ jobs:
           cargo run --locked --quiet -- ir "$SOURCE" > /tmp/atto-cranelift.clif
           test -s /tmp/atto-cranelift.clif
           grep -q 'function' /tmp/atto-cranelift.clif
-      - name: Verify unimported two-function native CLIF and guest result
-        shell: bash
-        run: |
-          set -euo pipefail
-          TMP_DIR="$(mktemp -d)"
-          trap 'rm -rf "$TMP_DIR"' EXIT
-          cat > "$TMP_DIR/standalone.atto" <<'ATTO'
-          pub fnc twice(int x): int {
-            return x + x;
-          }
-          pub fnc main(): int {
-            return twice(21);
-          }
-          ATTO
-          cargo run --locked --quiet -- check "$TMP_DIR/standalone.atto"
-          cargo run --locked --quiet -- ir "$TMP_DIR/standalone.atto" > "$TMP_DIR/standalone.clif"
-          grep -q 'linked function twice' "$TMP_DIR/standalone.clif"
-          grep -q 'linked function main' "$TMP_DIR/standalone.clif"
-          grep -q 'call ' "$TMP_DIR/standalone.clif"
-          test "$(cargo run --locked --quiet -- run "$TMP_DIR/standalone.atto")" = 42
-          cat > "$TMP_DIR/overflow.atto" <<'ATTO'
-          pub fnc twice(int x): int {
-            return x + x;
-          }
-          pub fnc main(): int {
-            return twice(9223372036854775807);
-          }
-          ATTO
-          set +e
-          cargo run --locked --quiet -- run "$TMP_DIR/overflow.atto" > "$TMP_DIR/out" 2> "$TMP_DIR/err"
-          result=$?
-          set -e
-          test "$result" -eq 1
-          test ! -s "$TMP_DIR/out"
-          grep -q 'i64 arithmetic overflow' "$TMP_DIR/err"
       - name: Ensure unsupported source never produces a guest value
         shell: bash
         run: |

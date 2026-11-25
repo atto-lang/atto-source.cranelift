@@ -10,9 +10,7 @@ use crate::backend::Compiled;
 use crate::functional_pipelines::{Fn as ScalarFn, Raw};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::instructions::BlockArg;
-use cranelift_codegen::ir::{
-    AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Value, types,
-};
+use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
@@ -133,14 +131,26 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
         let mut dependencies = Vec::new();
         for (name, init) in &func.locals {
             inspect_expression(
-                init, &scope, &names, program, &mut dependencies, &mut nodes, 0,
+                init,
+                &scope,
+                &names,
+                program,
+                &mut dependencies,
+                &mut nodes,
+                0,
             )?;
             if !scope.insert(name.clone()) {
                 return Err("E_LINK_DUP_LOCAL".into());
             }
         }
         inspect_expression(
-            &func.result, &scope, &names, program, &mut dependencies, &mut nodes, 0,
+            &func.result,
+            &scope,
+            &names,
+            program,
+            &mut dependencies,
+            &mut nodes,
+            0,
         )?;
         edges.push(dependencies);
     }
@@ -151,11 +161,7 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
     Ok(())
 }
 
-fn fail_on_overflow(
-    builder: &mut FunctionBuilder,
-    overflow: Value,
-    failure: Block,
-) {
+fn fail_on_overflow(builder: &mut FunctionBuilder, overflow: Value, failure: Block) {
     let status = builder.ins().iconst(types::I32, 1);
     let continuation = builder.create_block();
     builder.ins().brif(
@@ -203,7 +209,12 @@ fn emit_expr(
             let mut values = Vec::with_capacity(arguments.len());
             for argument in arguments {
                 values.push(emit_expr(
-                    argument, builder, scope, refs, failure, depth + 1,
+                    argument,
+                    builder,
+                    scope,
+                    refs,
+                    failure,
+                    depth + 1,
                 )?);
             }
             // The helper has an independent native function body, not an
@@ -218,13 +229,9 @@ fn emit_expr(
             let status = results[1];
             let bad = builder.ins().icmp_imm_s(IntCC::NotEqual, status, 0);
             let continuation = builder.create_block();
-            builder.ins().brif(
-                bad,
-                failure,
-                &[BlockArg::Value(status)],
-                continuation,
-                &[],
-            );
+            builder
+                .ins()
+                .brif(bad, failure, &[BlockArg::Value(status)], continuation, &[]);
             builder.switch_to_block(continuation);
             builder.seal_block(continuation);
             Ok(result)
@@ -245,7 +252,9 @@ fn signature(module: &JITModule, helper_params: Option<usize>) -> cranelift_code
         for _ in 0..4 {
             signature.params.push(AbiParam::new(types::I64));
         }
-        signature.params.push(AbiParam::new(module.target_config().pointer_type()));
+        signature
+            .params
+            .push(AbiParam::new(module.target_config().pointer_type()));
         signature.returns.push(AbiParam::new(types::I32));
     }
     signature
@@ -268,7 +277,11 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
         let is_entry = function.name == "main";
         let sig = signature(
             &module,
-            if is_entry { None } else { Some(function.params.len()) },
+            if is_entry {
+                None
+            } else {
+                Some(function.params.len())
+            },
         );
         let symbol = if is_entry {
             "atto_link_entry".to_owned()
@@ -388,12 +401,8 @@ mod tests {
     use crate::functional_pipelines::parse_linked_native;
 
     fn two_unit(source: &str, helper: &str) -> Vec<ScalarFn> {
-        parse_linked_native(source, &[(
-            "twice".into(),
-            "twice".into(),
-            helper.into(),
-        )])
-        .expect("parse declared helper graph")
+        parse_linked_native(source, &[("twice".into(), "twice".into(), helper.into())])
+            .expect("parse declared helper graph")
     }
 
     #[test]
