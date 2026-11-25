@@ -188,6 +188,17 @@ struct Parser<'a> {
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
+    mutex_scan: bool,
+}
+
+fn is_comparison_bang(suffix: &str) -> bool {
+    suffix.starts_with("!=")
+        || suffix.strip_prefix("!eq").is_some_and(|tail| {
+            !tail
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        })
 }
 
 // Shared block-comment cursor for the scalar lexer and contextual lookahead.
@@ -221,6 +232,10 @@ fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Result<Self, String> {
+        Self::with_mutex_scan(input, false)
+    }
+
+    fn with_mutex_scan(input: &'a str, mutex_scan: bool) -> Result<Self, String> {
         if input.len() > MAX_SOURCE {
             return Err("source exceeds 1 MiB limit".into());
         }
@@ -233,6 +248,7 @@ impl<'a> Parser<'a> {
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
+            mutex_scan,
         };
         p.next()?;
         Ok(p)
@@ -332,27 +348,42 @@ impl<'a> Parser<'a> {
             if self.current == Token::Word("import") {
                 return Err("E_LIBRARY_PROFILE_UNSUPPORTED: atto.core/alloc/std and actor modules require verified import/profile lowering".into());
             }
-            // Typed ownership bangs must never be interpreted as scalar
-            // identifiers or a runtime macro call. Detect the contiguous
-            // operator before scalar AST admission, including borrow! mut.
+            // Distinguish contextual bangs from comparisons.
+            let suffix = &self.input[self.pos..];
+            let comparison = is_comparison_bang(suffix);
             if matches!(
                 self.current,
-                Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
+                Token::Word(
+                    "copy"
+                        | "take"
+                        | "borrow"
+                        | "share"
+                        | "pin"
+                        | "drop"
+                        | "freeze"
+                        | "weak"
+                        | "ref"
+                        | "deref"
+                        | "unref"
+                )
             ) && b.get(self.pos) == Some(&b'!')
+                && !comparison
             {
-                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
+                return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
-            // The 'mut borrow!' form also must fail with an ownership-specific
-            // diagnostic: without lookahead the parser would reject 'mut'
-            // generically before advancing to the borrow token.
             if self.current == Token::Word("mut") {
                 let mut at = self.pos;
                 while b.get(at).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
                     at += 1;
                 }
-                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..]) {
+                if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..])
+                    && !is_comparison_bang(&self.input[at + 6..])
+                {
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
+            }
+            if self.current == Token::Word("new") && !self.mutex_scan {
+                return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
             }
             if self.current == Token::Word("unsafe") {
                 return Err("unsafe source is not supported".into());
@@ -1207,7 +1238,8 @@ fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
 /// Source is scanned with the existing bounded lexer so commented-out
 /// constructors never create false positives or new permissions.
 fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
-    let mut scan = Parser::new(text)?;
+    // This scanner only classifies constructors, never admits executable code.
+    let mut scan = Parser::with_mutex_scan(text, true)?;
     let mut window = [Token::End; 6];
     loop {
         let token = scan.current;
@@ -1320,6 +1352,41 @@ mod tests {
             ),
             Ok(42)
         );
+    }
+
+    #[test]
+    fn actor_heap_guest_fails_closed_before_cranelift_jit() {
+        let node = r#"define class Node as
+    int value
+    Node? next
+end
+define actor HeapGraphProbe as
+    receive(int message) {
+        let first = new Node(42, none)
+        let second = new Node(99, first)
+        assert(second.next?.value == 42)
+    }
+end"#;
+        let error = parse(node).unwrap_err();
+        assert!(error.contains("DECL_KIND_UNSUPPORTED: class"), "{error}");
+
+        for src in [
+            "fnc main():int{return new Node(7);}",
+            "fnc main():int{return 42;} new Node(7)",
+        ] {
+            let error = parse(src).unwrap_err();
+            assert!(
+                error.contains("E_ACTOR_MEMORY_GUEST_UNSUPPORTED"),
+                "{src}: {error}"
+            );
+        }
+        for inert in [
+            "fnc main():int{return 42;} // new Node(7)",
+            "fnc main():int{return 42;} /* new Node(7) */",
+            "fnc main():int{return 42;} /* define actor A as end */",
+        ] {
+            assert!(parse(inert).is_ok(), "inert actor memory comment: {inert}");
+        }
     }
 
     #[test]
