@@ -55,19 +55,31 @@ fn run_source(source: &str, mode: &str) -> Output {
 #[test]
 fn rejects_ownership_prefixes_before_run_or_ir() {
     for expression in [
-        "copy!42", "take!42", "borrow! value", "borrow!mut value",
-        "borrow! mut value", "mut borrow! value", "mut borrow!value", "share!value",
-        "borrow!\\nmut value", "borrow!/* checked loan */mut value",
+        "copy!42",
+        "take!42",
+        "borrow! value",
+        "borrow!mut value",
+        "borrow! mut value",
+        "mut borrow! value",
+        "mut borrow!value",
+        "share!value",
+        "borrow!\\nmut value",
+        "borrow!/* checked loan */mut value",
         "mut borrow!\\nvalue",
     ] {
         for mode in ["run", "ir"] {
             let source = format!("fnc main():int{{return {expression};}}");
             let output = run_source(&source, mode);
             assert!(!output.status.success(), "{mode} accepted {expression}");
-            assert!(output.stdout.is_empty(), "{mode} emitted output for {expression}");
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted output for {expression}"
+            );
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
-                "{mode} wrong diagnostic for {expression}: {stderr}");
+            assert!(
+                stderr.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
+                "{mode} wrong diagnostic for {expression}: {stderr}"
+            );
         }
     }
 }
@@ -75,12 +87,12 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
 #[test]
 fn commented_ownership_does_not_poison_scalar_execution() {
     for mode in ["run", "ir"] {
-        let output = run_source(
-            "fnc main():int{// borrow! mut item\nreturn 42;}",
-            mode,
+        let output = run_source("fnc main():int{// borrow! mut item\nreturn 42;}", mode);
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert!(output.status.success(), "{mode}: {}",
-            String::from_utf8_lossy(&output.stderr));
         assert!(!output.stdout.is_empty(), "{mode} produced no output");
     }
 }
