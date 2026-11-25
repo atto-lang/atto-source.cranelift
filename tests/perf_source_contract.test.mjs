@@ -19,10 +19,13 @@ test('disabled clock path returns without monotonic clock access',()=>{
   assert.ok(duration.indexOf('if started_ns <= 0')>=0 && duration.indexOf('if started_ns <= 0')<duration.indexOf('process.monotonic_ns()'));
   assert.match(duration,/finished_ns < started_ns/);
 });
-test('sample decision rejects unknown or excessive divisors before modulo',()=>{
- const sample=perf.split('pub fnc should_sample')[1];
- assert.match(sample,/every_n < 1 \|\| every_n > 65536/);
- assert.ok(sample.indexOf('every_n < 1')<sample.indexOf('sample_key % every_n'));
+test('sample decision guards division and uses exact quotient multiplication',()=>{
+ const sample=no_comments(perf.split('pub fnc should_sample')[1]);
+ assert.match(sample,/sample_key < 0 \|\| every_n < 1 \|\| every_n > 65536/);
+ const divide=sample.indexOf('sample_key / every_n');
+ assert.ok(divide>=0 && sample.indexOf('every_n < 1')<divide);
+ assert.match(sample,/\(sample_key \/ every_n\) \* every_n == sample_key/);
+ assert.doesNotMatch(sample,/%/);
 });
 test('buffer is actor-owned and finite, saturating drop count',()=>{
  assert.match(alloc,/let mut Array<Event> events/);
