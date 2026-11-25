@@ -1,0 +1,29 @@
+# Source-free infrastructure admission check: no checkout, tokens or secrets.
+# A pass confirms runner execution ONLY; it never qualifies compiler code.
+name: Cranelift source-free runner admission
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/sourcefree-runner-admission.yml"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  runner-admission-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Prove source-local runner admission without source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY:-}" = "ores-truffle-oreslang/oreslang-source.cranelift"
+          test -n "${GITHUB_RUN_ID:-}"
+          test -n "${GITHUB_RUN_ATTEMPT:-}"
+          test -n "${RUNNER_NAME:-}"
+          test "${RUNNER_OS:-}" = "Linux"
+          test "${CI:-}" = "true"
+          # This job has NO repository checkout and NO elevated permissions.
+          # A run with steps=[] is strictly a runner/admission failure.
+          test -n "${GITHUB_EVENT_NAME:-}"
+          printf 'SOURCE_FREE_RUNNER_ADMITTED run=%s attempt=%s os=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_OS"

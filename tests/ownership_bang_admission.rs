@@ -55,39 +55,57 @@ fn run_source(source: &str, mode: &str) -> Output {
 #[test]
 fn rejects_ownership_prefixes_before_run_or_ir() {
     for expression in [
-        "copy!42", "take!42", "borrow! value", "borrow!mut value",
-        "borrow! mut value", "mut borrow! value", "mut borrow!value", "share!value",
-        "ref!value", "ref!(value)", "deref!handle", "deref! handle",
-        "unref!handle", "unref! handles[0]", "ref!eqfoo",
-        "freeze!value", "weak!value", "copy!!value",
-        "borrow!\nmut value", "borrow!/* checked loan */mut value",
+        "copy!42",
+        "take!42",
+        "borrow! value",
+        "borrow!mut value",
+        "borrow! mut value",
+        "mut borrow! value",
+        "mut borrow!value",
+        "share!value",
+        "ref!value",
+        "ref!(value)",
+        "deref!handle",
+        "deref! handle",
+        "unref!handle",
+        "unref! handles[0]",
+        "ref!eqfoo",
+        "freeze!value",
+        "weak!value",
+        "copy!!value",
+        "borrow!\nmut value",
+        "borrow!/* checked loan */mut value",
         "mut borrow!\nvalue",
     ] {
-        for mode in ["run", "ir"] {
+        for mode in ["check", "run", "ir"] {
             let source = format!("fnc main():int{{return {expression};}}");
             let output = run_source(&source, mode);
             assert!(!output.status.success(), "{mode} accepted {expression}");
-            assert!(output.stdout.is_empty(), "{mode} emitted output for {expression}");
+            assert!(
+                output.stdout.is_empty(),
+                "{mode} emitted output for {expression}"
+            );
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
-                "{mode} wrong diagnostic for {expression}: {stderr}");
+            assert!(
+                stderr.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
+                "{mode} wrong diagnostic for {expression}: {stderr}"
+            );
         }
     }
 }
 
 #[test]
 fn commented_ownership_does_not_poison_scalar_execution() {
-    for mode in ["run", "ir"] {
-        let output = run_source(
-            "fnc main():int{// borrow! mut item\nreturn 42;}",
-            mode,
+    for mode in ["check", "run", "ir"] {
+        let output = run_source("fnc main():int{// borrow! mut item\nreturn 42;}", mode);
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert!(output.status.success(), "{mode}: {}",
-            String::from_utf8_lossy(&output.stderr));
         assert!(!output.stdout.is_empty(), "{mode} produced no output");
     }
 }
-
 
 #[test]
 fn checked_handle_aliases_do_not_confuse_comparison_or_spaced_punctuation() {
@@ -100,7 +118,7 @@ fn checked_handle_aliases_do_not_confuse_comparison_or_spaced_punctuation() {
         "ref!=handle", "deref!eq handle", "unref!eq handle",
         "copy!eq handle", "mut borrow!eq handle",
     ] {
-        for mode in ["run", "ir"] {
+        for mode in ["check", "run", "ir"] {
             let source = format!("fnc main():int{{return {expression};}}");
             let output = run_source(&source, mode);
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -112,7 +130,7 @@ fn checked_handle_aliases_do_not_confuse_comparison_or_spaced_punctuation() {
 
 #[test]
 fn checked_handle_spelling_inside_comments_is_inert() {
-    for mode in ["run", "ir"] {
+    for mode in ["check", "run", "ir"] {
         let output = run_source(
             "fnc main():int{/* ref!item, deref!handle, unref!handle */return 42;}",
             mode,
@@ -124,7 +142,7 @@ fn checked_handle_spelling_inside_comments_is_inert() {
 
 #[test]
 fn nested_comments_are_inert_and_nesting_limit_is_fail_closed() {
-    for mode in ["run", "ir"] {
+    for mode in ["check", "run", "ir"] {
         let benign = "fnc main():int{/* outer /* ref!bad weak!bad */ still outer */return 42;}";
         let valid = run_source(benign, mode);
         assert!(valid.status.success(), "{mode}: {}",
