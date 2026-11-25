@@ -194,7 +194,10 @@ struct Parser<'a> {
 fn is_comparison_bang(suffix: &str) -> bool {
     suffix.starts_with("!=")
         || suffix.strip_prefix("!eq").is_some_and(|tail| {
-            !tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+            !tail
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
         })
 }
 
@@ -351,10 +354,20 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.current,
                 Token::Word(
-                    "copy" | "take" | "borrow" | "share" | "pin" | "drop"
-                        | "freeze" | "weak" | "ref" | "deref" | "unref"
+                    "copy"
+                        | "take"
+                        | "borrow"
+                        | "share"
+                        | "pin"
+                        | "drop"
+                        | "freeze"
+                        | "weak"
+                        | "ref"
+                        | "deref"
+                        | "unref"
                 )
-            ) && b.get(self.pos) == Some(&b'!') && !comparison
+            ) && b.get(self.pos) == Some(&b'!')
+                && !comparison
             {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
@@ -1230,15 +1243,31 @@ fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
     let mut window = [Token::End; 6];
     loop {
         let token = scan.current;
-        if token == Token::End { break; }
+        if token == Token::End {
+            break;
+        }
         window.rotate_left(1);
         window[5] = token;
-        if matches!(&window[1..], [Token::Word("Mutex"), Token::Punct(b'<'),
-            Token::Word(_), Token::Punct(b'>'), Token::Punct(b'(')]) {
+        if matches!(
+            &window[1..],
+            [
+                Token::Word("Mutex"),
+                Token::Punct(b'<'),
+                Token::Word(_),
+                Token::Punct(b'>'),
+                Token::Punct(b'(')
+            ]
+        ) {
             if window[0] == Token::Word("new") {
-                return Err("E_LOCK_UNSUPPORTED: no compiled MutexLease or scheduler exists for Cranelift".into());
+                return Err(
+                    "E_LOCK_UNSUPPORTED: no compiled MutexLease or scheduler exists for Cranelift"
+                        .into(),
+                );
             }
-            return Err("E_NEW_REQUIRED: Mutex<T> is a nominal resource class; use new Mutex<int>(value)".into());
+            return Err(
+                "E_NEW_REQUIRED: Mutex<T> is a nominal resource class; use new Mutex<int>(value)"
+                    .into(),
+            );
         }
         scan.next()?;
     }
@@ -1259,6 +1288,18 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.contains("Mutex") {
         reject_unimplemented_mutex_construction(text)?;
     }
+    let original = Parser::new(text)?.program();
+    // Preserve authoritative declaration/effect/export diagnostics. Refine
+    // only generic grammar denials (or the specific unsupported Struct case).
+    if !original.as_ref().is_err_and(|err| {
+        err.starts_with("unexpected token")
+            || err.starts_with("unbound or unsupported identifier")
+            || err.starts_with("expected scalar expression")
+            || err.starts_with("invalid character")
+            || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
+    }) {
+        return original;
+    }
     // The narrow scalar grammar must not hide unsupported collection syntax
     // behind an earlier local declaration. Candidate text only triggers a
     // bounded token scan; quotes and comments are handled by the lexer.
@@ -1276,7 +1317,7 @@ pub fn parse(text: &str) -> Result<Program, String> {
             scan.next()?;
         }
     }
-    Parser::new(text)?.program()
+    original
 }
 
 #[cfg(test)]
@@ -1289,11 +1330,25 @@ mod tests {
         // remain outside this narrowly bounded source admission gate.
         for ty in ["int", "bool", "float", "Buffer"] {
             let old = format!("pub fnc main():int {{ val counter = Mutex<{ty}>(0); return 0; }}");
-            let canonical = format!("pub fnc main():int {{ val counter = new Mutex<{ty}>(0); return 0; }}");
+            let canonical =
+                format!("pub fnc main():int {{ val counter = new Mutex<{ty}>(0); return 0; }}");
             assert!(parse(&old).unwrap_err().contains("E_NEW_REQUIRED"), "{ty}");
-            assert!(parse(&canonical).unwrap_err().contains("E_LOCK_UNSUPPORTED"), "{ty}");
+            assert!(
+                parse(&canonical)
+                    .unwrap_err()
+                    .contains("E_LOCK_UNSUPPORTED"),
+                "{ty}"
+            );
         }
-        assert_eq!(eval(&parse("// Mutex<int>(0) is a comment\nfnc main():int{return 42;}").unwrap().result, &[]), Ok(42));
+        assert_eq!(
+            eval(
+                &parse("// Mutex<int>(0) is a comment\nfnc main():int{return 42;}")
+                    .unwrap()
+                    .result,
+                &[]
+            ),
+            Ok(42)
+        );
     }
 
     #[test]
@@ -1317,7 +1372,10 @@ end"#;
             "fnc main():int{return 42;} new Node(7)",
         ] {
             let error = parse(src).unwrap_err();
-            assert!(error.contains("E_ACTOR_MEMORY_GUEST_UNSUPPORTED"), "{src}: {error}");
+            assert!(
+                error.contains("E_ACTOR_MEMORY_GUEST_UNSUPPORTED"),
+                "{src}: {error}"
+            );
         }
         for inert in [
             "fnc main():int{return 42;} // new Node(7)",
