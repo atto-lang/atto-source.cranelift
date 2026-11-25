@@ -206,7 +206,7 @@ fn is_comparison_bang(suffix: &str) -> bool {
 // Shared block-comment cursor for the scalar lexer and contextual lookahead.
 // The actor preflight already recognizes nested block comments; the main lexer
 // must not interpret code inside them, and must fail on unterminated/nested bombs.
-fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
+pub(crate) fn skip_block_comment(bytes: &[u8], start: usize) -> Result<usize, String> {
     if bytes.get(start..start.saturating_add(2)) != Some(&b"/*"[..]) {
         return Err("expected block comment".into());
     }
@@ -948,6 +948,8 @@ impl<'a> Parser<'a> {
                             | "stdio"
                             | "print"
                             | "seq"
+                            | "sync"
+                            | "yield"
                     )
                     || self.parameters.contains(&name)
                 {
@@ -1332,7 +1334,7 @@ fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn parse(text: &str) -> Result<Program, String> {
+pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
@@ -1346,6 +1348,11 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.contains("Mutex") {
         reject_unimplemented_mutex_construction(text)?;
     }
+    Ok(())
+}
+
+pub fn parse(text: &str) -> Result<Program, String> {
+    validate_source_envelope(text)?;
     let original = Parser::new(text)?.program();
     // Preserve authoritative declaration/effect/export diagnostics. Refine
     // only generic grammar denials (or the specific unsupported Struct case).

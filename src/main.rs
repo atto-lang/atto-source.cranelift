@@ -4,6 +4,7 @@ mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
+mod functional_pipelines;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
@@ -145,7 +146,18 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
-    let parsed = frontend::parse(source)?;
+    let parsed = match frontend::parse(source) {
+        Ok(program) => program,
+        Err(original)
+            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+        {
+            // The independent pure parser must share the outer admission gates.
+            frontend::validate_source_envelope(source)?;
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+        }
+        Err(original) => return Err(original),
+    };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
     if mode == "check" {
