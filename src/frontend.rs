@@ -1213,6 +1213,18 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
     }
+    let original = Parser::new(text)?.program();
+    // Preserve authoritative declaration/effect/export diagnostics. Refine
+    // only generic grammar denials (or the specific unsupported Struct case).
+    if !original.as_ref().is_err_and(|err| {
+        err.starts_with("unexpected token")
+            || err.starts_with("unbound or unsupported identifier")
+            || err.starts_with("expected scalar expression")
+            || err.starts_with("invalid character")
+            || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
+    }) {
+        return original;
+    }
     // The narrow scalar grammar must not hide unsupported collection syntax
     // behind an earlier local declaration. Candidate text only triggers a
     // bounded token scan; quotes and comments are handled by the lexer.
@@ -1230,7 +1242,7 @@ pub fn parse(text: &str) -> Result<Program, String> {
             scan.next()?;
         }
     }
-    Parser::new(text)?.program()
+    original
 }
 
 #[cfg(test)]
