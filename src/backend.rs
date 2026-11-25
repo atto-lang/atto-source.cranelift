@@ -940,7 +940,10 @@ mod native_named_signed64_differential {
             locals: Vec::new(),
             result: Expr::Literal(42),
         };
-        for outcome in [render_ir(&excess).err(), compile(&excess).err().map(|e| e.to_string())] {
+        for outcome in [
+            render_ir(&excess).err(),
+            compile(&excess).err().map(|e| e.to_string()),
+        ] {
             assert!(
                 outcome
                     .expect("five parameter ABI must be rejected")
@@ -975,20 +978,17 @@ mod native_named_signed64_differential {
 
     #[test]
     fn unused_runtime_val_overflow_preserves_native_output_sentinel() {
-        let source = crate::frontend::parse(
-            "fnc main(x:int):int{val unused=x+1;return 42;}"
-        ).expect("runtime val may depend on a parameter");
+        let source = crate::frontend::parse("fnc main(x:int):int{val unused=x+1;return 42;}")
+            .expect("runtime val may depend on a parameter");
         let compiled = compile(&source).expect("native verified CLIF/JIT");
         type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
-        let function: Entry = unsafe {
-            std::mem::transmute(compiled.module.get_finalized_function(compiled.id))
-        };
+        let function: Entry =
+            unsafe { std::mem::transmute(compiled.module.get_finalized_function(compiled.id)) };
         let mut output = 0x1122_3344_5566_7788_i64;
         let status = unsafe { function(i64::MAX, 0, 0, 0, &mut output) };
         assert_eq!(status, 1, "overflow must return a native error status");
         assert_eq!(
-            output,
-            0x1122_3344_5566_7788_i64,
+            output, 0x1122_3344_5566_7788_i64,
             "failed unused initializer must not publish a guest value"
         );
     }
