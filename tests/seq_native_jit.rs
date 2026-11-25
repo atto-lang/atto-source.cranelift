@@ -53,12 +53,23 @@ fn source_ordered_seq_and_scoped_shorthand_generate_actual_native_jit_values() {
     ] {
         let source = program(expression);
         let ir = guest("ir", &source);
-        assert!(ir.status.success(), "{expression}: IR failure: {}", String::from_utf8_lossy(&ir.stderr));
+        assert!(
+            ir.status.success(),
+            "{expression}: IR failure: {}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
         assert!(!ir.stdout.is_empty(), "{expression}: IR emitted nothing");
         let run = guest("run", &source);
-        assert!(run.status.success(), "{expression}: JIT failure: {}", String::from_utf8_lossy(&run.stderr));
+        assert!(
+            run.status.success(),
+            "{expression}: JIT failure: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
         assert_eq!(run.stdout, b"42\n", "{expression}: wrong guest bytes");
-        assert!(run.stderr.is_empty(), "{expression}: unexpected diagnostics");
+        assert!(
+            run.stderr.is_empty(),
+            "{expression}: unexpected diagnostics"
+        );
     }
 }
 
@@ -74,13 +85,26 @@ fn discarded_prefix_must_still_trap_in_generated_native_code() {
     ] {
         let source = program(expression);
         let ir = guest("ir", &source);
-        assert!(ir.status.success(), "{expression}: failed before checked IR: {}", String::from_utf8_lossy(&ir.stderr));
+        assert!(
+            ir.status.success(),
+            "{expression}: failed before checked IR: {}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
         let run = guest("run", &source);
-        assert_eq!(run.status.code(), Some(1), "{expression}: wrong trap exit code");
-        assert!(run.stdout.is_empty(), "{expression}: emitted final value after a trap");
+        assert_eq!(
+            run.status.code(),
+            Some(1),
+            "{expression}: wrong trap exit code"
+        );
+        assert!(
+            run.stdout.is_empty(),
+            "{expression}: emitted final value after a trap"
+        );
         let diagnostic = String::from_utf8_lossy(&run.stderr);
-        assert!(diagnostic.starts_with("orescranelift: ") && diagnostic.contains(expected_diagnostic),
-            "{expression}: missing compiler-owned trap diagnostic: {diagnostic}");
+        assert!(
+            diagnostic.starts_with("orescranelift: ") && diagnostic.contains(expected_diagnostic),
+            "{expression}: missing compiler-owned trap diagnostic: {diagnostic}"
+        );
     }
 }
 
@@ -101,16 +125,30 @@ fn malformed_seq_and_unlowered_effects_fail_before_ir_or_jit() {
         "seq(1, rt take x)",
         "seq(1, \"a,b\")",
         "seq(1, await x)",
-    ].iter().map(|value| program(value)).collect();
-    invalid.push(program(&format!("seq({})",
-        (0..17).map(|i| i.to_string()).collect::<Vec<_>>().join(","))));
+    ]
+    .iter()
+    .map(|value| program(value))
+    .collect();
+    invalid.push(program(&format!(
+        "seq({})",
+        (0..17).map(|i| i.to_string()).collect::<Vec<_>>().join(",")
+    )));
     for source in invalid {
         for mode in ["ir", "run"] {
             let output = guest(mode, &source);
-            assert_eq!(output.status.code(), Some(1), "{mode}: unsafe sequence admitted: {source}");
-            assert!(output.stdout.is_empty(), "{mode}: rejected source emitted output");
-            assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "),
-                "{mode}: expected controlled parser denial");
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode}: unsafe sequence admitted: {source}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{mode}: rejected source emitted output"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "),
+                "{mode}: expected controlled parser denial"
+            );
         }
     }
 }
