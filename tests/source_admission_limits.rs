@@ -121,7 +121,11 @@ fn invalid_numeric_arguments_are_rejected_before_source_open() {
         &["1", "2", "3", "4", "invalid"],
         "too many runtime arguments",
     );
-    early_cli_failure("ir", &["not-an-int"], "ir/check mode does not accept runtime arguments");
+    early_cli_failure(
+        "ir",
+        &["not-an-int"],
+        "ir/check mode does not accept runtime arguments",
+    );
 }
 
 #[cfg(unix)]

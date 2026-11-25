@@ -185,6 +185,7 @@ fn bounded_arguments_rejected_before_source_open_and_jit() {
     assert!(!ir.status.success());
     assert!(ir.stdout.is_empty());
     assert!(
-        String::from_utf8_lossy(&ir.stderr).contains("ir/check mode does not accept runtime arguments")
+        String::from_utf8_lossy(&ir.stderr)
+            .contains("ir/check mode does not accept runtime arguments")
     );
 }
