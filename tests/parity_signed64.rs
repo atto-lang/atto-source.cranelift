@@ -114,6 +114,10 @@ fn unimplemented_type_adt_actor_async_features_remain_fail_closed() {
 
 #[test]
 fn identity_int_cast_is_supported_without_type_conversion() {
-    run_source("pub fnc main(): int { const x = 7; return x; }", true, "7\n");
+    run_source(
+        "pub fnc main(): int { const x = 7; return x; }",
+        true,
+        "7\n",
+    );
     run_source("pub fnc main(): int { return 7 as int; }", true, "7\n");
 }
