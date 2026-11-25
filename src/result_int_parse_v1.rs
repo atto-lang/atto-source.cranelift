@@ -21,13 +21,18 @@ impl TenantParser {
         if tenant_id == 0 {
             return Err("E_TENANT_ID");
         }
-        Ok(Self { tenant_id, next_error: 0 })
+        Ok(Self {
+            tenant_id,
+            next_error: 0,
+        })
     }
     pub fn can_observe(&self, err: &Error) -> bool {
         err.identity != 0 && err.tenant_id == self.tenant_id
     }
     fn invalid(&mut self) -> TaggedResult {
-        self.next_error = self.next_error.checked_add(1)
+        self.next_error = self
+            .next_error
+            .checked_add(1)
             .expect("E_ERROR_ID_EXHAUSTED: fatal trusted runtime quota");
         TaggedResult::Err(Error {
             tenant_id: self.tenant_id,
@@ -80,15 +85,29 @@ mod tests {
             assert_eq!(a.parse(&n.to_string()), TaggedResult::Ok(n));
         }
         for (text, value) in [
-            ("0", 0), ("+42", 42), ("-0", 0), ("00042", 42),
+            ("0", 0),
+            ("+42", 42),
+            ("-0", 0),
+            ("00042", 42),
             ("-9223372036854775808", i64::MIN),
             ("9223372036854775807", i64::MAX),
         ] {
             assert_eq!(a.parse(text), TaggedResult::Ok(value));
         }
         for invalid in [
-            "", "+", "-", " 42", "42 ", "++1", "-+1", "4_2", "42x",
-            "9223372036854775808", "-9223372036854775809", "٤٢", "0\0",
+            "",
+            "+",
+            "-",
+            " 42",
+            "42 ",
+            "++1",
+            "-+1",
+            "4_2",
+            "42x",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "٤٢",
+            "0\0",
         ] {
             let TaggedResult::Err(error) = a.parse(invalid) else {
                 panic!("invalid input was admitted");
