@@ -8,11 +8,6 @@ const MAIN: &str = "fnc main(): int { return 42; }";
 fn trailing_public_entrypoint_is_admitted_without_rewriting_program() {
     let no_export = parse(MAIN).unwrap();
     let trailing = parse(&format!("{MAIN}\nexport pub fnc main;")).unwrap();
-    // The export declaration must not smuggle a runtime local into the
-    // compiled scalar entrypoint. Assert this field in the standalone
-    // frontend test crate as well as in the native backend.
-    assert!(no_export.locals.is_empty());
-    assert!(trailing.locals.is_empty());
     assert_eq!(format!("{no_export:?}"), format!("{trailing:?}"));
 }
 

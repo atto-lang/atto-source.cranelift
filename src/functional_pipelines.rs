@@ -3,7 +3,9 @@
 //! Only single-use lexical bindings/call parameters are admitted, because
 //! the stage-0 Expr IR has no let node; this keeps checked evaluation order
 //! and exact-once semantics for the admitted subset.
-use crate::frontend::{Expr, Program};
+use crate::frontend::{
+    Expr, Program, skip_block_comment, validate_ast_depth, validate_source_envelope,
+};
 use std::collections::HashMap;
 
 const MAX_SOURCE: usize = 16 * 1024;
@@ -44,25 +46,13 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             }
             b'/' if bytes.get(i + 1) == Some(&b'/') => {
                 i += 2;
-                while i < bytes.len() && bytes[i] != b'\n' {
+                while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
                     i += 1;
                 }
                 continue;
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                let mut found = false;
-                while i + 1 < bytes.len() {
-                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                        found = true;
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-                if !found {
-                    return Err("E_PIPE_LEX_COMMENT".into());
-                }
+                i = skip_block_comment(bytes, i)?;
                 continue;
             }
             _ => {}
@@ -174,6 +164,20 @@ impl Parser {
                     | "sync"
                     | "task"
                     | "yield"
+                    | "freeze"
+                    | "weak"
+                    | "ref"
+                    | "deref"
+                    | "unref"
+                    | "seq"
+                    | "new"
+                    | "macro"
+                    | "const"
+                    | "match"
+                    | "Mutex"
+                    | "Record"
+                    | "Map"
+                    | "Entry"
             )
         {
             return Err("E_PIPE_NAME".into());
@@ -487,6 +491,7 @@ impl Lower<'_> {
 /// static inlining, then let the existing Cranelift backend generate actual
 /// machine code. This path is NOT an interpreter, general linker, or AOT.
 pub fn parse(source: &str) -> Result<Program, String> {
+    validate_source_envelope(source)?;
     let functions = Parser::new(source)?.parse()?;
     let mut names = HashMap::new();
     for f in functions {
@@ -517,6 +522,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
         stack: Vec::new(),
     };
     let result = lower.call("main", Vec::new(), 0)?;
+    validate_ast_depth(&result)?;
     Ok(Program {
         parameters: Vec::new(),
         locals: Vec::new(),
