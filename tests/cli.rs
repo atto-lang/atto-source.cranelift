@@ -418,7 +418,7 @@ fn source_path_fifo_and_symlink_admission_never_blocks() {
             );
             assert!(
                 String::from_utf8_lossy(&result.stderr).contains(if source == &link {
-                    "source path component denied"
+                    "source must be a regular file (symlinks forbidden)"
                 } else {
                     "source must be a regular file"
                 }),

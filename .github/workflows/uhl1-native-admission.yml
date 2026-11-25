@@ -1,0 +1,51 @@
+name: Cranelift UHL-1 capability denial (native CLI)
+on:
+  pull_request:
+    paths:
+      - 'src/uhl1.rs'
+      - 'src/main.rs'
+      - 'tests/uhl1_cli.rs'
+      - '.github/workflows/uhl1-native-admission.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-uhl1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Validate Git identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -n "$(git rev-parse HEAD^{tree})"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git hash-object src/uhl1.rs
+          git hash-object tests/uhl1_cli.rs
+      - name: Run pinned Rust + Cranelift native admission tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          cargo test --locked --all-targets -- --nocapture 2>&1 | tee "$RUNNER_TEMP/uhl1-cranelift.log"
+          cargo run --locked --quiet -- hotload-capabilities \
+            | tee "$RUNNER_TEMP/uhl1-cranelift-caps.json"
+          grep -Fq '"productionActorHotLoad":false' "$RUNNER_TEMP/uhl1-cranelift-caps.json"
+          grep -Fq '"features":0' "$RUNNER_TEMP/uhl1-cranelift-caps.json"
+      - name: Attach host-only output (not actor guest parity)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: uhl1-cranelift-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/uhl1-cranelift*
+          if-no-files-found: error
+          retention-days: 7
