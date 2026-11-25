@@ -148,7 +148,9 @@ fn run() -> Result<(), String> {
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
-        Err(original) if source.contains("|>") || source.contains("<|") || source.contains(": int ->") => {
+        Err(original)
+            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+        {
             // The independent pure parser must share the outer admission gates.
             frontend::validate_source_envelope(source)?;
             functional_pipelines::parse(source)

@@ -3,7 +3,9 @@
 //! Only single-use lexical bindings/call parameters are admitted, because
 //! the stage-0 Expr IR has no let node; this keeps checked evaluation order
 //! and exact-once semantics for the admitted subset.
-use crate::frontend::{skip_block_comment, validate_ast_depth, validate_source_envelope, Expr, Program};
+use crate::frontend::{
+    Expr, Program, skip_block_comment, validate_ast_depth, validate_source_envelope,
+};
 use std::collections::HashMap;
 
 const MAX_SOURCE: usize = 16 * 1024;

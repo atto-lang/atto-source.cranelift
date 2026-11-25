@@ -165,11 +165,26 @@ fn emit(
             // externally constructible Program before reaching emit().
             // Each earlier expression still emits its overflow/divisor
             // control-flow checks; only the scalar result is discarded.
-            let (first, rest) = parts.split_first()
+            let (first, rest) = parts
+                .split_first()
                 .expect("prepare_ir validated nonempty sequence");
-            let mut last = emit(first, b, params, error, divisor_error, negative_exponent_error);
+            let mut last = emit(
+                first,
+                b,
+                params,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            );
             for item in rest {
-                last = emit(item, b, params, error, divisor_error, negative_exponent_error);
+                last = emit(
+                    item,
+                    b,
+                    params,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                );
             }
             last
         }
@@ -651,8 +666,11 @@ mod native_named_signed64_differential {
     #[test]
     fn checked_sequence_jit_matches_reference_and_rejects_forged_ast() {
         for expression in [
-            "seq(42)", "seq(1,2,42)", "(> 1,2,42)",
-            "seq(1, (> 2,42))", "seq(1,Integer.bitAnd(7,3),42)",
+            "seq(42)",
+            "seq(1,2,42)",
+            "(> 1,2,42)",
+            "seq(1, (> 2,42))",
+            "seq(1,Integer.bitAnd(7,3),42)",
             "seq(1,2)+40",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
@@ -673,12 +691,15 @@ mod native_named_signed64_differential {
             let compiled = compile(&parsed).expect("checked guest IR");
             assert_eq!(compiled.run(&[]), Err(error.to_owned()), "{source}");
         }
-        for result in [
-            Expr::Seq(vec![]),
-            Expr::Seq(vec![Expr::Literal(42); 17]),
-        ] {
-            let forged = Program { parameters: vec![], result };
-            assert!(render_ir(&forged).is_err(), "invalid AST admitted to CLIF IR");
+        for result in [Expr::Seq(vec![]), Expr::Seq(vec![Expr::Literal(42); 17])] {
+            let forged = Program {
+                parameters: vec![],
+                result,
+            };
+            assert!(
+                render_ir(&forged).is_err(),
+                "invalid AST admitted to CLIF IR"
+            );
             assert!(compile(&forged).is_err(), "invalid AST reached JIT");
         }
     }

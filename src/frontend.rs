@@ -948,6 +948,9 @@ impl<'a> Parser<'a> {
                             | "stdio"
                             | "print"
                             | "seq"
+                            | "sync"
+                            | "task"
+                            | "yield"
                     )
                     || self.parameters.contains(&name)
                 {
@@ -2525,23 +2528,39 @@ end"#;
     #[test]
     fn scoped_scalar_seq_model_preserves_source_order_and_rejects_invalid_arity() {
         for expression in [
-            "seq(42)", "seq(1,2,42)", "(> 1,2,42)",
-            "seq(1,seq(2,42))", "seq(1,(> 2,42))",
-            "seq(1,2)+40", "seq(1,Integer.bitAnd(3,1),42)",
+            "seq(42)",
+            "seq(1,2,42)",
+            "(> 1,2,42)",
+            "seq(1,seq(2,42))",
+            "seq(1,(> 2,42))",
+            "seq(1,2)+40",
+            "seq(1,Integer.bitAnd(3,1),42)",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             let parsed = parse(&source).expect("scoped scalar seq must parse");
             assert_eq!(eval(&parsed.result, &[]), Ok(42), "{source}");
         }
         for expression in [
-            "seq()", "(>)", "seq(1,)", "(> 1,)", "seq(,1)",
-            "seq(1,,2)", "seq(1;2)", "(1,2)", "seq 1,2",
+            "seq()",
+            "(>)",
+            "seq(1,)",
+            "(> 1,)",
+            "seq(,1)",
+            "seq(1,,2)",
+            "seq(1;2)",
+            "(1,2)",
+            "seq 1,2",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
-            assert!(parse(&source).is_err(), "{source}: invalid seq was admitted");
+            assert!(
+                parse(&source).is_err(),
+                "{source}: invalid seq was admitted"
+            );
         }
-        let too_many = format!("fnc main():int{{return seq({});}}",
-            (0..17).map(|n| n.to_string()).collect::<Vec<_>>().join(","));
+        let too_many = format!(
+            "fnc main():int{{return seq({});}}",
+            (0..17).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
         assert!(parse(&too_many).unwrap_err().contains("E_SEQ_LIMIT"));
         assert!(parse("fnc main(seq:int):int{return seq;}").is_err());
         let model_trap = parse("fnc main():int{return seq(9223372036854775807+1,42);}")
