@@ -1202,6 +1202,46 @@ fn reject_source_unicode_controls(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Token-aware resource-class constructor admission for the currently
+/// scalar-only backend. No Mutex runtime, waiter or guest lease exists here.
+/// Source is scanned with the existing bounded lexer so commented-out
+/// constructors never create false positives or new permissions.
+fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
+    let mut scan = Parser::new(text)?;
+    let mut window = [Token::End; 6];
+    loop {
+        let token = scan.current;
+        if token == Token::End {
+            break;
+        }
+        window.rotate_left(1);
+        window[5] = token;
+        if matches!(
+            &window[1..],
+            [
+                Token::Word("Mutex"),
+                Token::Punct(b'<'),
+                Token::Word(_),
+                Token::Punct(b'>'),
+                Token::Punct(b'(')
+            ]
+        ) {
+            if window[0] == Token::Word("new") {
+                return Err(
+                    "E_LOCK_UNSUPPORTED: no compiled MutexLease or scheduler exists for Cranelift"
+                        .into(),
+                );
+            }
+            return Err(
+                "E_NEW_REQUIRED: Mutex<T> is a nominal resource class; use new Mutex<int>(value)"
+                    .into(),
+            );
+        }
+        scan.next()?;
+    }
+    Ok(())
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
@@ -1212,6 +1252,9 @@ pub fn parse(text: &str) -> Result<Program, String> {
     }
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
+    }
+    if text.contains("Mutex") {
+        reject_unimplemented_mutex_construction(text)?;
     }
     let original = Parser::new(text)?.program();
     // Preserve authoritative declaration/effect/export diagnostics. Refine
@@ -1251,6 +1294,34 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mutex_new_constructor_is_required_but_not_yet_runtime_supported() {
+        // Constructor grammar applies to all simple nominal type arguments,
+        // not just the currently executable scalar int. Nested type arguments
+        // remain outside this narrowly bounded source admission gate.
+        for ty in ["int", "bool", "float", "Buffer"] {
+            let old = format!("pub fnc main():int {{ val counter = Mutex<{ty}>(0); return 0; }}");
+            let canonical =
+                format!("pub fnc main():int {{ val counter = new Mutex<{ty}>(0); return 0; }}");
+            assert!(parse(&old).unwrap_err().contains("E_NEW_REQUIRED"), "{ty}");
+            assert!(
+                parse(&canonical)
+                    .unwrap_err()
+                    .contains("E_LOCK_UNSUPPORTED"),
+                "{ty}"
+            );
+        }
+        assert_eq!(
+            eval(
+                &parse("// Mutex<int>(0) is a comment\nfnc main():int{return 42;}")
+                    .unwrap()
+                    .result,
+                &[]
+            ),
+            Ok(42)
+        );
+    }
+
     #[test]
     fn nested_block_comments_are_inert_but_bounded_and_well_terminated() {
         let guest = "/* define actor Worker */ fnc main(/* ignored */):int { /* outer /* inner */ rest */ return 42; }";
