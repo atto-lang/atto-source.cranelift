@@ -99,14 +99,8 @@ fn ten_shared_signed_i64_candidates_execute_actual_cranelift_jit() {
 
 #[test]
 fn unimplemented_type_adt_actor_async_features_remain_fail_closed() {
-    // Local const is now part of the admitted constexpr scalar subset, so it
-    // cannot remain in the obsolete unsupported-features negative registry.
-    run_source(
-        "pub fnc main(): int { const x = 7; return x; }",
-        true,
-        "7\n",
-    );
     for source in [
+        "pub fnc main(): int { const x = 7; return x; }",
         "pub fnc main(): int { return 7 as bool; }",
         "define enum Status as Ready, Failed end pub fnc main(): int { return 42; }",
         "define isolated actor Counter as state { value: int = 0; } end pub fnc main(): int { return 42; }",
