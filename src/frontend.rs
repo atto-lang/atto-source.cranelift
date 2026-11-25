@@ -371,6 +371,14 @@ impl<'a> Parser<'a> {
             {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
+            if matches!(
+                self.current,
+                Token::Word("trap" | "throw" | "raise" | "panic")
+            ) && b.get(self.pos) == Some(&b'!')
+                && !comparison
+            {
+                return Err("EXCEPTION_BANG_BACKEND_UNSUPPORTED: typed guest Error/Result, unwind and actor supervisor lowering required".into());
+            }
             if self.current == Token::Word("mut") {
                 let mut at = self.pos;
                 while b.get(at).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
@@ -1890,6 +1898,70 @@ end"#;
         }
         // Comments are non-executable text and can contain a percent sign.
         assert!(parse("fnc main():int{return 42;} // 100% comment").is_ok());
+    }
+    #[test]
+    fn exceptional_bang_keywords_fail_closed_before_clif() {
+        for op in ["trap!", "throw!", "raise!", "panic!"] {
+            let src = format!("fnc main():int{{return {op} value;}}");
+            let error = parse(&src).expect_err("unlowered bang effect must fail");
+            assert!(
+                error.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                "unexpected diagnostic for {op}: {error}"
+            );
+        }
+        assert!(parse("fnc main():int{return 7;} // throw!").is_ok());
+    }
+
+    #[test]
+    fn eighteen_case_exception_bang_boundaries_never_forge_native_clif_effects() {
+        // 18 spec #146 lexical vectors: six backend-denied canonical forms,
+        // nine collision/legacy forms, one string and two comments.
+        for expr in [
+            "trap! parse_id(\"42\")",
+            "trap!parse_id(\"42\")",
+            "throw! Error(\"bad\")",
+            "raise! Error(\"bad\")",
+            "panic! Error(\"bad\")",
+            "throw!Error(\"bad\")",
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            let err = parse(&source).expect_err("unimplemented effect must fail closed");
+            assert!(
+                err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                "wrong diagnostic for {expr:?}: {err}"
+            );
+        }
+        for expr in [
+            "trap parse_id(\"42\")",
+            "throw Error(\"bad\")",
+            "raise Error(\"bad\")",
+            "panic Error(\"bad\")",
+            "trap !ready",
+            "trap!=next",
+            "trap!eq next",
+            "trapped! parse_id()",
+            "copy! owned",
+        ] {
+            let source = format!("fnc main():int{{return {expr};}}");
+            if let Err(err) = parse(&source) {
+                assert!(
+                    !err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                    "false exceptional bang in {expr:?}: {err}"
+                );
+            }
+        }
+        for source in [
+            "fnc main():int{return 7;} // trap! throw! raise! panic!",
+            "fnc main():int{/* trap! throw! raise! panic! */return 7;}",
+            "fnc main():int{return \"trap! throw! raise! panic!\";}",
+        ] {
+            if let Err(err) = parse(source) {
+                assert!(
+                    !err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                    "trivia falsely reclassified as control: {err}"
+                );
+            }
+        }
     }
     #[test]
     fn option_result_trap_fail_closed_until_native_tagged_lowering() {
