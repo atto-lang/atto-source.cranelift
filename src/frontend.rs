@@ -1128,8 +1128,8 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
                 Some(Tok::Sym(b')' | b']' | b'}')) => true,
                 _ => false,
             };
-            pending_pipe = (matches!(current, Tok::Id("pipe" | "rpipe")) && left_end)
-                || contiguous_pipe_bang;
+            pending_pipe =
+                (matches!(current, Tok::Id("pipe" | "rpipe")) && left_end) || contiguous_pipe_bang;
         }
 
         last_token_end = index;
