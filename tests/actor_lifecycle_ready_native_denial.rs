@@ -8,7 +8,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 fn invoke(mode: &str, source: &str) -> Output {
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "atto-cranelift-actor-ready-{}-{nonce}.atto", std::process::id()
+        "atto-cranelift-actor-ready-{}-{nonce}.atto",
+        std::process::id()
     ));
     // Never truncate or follow a pre-existing symlink in a shared temp directory.
     // Exclusive creation also prevents collisions between independently running suites.
@@ -21,10 +22,15 @@ fn invoke(mode: &str, source: &str) -> Output {
         options.mode(0o600);
     }
     let mut handle = options.open(&path).expect("exclusive source fixture");
-    handle.write_all(source.as_bytes()).expect("write source fixture");
+    handle
+        .write_all(source.as_bytes())
+        .expect("write source fixture");
     drop(handle);
     let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg(mode).arg(&path).output().expect("run Cranelift CLI");
+        .arg(mode)
+        .arg(&path)
+        .output()
+        .expect("run Cranelift CLI");
     std::fs::remove_file(&path).expect("delete guest fixture");
     output
 }
@@ -32,7 +38,9 @@ fn invoke(mode: &str, source: &str) -> Output {
 #[test]
 fn actor_ready_and_physical_done_guests_are_never_emitted_by_scalar_jit() {
     let cases = [
-        ("explicit-ready-barrier", r#"
+        (
+            "explicit-ready-barrier",
+            r#"
 define actor Worker receives int as
   susp receive(ActorMail<int> mail): void { }
 end
@@ -42,8 +50,11 @@ pub susp fnc main(): int {
   stop! worker;
   await worker.get_done();
   return 0;
-}"#),
-        ("readiness-free-pipe-admission", r#"
+}"#,
+        ),
+        (
+            "readiness-free-pipe-admission",
+            r#"
 pub fnc main(): int {
   val producer = spawn Producer();
   val consumer = spawn Consumer();
@@ -51,14 +62,18 @@ pub fnc main(): int {
   stop! producer;
   await producer.get_done();
   return 0;
-}"#),
-        ("reverse-written-pipe", r#"
+}"#,
+        ),
+        (
+            "reverse-written-pipe",
+            r#"
 pub fnc main(): int {
   val producer = spawn Producer();
   val consumer = spawn Consumer();
   consumer rpipe! producer;
   return 0;
-}"#),
+}"#,
+        ),
         ("ready-method", "fnc main():int{return worker.get_ready();}"),
         ("done-method", "fnc main():int{return worker.get_done();}"),
         ("graceful-stop", "fnc main():int{return stop! worker;}"),
