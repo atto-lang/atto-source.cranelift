@@ -12,6 +12,7 @@ pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
     arity: usize,
+    #[cfg(test)]
     pub clif: String,
 }
 
@@ -256,8 +257,16 @@ fn validate_ir(
         .map_err(|e| format!("CLIF verification failed: {e}"))
 }
 
-fn prepare_ir(source: &Program) -> Result<(JITModule, cranelift_codegen::Context, cranelift_module::FuncId), String> {
-    // Never trust a manually constructed AST or a stale parser receipt.
+fn prepare_ir(
+    source: &Program,
+) -> Result<
+    (
+        JITModule,
+        cranelift_codegen::Context,
+        cranelift_module::FuncId,
+    ),
+    String,
+> {
     crate::frontend::validate_ast_depth(&source.result)?;
     let builder = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = JITModule::new(builder);
@@ -323,6 +332,7 @@ pub fn render_ir(source: &Program) -> Result<String, String> {
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
     let (mut module, mut ctx, id) = prepare_ir(source)?;
+    #[cfg(test)]
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -333,6 +343,7 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         module,
         id,
         arity: source.parameters.len(),
+        #[cfg(test)]
         clif,
     })
 }
@@ -394,9 +405,8 @@ mod verification_tests {
 
     #[test]
     fn ir_render_does_not_require_native_finalization_and_matches_compiled_clif() {
-        let parsed = crate::frontend::parse(
-            "fnc main(a:int):int{return Integer.bitXor(a+40,2);}"
-        ).expect("valid typed scalar");
+        let parsed = crate::frontend::parse("fnc main(a:int):int{return Integer.bitXor(a+40,2);}")
+            .expect("valid typed scalar");
         let emitted_only = render_ir(&parsed).expect("verified non-executable CLIF");
         assert!(emitted_only.contains("function"));
         let native = compile(&parsed).expect("Cranelift executable output");
@@ -408,18 +418,25 @@ mod verification_tests {
 
     #[test]
     fn direct_compiled_api_requires_exact_declared_arity() {
-        let program = crate::frontend::parse(
-            "fnc main(a:int,b:int):int{return a*10+b;}"
-        ).expect("two-parameter native scalar");
+        let program = crate::frontend::parse("fnc main(a:int,b:int):int{return a*10+b;}")
+            .expect("two-parameter native scalar");
         let compiled = compile(&program).expect("compile exact arity fixture");
         assert_eq!(compiled.run(&[4, 2]), Ok(42));
-        for args in [
-            &[][..], &[4][..], &[4, 2, 0][..], &[4, 2, 0, 0][..],
-        ] {
-            assert_eq!(compiled.run(args), Err("runtime argument count mismatch".into()));
+        for args in [&[][..], &[4][..], &[4, 2, 0][..], &[4, 2, 0, 0][..]] {
+            assert_eq!(
+                compiled.run(args),
+                Err("runtime argument count mismatch".into())
+            );
         }
-        assert_eq!(compiled.run(&[4, 2, 0, 0, 0]), Err("too many runtime arguments".into()));
-        assert_eq!(compiled.run(&[4, 2]), Ok(42), "failed admission cannot corrupt native state");
+        assert_eq!(
+            compiled.run(&[4, 2, 0, 0, 0]),
+            Err("too many runtime arguments".into())
+        );
+        assert_eq!(
+            compiled.run(&[4, 2]),
+            Ok(42),
+            "failed admission cannot corrupt native state"
+        );
     }
 
     #[test]
