@@ -83,7 +83,7 @@ These changes are authored in [Cranelift #39](https://github.com/atto-lang/atto-
 ### Experimental numeric Result entry (candidate, NOT EXECUTED)
 
 The stage-0 entry may explicitly return `Result<int, Error>` using
-`return trap!(a / b);` or `return trap (a / b);`. Both evaluate the
+`return trap! (a / b);` or `return trap (a / b);`. Both evaluate the
 parenthesized scalar expression once. The generated native entry writes three
 i64 slots (tag, payload, error code): Ok uses tag 0 and code 0; Err uses tag 1,
 zero payload, and candidate identity 65537 (ArithmeticOverflowError) or 65538
@@ -95,3 +95,5 @@ traps, arbitrary guest throw/raise/panic, callable propagation, cleanup,
 postfix ?, floating values and Integer.pow inside trap are unsupported.
 The latter has a third error category without an agreed numeric identity.
 Do not certify this narrow candidate as full guest error or backend parity.
+
+Bang-suffixed Atto keyword operators require whitespace after the complete suffix (including `copy!!`). Rust-style `trap!(...)` is rejected; no whitespace is allowed between the word and its bang. This scalar lexer still refuses unsupported ownership, actor and macro operators.

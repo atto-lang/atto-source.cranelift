@@ -41,7 +41,7 @@ fn native_numeric_trap_returns_distinct_tags_and_error_identities() {
             ("(a / b) + 1", "9223372036854775807", "0", "Err(65538)"),
             ("a + b", "40", "2", "Ok(42)"),
         ] {
-            let source = format!("pub fnc main(a:int,b:int):Result<int, Error>{{return {spelling}({expr});}}");
+            let source = format!("pub fnc main(a:int,b:int):Result<int, Error>{{return {spelling} ({expr});}}");
             let output = f.execute(&source, "run", &[left, right]);
             assert_eq!(output.status.code(), Some(0), "{source}: {:?}", output.stderr);
             assert_eq!(String::from_utf8_lossy(&output.stdout), format!("{expected}\n"));
@@ -53,14 +53,17 @@ fn native_numeric_trap_returns_distinct_tags_and_error_identities() {
 fn result_unsupported_forms_fail_before_native_ir() {
     let f = Fixture::new();
     for source in [
-        "fnc main():Result<int,int>{return trap!(7);}",
+        "fnc main():Result<int,int>{return trap! (7);}",
         "fnc main():Result<int,Error>{return 7;}",
         "fnc main():Result<int,Error>{return Ok(7);}",
-        "fnc main():int{return trap!(7);}",
-        "fnc main():Result<int,Error>{return trap!(Integer.pow(2,-1));}",
-        "fnc main():Result<int,Error>{return trap!(trap!(7));}",
-        "fnc main():Result<int,Error>{return trap!(7) + 1;}",
+        "fnc main():int{return trap! (7);}",
+        "fnc main():Result<int,Error>{return trap! (Integer.pow(2,-1));}",
+        "fnc main():Result<int,Error>{return trap! (trap! (7));}",
+        "fnc main():Result<int,Error>{return trap! (7) + 1;}",
         "fnc main():Result<int,Error>{return trap ! (7);}",
+        "fnc main():Result<int,Error>{return trap!(7);}",
+        "fnc main():Result<int,Error>{return trap!7;}",
+        "fnc main():Result<int,Error>{return trap!/*comment*/ (7);}",
         "fnc main():Option<int>{return Some(7);}",
     ] {
         for mode in ["check", "ir", "run"] {
@@ -74,8 +77,21 @@ fn result_unsupported_forms_fail_before_native_ir() {
 #[test]
 fn numeric_result_entry_never_enters_scalar_isolate_path() {
     let f = Fixture::new();
-    let source = "fnc main(a:int,b:int):Result<int,Error>{return trap!(a+b);}";
+    let source = "fnc main(a:int,b:int):Result<int,Error>{return trap! (a+b);}";
     let output = f.execute(source, "isolate", &["1","2"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn bang_keyword_suffix_requires_whitespace() {
+    let f = Fixture::new();
+    for verb in ["trap", "throw", "raise", "panic", "copy", "take", "borrow", "share", "pin", "drop", "pipe", "rpipe", "stop", "expand", "copy!"] {
+        for tail in ["(7)", "value"] {
+            let source = format!("fnc main():int{{return {verb}!{tail};}}");
+            let output = f.execute(&source, "check", &[]);
+            assert_eq!(output.status.code(), Some(1), "{source}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("E_BANG_KEYWORD_WHITESPACE"), "{source}: {:?}", output.stderr);
+        }
+    }
 }

@@ -328,6 +328,23 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
+            // Atto bang keywords are contextual words, not Rust-style macro
+            // calls. Require whitespace after the complete suffix, including copy!!.
+            if matches!(self.current, Token::Word("trap" | "throw" | "raise" | "panic"
+                | "copy" | "take" | "borrow" | "share" | "pin" | "drop"
+                | "pipe" | "rpipe" | "stop" | "expand"))
+                && b.get(self.pos) == Some(&b'!')
+            {
+                let after = self.pos + if self.current == Token::Word("copy")
+                    && b.get(self.pos + 1) == Some(&b'!') { 2 } else { 1 };
+                // Keep inequality operators distinct from keyword suffixes.
+                if b.get(self.pos + 1) != Some(&b'=')
+                    && b.get(self.pos + 1..self.pos + 3) != Some(&b"eq"[..])
+                    && !b.get(after).is_some_and(|c| c.is_ascii_whitespace())
+                {
+                    return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
+                }
+            }
             if self.numeric_result_context && self.current == Token::Word("trap")
                 && b.get(self.pos) == Some(&b'!')
             {
