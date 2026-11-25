@@ -4,10 +4,15 @@ mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
+mod functional_pipelines;
 mod isolate;
 pub mod layout;
 #[allow(dead_code)]
 mod owned_region;
+#[allow(dead_code)]
+mod result_int_parse_v1;
+// Backend-local trusted host primitive; guest lowering pending.
+mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
@@ -56,10 +61,11 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
         // terminated segment. File::from_raw_fd takes ownership of successful fd.
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return Err(format!(
-                "source path component denied: {}",
-                std::io::Error::last_os_error()
-            ));
+            let error = std::io::Error::last_os_error();
+            if final_component && error.raw_os_error() == Some(libc::ELOOP) {
+                return Err("source must be a regular file (symlinks forbidden)".into());
+            }
+            return Err(format!("source path component denied: {error}"));
         }
         directory = unsafe { std::fs::File::from_raw_fd(fd) };
     }
@@ -140,7 +146,18 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
-    let parsed = frontend::parse(source)?;
+    let parsed = match frontend::parse(source) {
+        Ok(program) => program,
+        Err(original)
+            if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
+        {
+            // The independent pure parser must share the outer admission gates.
+            frontend::validate_source_envelope(source)?;
+            functional_pipelines::parse(source)
+                .map_err(|reason| format!("{reason} (stage-0: {original})"))?
+        }
+        Err(original) => return Err(original),
+    };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
     if mode == "check" {

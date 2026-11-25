@@ -67,37 +67,3 @@ cargo run --locked -- ir tests/fixtures/clients-scalar-v1/01-precedence.ores
 **Evidence status:** these commands are test instructions, not a claim they ran successfully in this canonical repository. The [native GitHub Actions workflow](.github/workflows/native-cranelift.yml) must show assigned jobs, nonzero executed steps, native guest results and an exact source SHA before recording any capability as passed. A mirror in another private organization requires the same blob SHA proof and explicit runner logs. The repository inventory remains `NOT_CERTIFIED` with `not_executed` statuses until then.
 
 This compiler does **not** currently support full AOT, actor-language compilation, untrusted-isolate sandboxing, ownership-bang lowering, the complete Atto parser, or five-backend parity. It is a stage-0 **trusted** scalar JIT, not a substitute for LLVM/Forge/Java backend verification. No Python scripts or test harnesses are imported.
-
-## Restricted inline `sync task` stage-0 candidate (draft)
-
-The experimental Cranelift scalar frontend accepts `do sync task {}`
-and `do sync task<void> { return; }` as sequential **void-only
-inline statements** in synchronous scalar `main`. Omitted do-inline
-type means `void`, never an inferred nonvoid payload.
-`do sync task<int>` or `do sync task { return 42; }` rejects with
-`E_TASK_RETURN_TYPE` before CLIF emission. Bare standalone
-`sync task {};` and `sync task<void> {};` reject with `E_SYNTAX`:
-the `do` keyword is required. Value-producing `sync task<int>
-{ return <scalar-expression>; }` remains an expression of type `int`.
-Inline bodies execute in lexical order on the caller, without spawning
-a child or creating `Future<T>`. Checked arithmetic failures in an
-inline value expression suppress guest result publication. Only
-signed-i64 arithmetic, parameters and nested non-suspending inline
-tasks are within this experimental subset.
-
-**Not supported:** independently scheduled `task<T>`, `await task`,
-suspension, `Future.cancel()`, mutable locals/captures, child TaskScopes,
-defer/using, scope guards, or tenant scheduling guarantees. These
-require checked lowering and remain rejected before CLIF or executable
-guest emission. This stage-0 JIT is trusted, **not** a sandbox for
-untrusted tenant code. See atto-spec PR #129 for the full target contract
-and atto-platform-conformance PR #115 for portable fixtures. The
-compiler subset does not pass those full portable fixtures yet.
-
-The source includes parser tests and real CLI native-guest tests in
-`tests/inline_sync_task.rs`. For executed checks, precise source commit/tree,
-runner logs, and outcomes, see the current audit evidence on AttoLang
-Cranelift PR #54; run `cargo test --locked --all-targets --no-fail-fast`
-on the exact head. These receipts can certify only the restricted trusted
-scalar subset, not full AttoLang task/cancellation/actor capabilities.
-The repository capability inventory remains **NOT_CERTIFIED**.

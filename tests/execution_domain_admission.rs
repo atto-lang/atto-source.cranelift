@@ -20,7 +20,7 @@ fn run_source(source: &str, mode: &str, args: &[&str]) -> std::process::Output {
     output
 }
 
-fn rejected_with_diagnostic(source: &str, diagnostic: &str) {
+fn rejected_without_output(source: &str) {
     for mode in ["run", "ir"] {
         let output = run_source(source, mode, &[]);
         assert!(!output.status.success(), "{mode} accepted {source}");
@@ -30,14 +30,10 @@ fn rejected_with_diagnostic(source: &str, diagnostic: &str) {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains(diagnostic),
+            stderr.contains("EXECUTION_DOMAIN_UNSUPPORTED"),
             "{mode} wrong diagnostic for {source}: {stderr}"
         );
     }
-}
-
-fn rejected_without_output(source: &str) {
-    rejected_with_diagnostic(source, "EXECUTION_DOMAIN_UNSUPPORTED");
 }
 
 #[test]
@@ -58,14 +54,8 @@ fn domain_words_are_reserved_in_every_position() {
 
 #[test]
 fn task_and_nb_blocks_are_rejected_as_execution_tasks() {
-    rejected_with_diagnostic(
-        "fnc main(): int { return task { 1 }; }\n",
-        "E_TASK_UNSUPPORTED",
-    );
-    rejected_with_diagnostic(
-        "fnc main(): int { return task // block\n { 1 }; }\n",
-        "E_TASK_UNSUPPORTED",
-    );
+    rejected_without_output("fnc main(): int { return task { 1 }; }\n");
+    rejected_without_output("fnc main(): int { return task // block\n { 1 }; }\n");
     rejected_without_output("fnc main(): int { return nb { 1 }; }\n");
 }
 

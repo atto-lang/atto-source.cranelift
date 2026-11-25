@@ -1,0 +1,6 @@
+# Cranelift private source export destinations: DENY BY DEFAULT.
+# No destination is approved. This file does NOT authorize Git-object mirroring.
+# Any future authorization requires enforceable protected-main CODEOWNER review,
+# exact immutable source/destination repository IDs, commit/tree and carrier policy,
+# separately resolved security incident holds, and an audited source publisher.
+# The source-local private-ci-policy workflow fails if any active entry appears.
