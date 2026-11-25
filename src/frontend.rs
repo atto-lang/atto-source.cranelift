@@ -1927,9 +1927,8 @@ mod tests {
         // c562ad380bb283da9ffa26160653c1186ab63462.
         // This target is scalar-only; it must not pretend to implement
         // Result<PublishReceipt,PublishError> or checked share! lowering.
-        let canonical = include_str!(
-            "../tests/fixtures/atto-ensemble-v1/canonical-unlowered-try-publish.atto"
-        );
+        let canonical =
+            include_str!("../tests/fixtures/atto-ensemble-v1/canonical-unlowered-try-publish.atto");
         for source in [
             canonical,
             "val receipt=imported_topic.try_publish(share! event)?;",
@@ -1939,8 +1938,10 @@ mod tests {
             "val receipt=topic.\ntry_publish(event);",
             "val receipt=topic.// inert .try_publish\ntry_publish(event);",
         ] {
-            assert!(has_actor_pubsub_surface(source),
-                "unlowered aliased Topic member was accepted by source gate: {source}");
+            assert!(
+                has_actor_pubsub_surface(source),
+                "unlowered aliased Topic member was accepted by source gate: {source}"
+            );
             assert_eq!(
                 parse(source).unwrap_err(),
                 "native ActorGroup/Topic source lowering unsupported",
@@ -1961,11 +1962,13 @@ mod tests {
             "fnc main():int{return 42;} /* topic. */ try_publish",
             "fnc main():int{return 42;} // imported_topic.try_publish\n",
         ] {
-            assert!(!has_actor_pubsub_surface(inert),
-                "inert syntax must not forge typed pub/sub capability: {inert}");
+            assert!(
+                !has_actor_pubsub_surface(inert),
+                "inert syntax must not forge typed pub/sub capability: {inert}"
+            );
         }
-        let scalar=parse("fnc main():int{return 42;}").unwrap();
-        assert_eq!(eval(&scalar.result,&[]),Ok(42));
+        let scalar = parse("fnc main():int{return 42;}").unwrap();
+        assert_eq!(eval(&scalar.result, &[]), Ok(42));
     }
 
     #[test]
