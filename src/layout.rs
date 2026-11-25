@@ -116,7 +116,11 @@ pub fn plan_layout(
         return Err(LayoutError::TooManyFields);
     }
 
-    let allocation_alignment = fields.iter().map(|field| field.alignment()).max().unwrap_or(1);
+    let allocation_alignment = fields
+        .iter()
+        .map(|field| field.alignment())
+        .max()
+        .unwrap_or(1);
     let mut placements = Vec::with_capacity(fields.len());
 
     let (allocation_bytes, record_stride) = match mode {
@@ -327,14 +331,23 @@ mod tests {
         let plan = plan_layout(&SHAPE, 2, LayoutMode::Aos, AddressWidth::Bits32, 48).unwrap();
         assert_eq!(plan.field_offset(3, 0), Err(LayoutError::UnknownField));
         assert_eq!(plan.field_offset(0, 2), Err(LayoutError::UnknownElement));
-        assert_eq!(plan.field_offset(0, u64::MAX), Err(LayoutError::UnknownElement));
+        assert_eq!(
+            plan.field_offset(0, u64::MAX),
+            Err(LayoutError::UnknownElement)
+        );
     }
 
     #[test]
     fn checked_arithmetic_and_target_quotas_fail_closed() {
         for mode in [LayoutMode::Aos, LayoutMode::Soa] {
             assert_eq!(
-                plan_layout(&[ScalarField::U64], u64::MAX, mode, AddressWidth::Bits64, u64::MAX),
+                plan_layout(
+                    &[ScalarField::U64],
+                    u64::MAX,
+                    mode,
+                    AddressWidth::Bits64,
+                    u64::MAX
+                ),
                 Err(LayoutError::ArithmeticOverflow)
             );
             assert_eq!(

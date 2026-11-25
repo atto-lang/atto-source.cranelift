@@ -85,9 +85,7 @@ impl OwnedScalarRegion {
         if self.retired {
             return Err(RegionError::RegionRetired);
         }
-        if self.generation != lease.generation
-            || !Arc::ptr_eq(&self.authority, &lease.authority)
-        {
+        if self.generation != lease.generation || !Arc::ptr_eq(&self.authority, &lease.authority) {
             return Err(RegionError::ForeignOrStaleLease);
         }
         Ok(())
@@ -110,7 +108,9 @@ impl OwnedScalarRegion {
         let start = self.plan.field_offset(field, index)?;
         let start = usize::try_from(start).map_err(|_| RegionError::AllocationBudget)?;
         let width = usize::try_from(kind.bytes()).map_err(|_| RegionError::AllocationBudget)?;
-        let end = start.checked_add(width).ok_or(RegionError::AllocationBudget)?;
+        let end = start
+            .checked_add(width)
+            .ok_or(RegionError::AllocationBudget)?;
         if end > self.bytes.len() {
             return Err(RegionError::AllocationBudget);
         }
@@ -155,7 +155,12 @@ impl OwnedScalarRegion {
         field: usize,
         index: u64,
     ) -> Result<i64, RegionError> {
-        Ok(i64::from_le_bytes(self.read_eight(lease, field, index, ScalarField::I64)?))
+        Ok(i64::from_le_bytes(self.read_eight(
+            lease,
+            field,
+            index,
+            ScalarField::I64,
+        )?))
     }
 
     pub fn write_i64(
@@ -186,7 +191,13 @@ impl OwnedScalarRegion {
         index: u64,
         value: f64,
     ) -> Result<(), RegionError> {
-        self.write_eight(lease, field, index, ScalarField::F64, value.to_bits().to_le_bytes())
+        self.write_eight(
+            lease,
+            field,
+            index,
+            ScalarField::F64,
+            value.to_bits().to_le_bytes(),
+        )
     }
 
     /// Boolean values are encoded as canonical 0 and 1, not host bool ABI.
@@ -246,7 +257,7 @@ impl Drop for OwnedScalarRegion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{plan_layout, AddressWidth, LayoutMode};
+    use crate::layout::{AddressWidth, LayoutMode, plan_layout};
 
     fn region(mode: LayoutMode) -> OwnedScalarRegion {
         let plan = plan_layout(
@@ -267,15 +278,31 @@ mod tests {
             let lease = owned.lease().unwrap();
             assert_eq!(owned.read_i64(&lease, 0, 0), Ok(0));
             for index in 0..3 {
-                owned.write_i64(&lease, 0, index, i64::MIN + index as i64).unwrap();
-                owned.write_i64(&lease, 2, index, i64::MAX - index as i64).unwrap();
+                owned
+                    .write_i64(&lease, 0, index, i64::MIN + index as i64)
+                    .unwrap();
+                owned
+                    .write_i64(&lease, 2, index, i64::MAX - index as i64)
+                    .unwrap();
             }
             for index in 0..3 {
-                assert_eq!(owned.read_i64(&lease, 0, index), Ok(i64::MIN + index as i64));
-                assert_eq!(owned.read_i64(&lease, 2, index), Ok(i64::MAX - index as i64));
+                assert_eq!(
+                    owned.read_i64(&lease, 0, index),
+                    Ok(i64::MIN + index as i64)
+                );
+                assert_eq!(
+                    owned.read_i64(&lease, 2, index),
+                    Ok(i64::MAX - index as i64)
+                );
             }
-            assert_eq!(owned.read_i64(&lease, 1, 0), Err(RegionError::WrongScalarType));
-            assert_eq!(owned.write_i64(&lease, 1, 0, 42), Err(RegionError::WrongScalarType));
+            assert_eq!(
+                owned.read_i64(&lease, 1, 0),
+                Err(RegionError::WrongScalarType)
+            );
+            assert_eq!(
+                owned.write_i64(&lease, 1, 0, 42),
+                Err(RegionError::WrongScalarType)
+            );
             assert_eq!(
                 owned.write_i64(&lease, 0, 3, 42),
                 Err(RegionError::Layout(LayoutError::UnknownElement))
@@ -303,7 +330,10 @@ mod tests {
             owned.write_f64(&lease, 2, 2, f64::INFINITY).unwrap();
             assert_eq!(owned.read_bool(&lease, 0, 0), Ok(true));
             assert_eq!(owned.read_bool(&lease, 0, 1), Ok(false));
-            assert_eq!(owned.read_f64(&lease, 2, 0).unwrap().to_bits(), (-0.0_f64).to_bits());
+            assert_eq!(
+                owned.read_f64(&lease, 2, 0).unwrap().to_bits(),
+                (-0.0_f64).to_bits()
+            );
             assert_eq!(
                 owned.read_f64(&lease, 2, 1).unwrap().to_bits(),
                 expected_nan.to_bits()
@@ -353,8 +383,14 @@ mod tests {
         owned.retire().unwrap();
         assert_eq!(owned.allocation_bytes(), 0);
         assert_eq!(owned.lease().unwrap_err(), RegionError::RegionRetired);
-        assert_eq!(owned.read_i64(&first, 0, 1), Err(RegionError::RegionRetired));
-        assert_eq!(owned.write_i64(&cloned, 0, 1, 99), Err(RegionError::RegionRetired));
+        assert_eq!(
+            owned.read_i64(&first, 0, 1),
+            Err(RegionError::RegionRetired)
+        );
+        assert_eq!(
+            owned.write_i64(&cloned, 0, 1, 99),
+            Err(RegionError::RegionRetired)
+        );
         assert_eq!(owned.retire(), Err(RegionError::RegionRetired));
     }
 
@@ -395,14 +431,7 @@ mod tests {
     #[test]
     fn empty_capacity_has_no_live_index() {
         for mode in [LayoutMode::Aos, LayoutMode::Soa] {
-            let plan = plan_layout(
-                &[ScalarField::I64],
-                0,
-                mode,
-                AddressWidth::Bits32,
-                0,
-            )
-            .unwrap();
+            let plan = plan_layout(&[ScalarField::I64], 0, mode, AddressWidth::Bits32, 0).unwrap();
             let owned = OwnedScalarRegion::new(plan, 0).unwrap();
             let lease = owned.lease().unwrap();
             assert_eq!(owned.allocation_bytes(), 0);
