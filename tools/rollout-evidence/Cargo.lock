@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "ores-rollout-evidence"
+name = "atto-rollout-evidence"
 version = "0.1.0"

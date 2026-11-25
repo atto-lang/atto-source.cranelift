@@ -132,8 +132,11 @@ impl CriticalGate {
             .position(|candidate| *candidate == ticket)
         {
             state.waiting.remove(index);
+            return Ok(None);
         }
-        Ok(None)
+        // A previously released/cancelled ticket is not a successful
+        // release. Reject stale acknowledgements while the gate is live.
+        Err("stale or already released critical ticket".into())
     }
 
     pub fn holds(&self, ticket: Ticket) -> Result<bool, String> {
@@ -181,9 +184,35 @@ mod tests {
         assert_eq!(gate.release(first).unwrap(), None);
         let second = gate.try_request().unwrap().unwrap();
         assert_ne!(first, second);
-        assert_eq!(gate.release(first).unwrap(), None);
+        assert!(gate.release(first).is_err());
         assert!(gate.holds(second).unwrap());
         let _ = gate.release(second).unwrap();
+    }
+
+    #[test]
+    fn live_gate_rejects_duplicate_release_and_cancel_without_reassigning_owner() {
+        let gate = CriticalGate::new().unwrap();
+        let owner = gate.request().unwrap().ticket;
+        let cancelled = gate.request().unwrap().ticket;
+        let successor = gate.request().unwrap().ticket;
+        assert_eq!(gate.release(cancelled), Ok(None));
+        assert!(
+            gate.release(cancelled).is_err(),
+            "double cancellation acknowledged"
+        );
+        assert!(gate.holds(owner).unwrap());
+        assert_eq!(gate.release(owner), Ok(Some(successor)));
+        assert!(
+            gate.release(owner).is_err(),
+            "old owner re-release acknowledged"
+        );
+        assert!(gate.holds(successor).unwrap());
+        assert_eq!(gate.release(successor), Ok(None));
+        assert!(
+            gate.release(successor).is_err(),
+            "double release acknowledged"
+        );
+        assert_eq!(gate.waiting(), Ok(0));
     }
 
     #[test]

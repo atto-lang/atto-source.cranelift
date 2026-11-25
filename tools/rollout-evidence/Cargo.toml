@@ -1,5 +1,5 @@
 [package]
-name = "ores-rollout-evidence"
+name = "atto-rollout-evidence"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -7,5 +7,5 @@ publish = false
 [workspace]
 
 [[bin]]
-name = "ores-rollout-evidence"
+name = "atto-rollout-evidence"
 path = "src/main.rs"

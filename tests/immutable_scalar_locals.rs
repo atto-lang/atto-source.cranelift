@@ -70,7 +70,7 @@ fn local_immutable_ssa_executes_in_native_jit() {
         ("fnc main():int{const int a=7;return a*6;}", &[][..], "42\n"),
         ("fnc main():int{const a:int=7;return a*6;}", &[][..], "42\n"),
         ("fnc main():int{val a=7 as int;return a*6;}", &[][..], "42\n"),
-        ("fnc main(x:int):int{int a=x+1;val b=a*2;return b;}", &["20"][..], "42\n"),
+        ("fnc main(x:int):int{val a=x+1;val b=a*2;return b;}", &["20"][..], "42\n"),
         ("fnc main(a:int,b:int):int{val c=Integer.rem(a,b);return c+41;}", &["9", "4"][..], "42\n"),
         ("fnc main():int{int x=42;int y=1;return x;}", &[][..], "42\n"),
         ("fnc main():int{const x=-9223372036854775808;return x;}", &[][..], "-9223372036854775808\n"),
@@ -87,11 +87,12 @@ fn invalid_local_declarations_fail_before_jit() {
         ("fnc main():int{int a=b;int b=7;return a;}", "unbound"),
         ("fnc main():int{int a=7;val a=8;return a;}", "duplicate"),
         ("fnc main(x:int):int{int x=7;return x;}", "duplicate"),
-        ("fnc main(x:int):int{const a=x;return a;}", "compile-time"),
-        ("fnc main(x:int):int{val a=x;const b=a;return b;}", "compile-time"),
-        ("fnc main():int{const a=9223372036854775807+1;return a;}", "compile-time i64 overflow"),
-        ("fnc main():int{int a=1;a=2;return a;}", "unexpected"),
-        ("fnc main():int{let a=1;return a;}", "unexpected"),
+        ("fnc main(x:int):int{const a=x;return a;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main(x:int):int{int a=x+1;val b=a*2;return b;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main(x:int):int{val a=x;const b=a;return b;}", "E_NON_CONST_INITIALIZER"),
+        ("fnc main():int{const a=9223372036854775807+1;return a;}", "E_CONST_OVERFLOW"),
+        ("fnc main():int{int a=1;a=2;return a;}", "E_IMMUTABLE_REBIND"),
+        ("fnc main():int{let a=1;return a;}", "E_LET_UNSUPPORTED"),
     ] {
         refuses(source, &[], category);
     }
@@ -102,7 +103,7 @@ fn unused_runtime_initializers_still_trap_eagerly() {
     refuses(
         "fnc main():int{int unused=9223372036854775807+1;return 42;}",
         &[],
-        "overflow",
+        "E_CONST_OVERFLOW",
     );
     refuses(
         "fnc main(x:int):int{val unused=x+1;return 42;}",
@@ -110,7 +111,7 @@ fn unused_runtime_initializers_still_trap_eagerly() {
         "overflow",
     );
     refuses(
-        "fnc main():int{int unused=Integer.rem(9,0);return 42;}",
+        "fnc main():int{val unused=Integer.rem(9,0);return 42;}",
         &[],
         "divisor zero",
     );

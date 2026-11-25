@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const MAX_COMPRESSED32_SPAN: u64 = (u32::MAX as u64) * 8;
+// Bounded actor-local bookkeeping: guest-reachable grants never grow without
+// a per-actor cap, independently of the compressed32 memory span.
+pub const MAX_LIVE_GRANTS: usize = 65_536;
 
 #[derive(Clone, Debug)]
 pub struct AllocationGrant {
@@ -31,24 +34,38 @@ pub struct ActorIsolationAccessV1 {
     retired: bool,
 }
 impl ActorIsolationAccessV1 {
-    pub fn new(tenant: u64, actor: u64, generation: u64, span: u64)
-        -> Result<Self, &'static str>
-    {
-        if tenant == 0 || actor == 0 || generation == 0 ||
-            span == 0 || span > MAX_COMPRESSED32_SPAN {
+    pub fn new(tenant: u64, actor: u64, generation: u64, span: u64) -> Result<Self, &'static str> {
+        if tenant == 0 || actor == 0 || generation == 0 || span == 0 || span > MAX_COMPRESSED32_SPAN
+        {
             return Err("invalid actor incarnation or compressed32 span");
         }
         Ok(Self {
-            tenant, actor, generation, span, issuer: Arc::new(()),
-            next_id: 1, live: HashMap::new(), retired: false,
+            tenant,
+            actor,
+            generation,
+            span,
+            issuer: Arc::new(()),
+            next_id: 1,
+            live: HashMap::new(),
+            retired: false,
         })
     }
-    pub fn issue_allocation(&mut self, start: u64, length: u64)
-        -> Result<AllocationGrant, &'static str>
-    {
-        if self.retired { return Err("retired actor"); }
-        if start % 8 != 0 || length == 0 || start > self.span ||
-            length > self.span - start {
+    pub fn issue_allocation(
+        &mut self,
+        start: u64,
+        length: u64,
+    ) -> Result<AllocationGrant, &'static str> {
+        if self.retired {
+            return Err("retired actor");
+        }
+        if self.live.len() >= MAX_LIVE_GRANTS {
+            return Err("actor allocation grant budget exhausted");
+        }
+        if !start.is_multiple_of(8)
+            || length == 0
+            || start > self.span
+            || length > self.span - start
+        {
             return Err("invalid actor allocation bounds");
         }
         let end = start + length; // safe after subtract-first check
@@ -58,28 +75,38 @@ impl ActorIsolationAccessV1 {
         let id = self.next_id;
         self.next_id = id.checked_add(1).ok_or("grant generation exhausted")?;
         self.live.insert(id, Range { start, end });
-        Ok(AllocationGrant { issuer: self.issuer.clone(), id })
+        Ok(AllocationGrant {
+            issuer: self.issuer.clone(),
+            id,
+        })
     }
-    pub fn checked_offset(&self, grant: &AllocationGrant, word: u32, bytes: u64)
-        -> Result<u64, &'static str>
-    {
-        if self.retired { return Err("retired actor"); }
+    pub fn checked_offset(
+        &self,
+        grant: &AllocationGrant,
+        word: u32,
+        bytes: u64,
+    ) -> Result<u64, &'static str> {
+        if self.retired {
+            return Err("retired actor");
+        }
         if !Arc::ptr_eq(&self.issuer, &grant.issuer) {
             return Err("foreign actor or tenant grant");
         }
         let range = self.live.get(&grant.id).ok_or("stale grant")?;
-        if word == 0 || bytes == 0 { return Err("null or empty access"); }
+        if word == 0 || bytes == 0 {
+            return Err("null or empty access");
+        }
         let offset = (u64::from(word) - 1) * 8;
-        if offset < range.start || offset > range.end ||
-            bytes > range.end - offset {
+        if offset < range.start || offset > range.end || bytes > range.end - offset {
             return Err("access outside allocation");
         }
         Ok(offset)
     }
     pub fn release(&mut self, grant: &AllocationGrant) -> Result<(), &'static str> {
-        if self.retired { return Err("retired actor"); }
-        if !Arc::ptr_eq(&self.issuer, &grant.issuer) ||
-            self.live.remove(&grant.id).is_none() {
+        if self.retired {
+            return Err("retired actor");
+        }
+        if !Arc::ptr_eq(&self.issuer, &grant.issuer) || self.live.remove(&grant.id).is_none() {
             return Err("foreign or stale grant");
         }
         // Owning allocator must scrub bytes before reallocation.
@@ -124,11 +151,45 @@ mod tests {
         assert!(first.issue_allocation(0, 8).is_err());
     }
     #[test]
+    fn live_grant_count_is_bounded_and_released_capacity_can_be_reused() {
+        let mut gate = ActorIsolationAccessV1::new(1, 2, 3, MAX_COMPRESSED32_SPAN).unwrap();
+        // Fill bookkeeping directly to exercise the cap without 65K
+        // quadratic overlap scans. These simulated ranges do not overlap.
+        for id in 1..=MAX_LIVE_GRANTS as u64 {
+            let start = id * 8;
+            gate.live.insert(
+                id,
+                Range {
+                    start,
+                    end: start + 8,
+                },
+            );
+        }
+        gate.next_id = MAX_LIVE_GRANTS as u64 + 1;
+        let unchanged_id = gate.next_id;
+        assert!(matches!(
+            gate.issue_allocation(0, 8),
+            Err("actor allocation grant budget exhausted")
+        ));
+        assert_eq!(gate.next_id, unchanged_id);
+        assert_eq!(gate.live.len(), MAX_LIVE_GRANTS);
+        gate.live.remove(&1);
+        let fresh = gate.issue_allocation(0, 8).unwrap();
+        assert_eq!(gate.checked_offset(&fresh, 1, 8), Ok(0));
+        assert_eq!(gate.live.len(), MAX_LIVE_GRANTS);
+        assert!(gate.issue_allocation(8, 8).is_err());
+        gate.release(&fresh).unwrap();
+        assert!(gate.checked_offset(&fresh, 1, 8).is_err());
+    }
+
+    #[test]
     fn compressed32_last_word_has_no_wraparound() {
         let mut gate = ActorIsolationAccessV1::new(1, 1, 1, MAX_COMPRESSED32_SPAN).unwrap();
         let g = gate.issue_allocation(MAX_COMPRESSED32_SPAN - 8, 8).unwrap();
-        assert_eq!(gate.checked_offset(&g, u32::MAX, 8),
-                   Ok(MAX_COMPRESSED32_SPAN - 8));
+        assert_eq!(
+            gate.checked_offset(&g, u32::MAX, 8),
+            Ok(MAX_COMPRESSED32_SPAN - 8)
+        );
         assert!(gate.checked_offset(&g, u32::MAX, 9).is_err());
         assert!(gate.issue_allocation(MAX_COMPRESSED32_SPAN, 1).is_err());
         assert!(ActorIsolationAccessV1::new(1, 1, 1, MAX_COMPRESSED32_SPAN + 1).is_err());
