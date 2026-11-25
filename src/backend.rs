@@ -203,9 +203,13 @@ fn validate_guest_expr(
                 return Err("invalid or forward local reference before native codegen".into());
             }
             Expr::Sequence(prefix, last) => {
-                if prefix.len() > 4096 { return Err("AST node budget exceeded before native codegen".into()); }
+                if prefix.len() > 4096 {
+                    return Err("AST node budget exceeded before native codegen".into());
+                }
                 work.push((last, depth + 1));
-                for part in prefix.iter().rev() { work.push((part, depth + 1)); }
+                for part in prefix.iter().rev() {
+                    work.push((part, depth + 1));
+                }
             }
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
             Expr::Add(a, b)
@@ -239,10 +243,36 @@ fn emit(
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         Local(i) => locals[*i],
-        InlineTask(body) => emit(body, b, params, locals, error, divisor_error, negative_exponent_error),
+        InlineTask(body) => emit(
+            body,
+            b,
+            params,
+            locals,
+            error,
+            divisor_error,
+            negative_exponent_error,
+        ),
         Sequence(prefix, last) => {
-            for part in prefix { emit(part, b, params, locals, error, divisor_error, negative_exponent_error); }
-            emit(last, b, params, locals, error, divisor_error, negative_exponent_error)
+            for part in prefix {
+                emit(
+                    part,
+                    b,
+                    params,
+                    locals,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                );
+            }
+            emit(
+                last,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+            )
         }
         Seq(parts) => {
             // The source/host-AST gate guarantees a nonempty bounded list.
@@ -950,7 +980,10 @@ mod native_named_signed64_differential {
             locals: Vec::new(),
             result: Expr::Literal(42),
         };
-        for outcome in [render_ir(&excess).err(), compile(&excess).err().map(|e| e.to_string())] {
+        for outcome in [
+            render_ir(&excess).err(),
+            compile(&excess).err().map(|e| e.to_string()),
+        ] {
             assert!(
                 outcome
                     .expect("five parameter ABI must be rejected")
@@ -985,20 +1018,17 @@ mod native_named_signed64_differential {
 
     #[test]
     fn unused_runtime_val_overflow_preserves_native_output_sentinel() {
-        let source = crate::frontend::parse(
-            "fnc main(x:int):int{val unused=x+1;return 42;}"
-        ).expect("runtime val may depend on a parameter");
+        let source = crate::frontend::parse("fnc main(x:int):int{val unused=x+1;return 42;}")
+            .expect("runtime val may depend on a parameter");
         let compiled = compile(&source).expect("native verified CLIF/JIT");
         type Entry = unsafe extern "C" fn(i64, i64, i64, i64, *mut i64) -> i32;
-        let function: Entry = unsafe {
-            std::mem::transmute(compiled.module.get_finalized_function(compiled.id))
-        };
+        let function: Entry =
+            unsafe { std::mem::transmute(compiled.module.get_finalized_function(compiled.id)) };
         let mut output = 0x1122_3344_5566_7788_i64;
         let status = unsafe { function(i64::MAX, 0, 0, 0, &mut output) };
         assert_eq!(status, 1, "overflow must return a native error status");
         assert_eq!(
-            output,
-            0x1122_3344_5566_7788_i64,
+            output, 0x1122_3344_5566_7788_i64,
             "failed unused initializer must not publish a guest value"
         );
     }

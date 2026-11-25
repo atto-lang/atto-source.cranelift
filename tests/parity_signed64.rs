@@ -100,7 +100,8 @@ fn ten_shared_signed_i64_candidates_execute_actual_cranelift_jit() {
 #[test]
 fn unimplemented_type_adt_actor_async_features_remain_fail_closed() {
     for source in [
-        "pub fnc main(): int { const x = 7; return x; }",
+        "pub fnc main(a:int): int { const x = a; return x; }",
+        "pub fnc main(): int { const x = 9223372036854775807+1; return x; }",
         "pub fnc main(): int { return 7 as bool; }",
         "define enum Status as Ready, Failed end pub fnc main(): int { return 42; }",
         "define isolated actor Counter as state { value: int = 0; } end pub fnc main(): int { return 42; }",
@@ -113,5 +114,6 @@ fn unimplemented_type_adt_actor_async_features_remain_fail_closed() {
 
 #[test]
 fn identity_int_cast_is_supported_without_type_conversion() {
+    run_source("pub fnc main(): int { const x = 7; return x; }", true, "7\n");
     run_source("pub fnc main(): int { return 7 as int; }", true, "7\n");
 }

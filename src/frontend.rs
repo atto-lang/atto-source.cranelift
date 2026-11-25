@@ -1723,6 +1723,8 @@ pub fn parse(text: &str) -> Result<Program, String> {
             || err.starts_with("expected scalar expression")
             || err.starts_with("invalid character")
             || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
+            || err.starts_with("E_LET_UNSUPPORTED")
+            || err.starts_with("expected scalar fnc or int <-/• declaration")
     }) {
         return original;
     }
@@ -2198,7 +2200,9 @@ end"#;
             Expr::Local(_) => Err("test evaluator does not execute runtime local sequences"),
             Expr::InlineTask(body) => eval(body, args),
             Expr::Sequence(prefix, last) => {
-                for part in prefix { eval(part, args)?; }
+                for part in prefix {
+                    eval(part, args)?;
+                }
                 eval(last, args)
             }
             Expr::Neg(x) => eval(x, args)?.checked_neg().ok_or("overflow"),
@@ -3138,4 +3142,11 @@ end"#;
         assert_eq!(eval(&commented.result, &[]), Ok(42));
     }
 
+    #[test]
+    fn canonical_scalar_local_slots_distinguish_const_and_val() {
+        let parsed = parse("fnc main(a:int):int{const c=2;val v=a+c;return v;}").unwrap();
+        assert_eq!(parsed.locals.len(), 1);
+        assert_eq!(parsed.result, Expr::Local(0));
+        assert!(parse("fnc main(a:int):int{int c=a;return c;}").is_err());
+    }
 }
