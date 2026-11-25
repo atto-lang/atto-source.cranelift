@@ -416,6 +416,8 @@ impl<'a> Parser<'a> {
                         | "Slice"
                         | "Tuple"
                         | "Map"
+                        | "Entry"
+                        | "Record"
                         | "Set"
                         | "ReadLoan"
                         | "WriteLoan"
@@ -464,10 +466,12 @@ impl<'a> Parser<'a> {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
             ));
+        } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
+            return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.".contains(&first) {
+        } else if b"()+-*{}[];:,><=.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -1209,7 +1213,39 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if has_actor_pipe_surface(text) {
         return Err("native actor pipe source lowering unsupported".into());
     }
-    Parser::new(text)?.program()
+    let original = Parser::new(text)?.program();
+    // Preserve authoritative declaration/effect/export diagnostics. Refine
+    // only generic grammar denials (or the specific unsupported Struct case).
+    if !original.as_ref().is_err_and(|err| {
+        err.starts_with("unexpected token")
+            || err.starts_with("unbound or unsupported identifier")
+            || err.starts_with("expected scalar expression")
+            || err.starts_with("invalid character")
+            || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
+    }) {
+        return original;
+    }
+    // The narrow scalar grammar must not hide unsupported collection syntax
+    // behind an earlier local declaration. Candidate text only triggers a
+    // bounded token scan; quotes and comments are handled by the lexer.
+    if text.contains("Map")
+        || text.contains("Entry")
+        || text.contains("Record")
+        || text.contains("=>")
+        || text.contains('[')
+    {
+        let mut scan = Parser::new(text)?;
+        let mut previous = Token::End;
+        while scan.current != Token::End {
+            // A visibility qualifier pub[...] is not an indexed expression.
+            if scan.current == Token::Punct(b'[') && previous != Token::Word("pub") {
+                return Err("E_UNSUPPORTED_INDEX_WRITE: indexed Record/Map/Struct access requires checked target typing and guest lowering".into());
+            }
+            previous = scan.current;
+            scan.next()?;
+        }
+    }
+    original
 }
 
 #[cfg(test)]
