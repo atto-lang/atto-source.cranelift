@@ -103,7 +103,11 @@ fn commented_ownership_does_not_poison_scalar_execution() {
             "{mode}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!output.stdout.is_empty(), "{mode} produced no output");
+        if mode == "check" {
+            assert!(output.stdout.is_empty(), "check emitted output");
+        } else {
+            assert!(!output.stdout.is_empty(), "{mode} produced no output");
+        }
     }
 }
 
