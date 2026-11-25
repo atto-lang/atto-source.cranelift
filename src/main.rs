@@ -56,10 +56,11 @@ fn open_source_file(path: &std::path::Path) -> Result<std::fs::File, String> {
         // terminated segment. File::from_raw_fd takes ownership of successful fd.
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return Err(format!(
-                "source path component denied: {}",
-                std::io::Error::last_os_error()
-            ));
+            let error = std::io::Error::last_os_error();
+            if final_component && error.raw_os_error() == Some(libc::ELOOP) {
+                return Err("source must be a regular file (symlinks forbidden)".into());
+            }
+            return Err(format!("source path component denied: {error}"));
         }
         directory = unsafe { std::fs::File::from_raw_fd(fd) };
     }
@@ -164,8 +165,8 @@ fn run() -> Result<(), String> {
         // Experimental *trusted* native scalar VM entry. The source must
         // accept (old, delta) i64; this is NOT a sandbox or actor scheduler.
         let vm = isolate::OresVM::new(2)?;
-        let a = vm.create_isolate("tenant-a", 1, 1)?;
-        let b = vm.create_isolate("tenant-b", 1, 1)?;
+        let a = vm.create_tenant_vm("tenant-a", 1, 1)?;
+        let b = vm.create_tenant_vm("tenant-b", 1, 1)?;
         vm.start(&a)?;
         vm.start(&b)?;
         let actor_a = vm.register_actor(&a, 1)?;

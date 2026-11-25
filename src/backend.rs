@@ -12,6 +12,7 @@ pub struct Compiled {
     module: JITModule, // Own executable allocations until after every native call.
     id: cranelift_module::FuncId,
     arity: usize,
+    #[cfg(test)]
     pub clif: String,
 }
 
@@ -317,6 +318,7 @@ pub fn render_ir(source: &Program) -> Result<String, String> {
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
     let (mut module, mut ctx, id) = prepare_ir(source)?;
+    #[cfg(test)]
     let clif = ctx.func.display().to_string();
     module
         .define_function(id, &mut ctx)
@@ -327,6 +329,7 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
         module,
         id,
         arity: source.parameters.len(),
+        #[cfg(test)]
         clif,
     })
 }

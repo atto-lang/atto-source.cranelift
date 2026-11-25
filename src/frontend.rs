@@ -590,12 +590,14 @@ impl<'a> Parser<'a> {
                 Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
+                // Advance first so a macro bang is denied by the lexer even
+                // when its name is not a bound scalar parameter.
+                self.next()?;
                 let index = self
                     .parameters
                     .iter()
                     .position(|p| p == s)
                     .ok_or_else(|| format!("unbound or unsupported identifier: {s}"))?;
-                self.next()?;
                 self.node(Expr::Param(index))
             }
             _ => Err(format!("expected scalar expression at byte {}", self.pos)),

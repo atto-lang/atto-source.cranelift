@@ -3,7 +3,7 @@ const MATH: &str = include_str!("../library/atto.core/math.atto");
 const HASH: &str = include_str!("../library/atto.core/hash.atto");
 const CELL: &str = include_str!("../library/atto.core/cell.atto");
 fn fold(state: i64, octet: i64) -> i64 {
-    if state < 0 || state >= 1_000_000_007 || octet < 0 || octet > 255 {
+    if !(0..1_000_000_007).contains(&state) || !(0..=255).contains(&octet) {
         return -1;
     }
     let mut v = state * 31 + octet;
@@ -64,8 +64,7 @@ fn no_core_policy_predicate_is_a_borrow_capability_or_guest_proof() {
         [1, 1, 0, 0],
         [-1, 0, 0, 0],
     ] {
-        let valid_state = readers >= 0
-            && readers <= 65535
+        let valid_state = (0..=65535).contains(&readers)
             && (!writer_active_is_true(writer_active) || readers == 0);
         let owner_can_move = readers == 0 && !writer_active_is_true(writer_active);
         assert_eq!(valid_state, valid == 1);
