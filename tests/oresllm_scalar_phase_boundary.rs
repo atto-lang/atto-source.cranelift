@@ -89,7 +89,7 @@ fn runtime_overflows(expression: &str) {
 }
 #[test]
 fn shared_scalar_compile_rejections_are_not_jit_overflow() {
-    for expression in ["unknown_value", "7 / 2", "5 ^ 3", "5 ^^ 3", "1__0"] {
+    for expression in ["unknown_value", "5 ^ 3", "1__0"] {
         compiler_rejects(expression);
     }
 }

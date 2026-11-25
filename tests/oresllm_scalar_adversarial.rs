@@ -106,10 +106,8 @@ fn unsupported_ownership_actor_and_decimal_source_never_emits_ir() {
         "rt borrow x",
         "new Actor()",
         "1.5",
-        "1 / 2",
         "1__0",
         "1 ^ 2",
-        "1 ^^ 2",
         "unknown_scalar",
     ] {
         refuse(expression);

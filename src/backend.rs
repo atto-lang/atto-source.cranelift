@@ -180,6 +180,24 @@ fn emit(
                 _ => unreachable!(),
             }
         }
+        Div(x, y) => {
+            // Evaluate operands once, left to right; guard both sdiv traps.
+            let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
+            let right = emit(y, b, params, error, divisor_error, negative_exponent_error);
+            let is_zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
+            let nonzero = b.create_block();
+            b.ins().brif(is_zero, divisor_error, &[], nonzero, &[]);
+            b.switch_to_block(nonzero);
+            b.seal_block(nonzero);
+            let min = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
+            let neg_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
+            let overflow = b.ins().band(min, neg_one);
+            let safe = b.create_block();
+            b.ins().brif(overflow, error, &[], safe, &[]);
+            b.switch_to_block(safe);
+            b.seal_block(safe);
+            b.ins().sdiv(left, right)
+        }
         NamedRem(x, y) | NamedMod(x, y) => {
             let left = emit(x, b, params, error, divisor_error, negative_exponent_error);
             let right = emit(y, b, params, error, divisor_error, negative_exponent_error);

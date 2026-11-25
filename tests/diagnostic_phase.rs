@@ -50,8 +50,6 @@ fn unsupported_operators_reject_before_native_execution() {
         ("percent", "7 % 3"),
         ("nested_percent", "Integer.bitXor(7%3,1)"),
         ("caret", "7 ^ 3"),
-        ("double_caret", "7 ^^ 3"),
-        ("int_division", "7 / 2"),
     ] {
         let result = fixture.run(id, source);
         assert!(!result.status.success(), "{id} unexpectedly compiled");

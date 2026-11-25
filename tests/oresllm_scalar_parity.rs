@@ -102,7 +102,7 @@ fn oresllm_checked_overflow_must_fail_without_stdout() {
 
 #[test]
 fn oresllm_invalid_scalar_source_must_not_execute() {
-    for expression in ["unknown_value", "7 / 2", "5 ^ 3", "5 ^^ 3", "1__0"] {
+    for expression in ["unknown_value", "5 ^ 3", "1__0"] {
         run_case(expression, None);
     }
 }

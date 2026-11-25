@@ -158,6 +158,7 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    Div(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -449,7 +450,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,>.^".contains(&first) {
+        } else if b"()+-*/{}[];:,>.^".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -621,6 +622,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'+') => (2, 3, b'+'),
                 Token::Punct(b'-') => (2, 3, b'-'),
                 Token::Punct(b'*') => (4, 5, b'*'),
+                Token::Punct(b'/') => (4, 5, b'/'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -637,6 +639,7 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'/' => Expr::Div(Box::new(lhs), Box::new(rhs)),
                 b'^' => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
@@ -1110,6 +1113,7 @@ fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             Expr::Add(left, right)
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
+            | Expr::Div(left, right)
             | Expr::BitXor(left, right)
             | Expr::BitAnd(left, right)
             | Expr::BitOr(left, right)
@@ -1489,6 +1493,14 @@ mod tests {
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::Div(a, b) => {
+                let left = eval(a, args)?;
+                let right = eval(b, args)?;
+                if right == 0 {
+                    return Err("divisor zero");
+                }
+                left.checked_div(right).ok_or("overflow")
+            }
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
             Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
             Expr::BitOr(a, b) => Ok(eval(a, args)? | eval(b, args)?),
@@ -1736,7 +1748,6 @@ mod tests {
             "fnc main(x:int):int{return x>>>8;}",
             "fnc main(x:int):int{return x>8;}",
             "fnc main(x:int):int{return x<<8;}",
-            "fnc main(x:int):int{return x/256;}",
         ] {
             assert!(parse(invalid).is_err(), "{invalid}");
         }
@@ -1787,7 +1798,6 @@ mod tests {
     #[test]
     fn fail_closed() {
         for source in [
-            "fnc main():int{return 1/0;}",
             "fnc main():int{return 5 ^ 3;}", // ^ is return-only, never infix XOR
             "fnc main():int{return Integer.div(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",

@@ -123,9 +123,9 @@ fn portable_shared_scalar_negatives_fail_closed_without_guest_stdout() {
     // Preserve superseded exact v1 source without treating its old error
     // expectation as an executable current language rule.
     assert_manifest_case("forbidden-double-caret", "7 ^^ 3", None);
+    assert_manifest_case("div-int", "7 / 2", None);
     let fixture = Fixture::new();
     for (id, expr) in [
-        ("div-int", "7 / 2"),
         // Historical v1 treated ^^ as invalid. That expectation is now
         // superseded and is checked as immutable source history below;
         // current compiled positives for ^^ live in scalar-v5.

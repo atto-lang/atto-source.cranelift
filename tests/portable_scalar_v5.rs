@@ -256,13 +256,13 @@ fn scalar_v5_statement_caret_generates_the_same_native_result_as_return() {
 }
 
 #[test]
-fn scalar_v5_infix_caret_and_unsupported_float_division_fail_before_native_ir() {
+fn scalar_v5_infix_caret_and_unsupported_float_source_fail_before_native_ir() {
     let fixture = Fixture::new();
     for (index, statement) in [
         "return 11 ^ 4;",
         "return 11 ^ ^ 4;",
         "return 11 ^/*comment*/^ 4;",
-        "return 5 / 2;",
+        "return 5.0 / 2.0;",
     ].into_iter().enumerate() {
         let path = fixture.0.join(format!("reject-{index}.atto"));
         fs::write(&path, format!("pub fnc main():int{{{statement}}}\n")).unwrap();
@@ -280,5 +280,51 @@ fn scalar_v5_infix_caret_and_unsupported_float_division_fail_before_native_ir() 
                 assert!(diagnostic.contains("E_OPERATOR_CARET"), "{mode}/{statement}: {diagnostic}");
             }
         }
+    }
+}
+
+
+// The November 23 decision supersedes the historical v5 float-quotient
+// sentence. Native failure statuses do not prove guest Error/trap support.
+#[test]
+fn reconciled_signed_division_native_values_and_distinct_errors() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("signed-division.atto");
+    fs::write(&path, "pub fnc main(a:int,b:int):int{return a / b;}\n").unwrap();
+    for (a, b, expected) in [
+        ("5", "2", "2"),
+        ("-5", "2", "-2"),
+        ("5", "-2", "-2"),
+        ("-5", "-2", "2"),
+        ("0", "7", "0"),
+        ("-9223372036854775808", "1", "-9223372036854775808"),
+        ("9223372036854775807", "1", "9223372036854775807"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("run")
+            .arg(&path)
+            .args([a, b])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{a}/{b}: {:?}", output.stderr);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), format!("{expected}\n"));
+        assert!(output.stderr.is_empty());
+    }
+    for (a, b, expected) in [
+        ("1", "0", "integer divisor zero"),
+        ("-9223372036854775808", "-1", "i64 arithmetic overflow"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("run")
+            .arg(&path)
+            .args([a, b])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{a}/{b}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("orescranelift: {expected}\n")
+        );
     }
 }
