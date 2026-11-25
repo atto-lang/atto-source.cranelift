@@ -12,7 +12,10 @@ fn unsupported_aot_modes_fail_before_source_access_or_jit() {
             .output()
             .expect("launch actual native Cranelift CLI");
         assert_eq!(out.status.code(), Some(1), "{mode} must be rejected");
-        assert!(out.stdout.is_empty(), "{mode} must not print a guest result");
+        assert!(
+            out.stdout.is_empty(),
+            "{mode} must not print a guest result"
+        );
         let diagnostic = String::from_utf8_lossy(&out.stderr);
         assert!(
             diagnostic.starts_with("orescranelift: ")
@@ -42,25 +45,40 @@ fn object_mode_is_not_misrepresented_as_supported_aot() {
 #[cfg(unix)]
 #[test]
 fn linked_scoped_object_preserves_result_and_closes_on_checked_failure() {
-    let directory = std::env::temp_dir().canonicalize().unwrap()
+    let directory = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
         .join(format!("atto-cranelift-scope-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let input = directory.join("scope.atto");
-    std::fs::write(&input, r#"
+    std::fs::write(
+        &input,
+        r#"
         pub fnc main(int input): int {
             using telemetry.span("outer") as outer {
                 using telemetry.span("inner") as inner { return input + 1; }
             }
             return 0;
         }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     let artifact = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("emit-object").arg(&input).output().unwrap();
-    assert!(artifact.status.success(), "{}", String::from_utf8_lossy(&artifact.stderr));
+        .arg("emit-object")
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        artifact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&artifact.stderr)
+    );
     let object = directory.join("guest.o");
     std::fs::write(&object, artifact.stdout).unwrap();
     let harness = directory.join("harness.c");
-    std::fs::write(&harness, r#"
+    std::fs::write(
+        &harness,
+        r#"
         #include <assert.h>
         #include <stdint.h>
         #include <string.h>
@@ -91,11 +109,23 @@ fn linked_scoped_object_preserves_result_and_closes_on_checked_failure() {
             assert(oreslang_scalar_entry(INT64_MAX, 0, 0, 0, &result) == 1 && result == 42);
             assert(started == 4 && ended == 4 && !depth);
         }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     let binary = directory.join("guest");
-    let linked = Command::new("cc").args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
-        .arg(&harness).arg(&object).arg("-o").arg(&binary).output().unwrap();
-    assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
+    let linked = Command::new("cc")
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
+        .arg(&harness)
+        .arg(&object)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        linked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
     assert!(Command::new(&binary).status().unwrap().success());
     std::fs::remove_dir_all(directory).unwrap();
 }

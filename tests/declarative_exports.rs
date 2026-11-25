@@ -28,13 +28,26 @@ fn exports_before_or_after_main_compile_and_execute() {
         format!("{MAIN}\nexport pub fnc main;"),
     ] {
         let run = invoke("run", &source);
-        assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
         assert_eq!(run.stdout.as_slice(), b"42\n");
         assert!(run.stderr.is_empty());
 
         let ir = invoke("ir", &source);
-        assert_eq!(ir.status.code(), Some(0), "{}", String::from_utf8_lossy(&ir.stderr));
-        assert!(!ir.stdout.is_empty(), "successful source emitted no Cranelift IR");
+        assert_eq!(
+            ir.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
+        assert!(
+            !ir.stdout.is_empty(),
+            "successful source emitted no Cranelift IR"
+        );
         assert!(ir.stderr.is_empty());
     }
 }
@@ -42,21 +55,52 @@ fn exports_before_or_after_main_compile_and_execute() {
 #[test]
 fn unsupported_and_duplicate_exports_fail_before_ir_or_guest_stdout() {
     for (source, diagnostic) in [
-        (format!("export pub[pkg] fnc main;\n{MAIN}"), "EXPORT_PACKAGE_LINKER_UNSUPPORTED"),
-        (format!("export pub class Foo;\n{MAIN}"), "EXPORT_KIND_UNSUPPORTED"),
+        (
+            format!("export pub[pkg] fnc main;\n{MAIN}"),
+            "EXPORT_PACKAGE_LINKER_UNSUPPORTED",
+        ),
+        (
+            format!("export pub class Foo;\n{MAIN}"),
+            "EXPORT_KIND_UNSUPPORTED",
+        ),
         (format!("export pub Missing;\n{MAIN}"), "unexpected token"),
-        (format!("export pub main;\nexport pub fnc main;\n{MAIN}"), "EXPORT_DUPLICATE"),
-        (format!("export pub main;\n{MAIN}\nexport pub main;"), "EXPORT_DUPLICATE"),
-        (format!("export pub[friend] fnc main;\n{MAIN}"), "unexpected token"),
+        (
+            format!("export pub main;\nexport pub fnc main;\n{MAIN}"),
+            "EXPORT_DUPLICATE",
+        ),
+        (
+            format!("export pub main;\n{MAIN}\nexport pub main;"),
+            "EXPORT_DUPLICATE",
+        ),
+        (
+            format!("export pub[friend] fnc main;\n{MAIN}"),
+            "unexpected token",
+        ),
     ] {
         for mode in ["run", "ir"] {
             let out = invoke(mode, &source);
-            assert_eq!(out.status.code(), Some(1), "{mode} must reject with compiler exit 1");
-            assert!(out.stdout.is_empty(), "{mode} emitted stdout/IR on rejection");
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "{mode} must reject with compiler exit 1"
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "{mode} emitted stdout/IR on rejection"
+            );
             let stderr = String::from_utf8_lossy(&out.stderr);
-            assert!(stderr.starts_with("orescranelift: "), "wrong diagnostic origin: {stderr}");
-            assert!(stderr.contains(diagnostic), "{mode}: expected {diagnostic}, got {stderr}");
-            assert!(!stderr.contains("panicked at"), "compiler panicked: {stderr}");
+            assert!(
+                stderr.starts_with("orescranelift: "),
+                "wrong diagnostic origin: {stderr}"
+            );
+            assert!(
+                stderr.contains(diagnostic),
+                "{mode}: expected {diagnostic}, got {stderr}"
+            );
+            assert!(
+                !stderr.contains("panicked at"),
+                "compiler panicked: {stderr}"
+            );
         }
     }
 }
