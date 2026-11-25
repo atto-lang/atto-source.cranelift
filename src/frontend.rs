@@ -949,7 +949,6 @@ impl<'a> Parser<'a> {
                             | "print"
                             | "seq"
                             | "sync"
-                            | "task"
                             | "yield"
                     )
                     || self.parameters.contains(&name)
