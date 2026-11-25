@@ -8,6 +8,8 @@ mod isolate;
 pub mod layout;
 #[allow(dead_code)]
 mod owned_region;
+// Backend-local trusted host primitive; guest lowering pending.
+mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
