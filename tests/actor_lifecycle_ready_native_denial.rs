@@ -77,17 +77,32 @@ pub fnc main(): int {
         ("ready-method", "fnc main():int{return worker.get_ready();}"),
         ("done-method", "fnc main():int{return worker.get_done();}"),
         ("graceful-stop", "fnc main():int{return stop! worker;}"),
-        ("invalid-ready-property", "fnc main():int{return worker.ready;}"),
-        ("invalid-done-property", "fnc main():int{return worker.done;}"),
+        (
+            "invalid-ready-property",
+            "fnc main():int{return worker.ready;}",
+        ),
+        (
+            "invalid-done-property",
+            "fnc main():int{return worker.done;}",
+        ),
     ];
     for (name, source) in cases {
         for mode in ["check", "ir", "run"] {
             let out = invoke(mode, source);
-            assert!(!out.status.success(), "{name}/{mode}: actor guest unexpectedly admitted");
+            assert!(
+                !out.status.success(),
+                "{name}/{mode}: actor guest unexpectedly admitted"
+            );
             assert!(out.stdout.is_empty(), "{name}/{mode}: emitted value/CLIF");
             let error = String::from_utf8_lossy(&out.stderr);
-            assert!(error.starts_with("orescranelift: "), "{name}/{mode}: {error}");
-            assert!(!error.to_lowercase().contains("panicked"), "{name}/{mode}: {error}");
+            assert!(
+                error.starts_with("orescranelift: "),
+                "{name}/{mode}: {error}"
+            );
+            assert!(
+                !error.to_lowercase().contains("panicked"),
+                "{name}/{mode}: {error}"
+            );
         }
     }
 }
@@ -99,6 +114,10 @@ fn inert_actor_lifecycle_words_cannot_disable_a_signed_i64_guest() {
 pub fnc main():int{return 42;}
 "#;
     let out = invoke("run", source);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(out.stdout, b"42\n");
 }
