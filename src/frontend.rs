@@ -738,7 +738,7 @@ impl<'a> Parser<'a> {
 
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         let value = self.atom_base(depth)?;
-        while self.current == Token::Punct(b':') && self.next_significant_is(b':') {
+        while self.current == Token::Punct(b':') && self.input.as_bytes().get(self.pos) == Some(&b':') {
             self.expect(Token::Punct(b':'))?;
             self.expect(Token::Punct(b':'))?;
             self.expect(Token::Punct(b'<'))?;
