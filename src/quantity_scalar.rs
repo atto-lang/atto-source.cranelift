@@ -21,16 +21,19 @@ impl Scale {
     }
 }
 struct Typed { expr: Expr, dim: Dim, scale:Scale }
+#[derive(Clone,Copy)]
+struct Refinement {dim:Dim,scale:Scale,lo:i64,hi:i64}
 struct Quantities<'a> {
     p: Parser<'a>,
     dimensions: Vec<String>,
     units: Vec<(String, usize, Scale)>,
+    refinements: Vec<(String,Refinement)>,
 }
 impl<'a> Quantities<'a> {
     fn declaration_name(&mut self) -> Result<String,String> {
         let name=self.p.name()?;
         if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
-            || self.dimensions.contains(&name) || self.units.iter().any(|(n,_,_)|n==&name) {
+            || self.dimensions.contains(&name) || self.units.iter().any(|(n,_,_)|n==&name) || self.refinements.iter().any(|(n,_)|n==&name) {
             return Err("E_UNIT_DECLARATION: invalid or duplicate nominal name".into());
         }
         Ok(name)
@@ -78,6 +81,45 @@ impl<'a> Quantities<'a> {
         }
         Ok(())
     }
+    fn signed_bound(&mut self)->Result<i64,String>{
+        let neg=self.p.take(Token::Punct(b'-'))?;
+        let Token::Number(n)=self.p.current else{return Err("E_REFINEMENT_BOUND: expected literal".into());};
+        let n=integer_digits(n)?;self.p.next()?;
+        let signed=if neg{format!("-{n}")}else{n};
+        signed.parse::<i64>().map_err(|_|"E_REFINEMENT_BOUND: out of range".into())
+    }
+    fn refinement_declarations(&mut self)->Result<(),String>{
+        while self.p.take(Token::Word("type"))?{
+            if self.refinements.len()==32{return Err("E_REFINEMENT_LIMIT".into());}
+            let name=self.declaration_name()?;
+            self.p.expect(Token::Punct(b'='))?;
+            if !self.p.take(Token::Word("int"))?{self.p.expect(Token::Word("i64"))?;}
+            self.p.expect(Token::Word("where"))?;
+            let(mut lo,mut hi)=(i64::MIN,i64::MAX);
+            let mut count=0;
+            loop{
+                self.p.expect(Token::Word("self"))?;
+                let lower=if self.p.take(Token::Punct(b'>'))?{true}else{self.p.expect(Token::Punct(b'<'))?;false};
+                let inclusive=self.p.take(Token::Punct(b'='))?;
+                let bound=self.signed_bound()?;
+                if lower{let n=if inclusive{bound}else{bound.checked_add(1).ok_or("E_REFINEMENT_INTERVAL: empty")?};lo=lo.max(n);}
+                else{let n=if inclusive{bound}else{bound.checked_sub(1).ok_or("E_REFINEMENT_INTERVAL: empty")?};hi=hi.min(n);}
+                count+=1;if count>16||lo>hi{return Err("E_REFINEMENT_INTERVAL: empty or excessive predicates".into());}
+                if !self.p.take(Token::Word("and"))?{break;}
+                if self.p.current==Token::Word("units"){break;}
+            }
+            let(mut dim,mut scale)=(SCALAR,Scale::ONE);
+            if self.p.take(Token::Word("units"))?{
+                self.p.expect(Token::Word("in"))?;
+                let name=self.p.name()?;
+                let (_,i,s)=self.units.iter().find(|(n,_,_)|n==&name).ok_or("E_UNIT_NAME: unknown refinement unit")?;
+                dim[*i]=1;scale=*s;
+            }
+            self.p.expect(Token::Punct(b';'))?;
+            self.refinements.push((name,Refinement{dim,scale,lo,hi}));
+        }
+        Ok(())
+    }
     fn attach(&mut self, value:&mut Typed)->Result<(),String>{
         if value.dim!=SCALAR||value.scale!=Scale::ONE {return Err("E_UNIT_ATTACHMENT: already dimensioned".into());}
         let name=self.p.name()?;
@@ -90,11 +132,22 @@ impl<'a> Quantities<'a> {
         if value.dim!=SCALAR||value.scale!=Scale::ONE {return Err("E_UNIT_ERASURE: scalar cast or return would erase units".into());}
         Ok(())
     }
-    fn target(&mut self,value:&mut Typed,cast:bool)->Result<(),String>{
+    fn checked_refinement(&mut self,value:Typed,target:Refinement)->Result<Typed,String>{
+        if value.dim!=target.dim{return Err("E_UNIT_DIMENSION: refinement dimension mismatch".into());}
+        if value.scale!=target.scale{return Err("E_UNIT_SCALE: refinement scale mismatch".into());}
+        let expr=self.p.node(Expr::RefinementCast(Box::new(value.expr),target.lo,target.hi))?;
+        Ok(Typed{expr,dim:value.dim,scale:value.scale})
+    }
+    fn target(&mut self,value:Typed,cast:bool)->Result<Typed,String>{
+        let mut value=value;
         if cast && matches!(self.p.current,Token::Word("int"|"i64")) {
-            self.p.checked_i64_cast_target()?;
-            Self::scalar(value)
-        } else {self.attach(value)}
+            self.p.checked_i64_cast_target()?;Self::scalar(&value)?;
+        }else if cast{
+            let target=self.refinements.iter().find(|(n,_)|matches!(self.p.current,Token::Word(s) if s==n)).map(|(_,r)|*r);
+            if let Some(r)=target{self.p.next()?;return self.checked_refinement(value,r);}
+            self.attach(&mut value)?;
+        }else{self.attach(&mut value)?;}
+        Ok(value)
     }
     fn postfix(&mut self,mut value:Typed,mut compact:bool,mut conversion:bool)->Result<Typed,String>{
         loop{
@@ -114,7 +167,7 @@ impl<'a> Quantities<'a> {
                 }
             }else if !(compact&&self.p.current==Token::Punct(b'<')){break;}
             self.p.expect(Token::Punct(b'<'))?;
-            self.target(&mut value,cast)?;
+            value=self.target(value,cast)?;
             self.p.expect(Token::Punct(b'>'))?;
             compact=false;
         }
@@ -123,6 +176,11 @@ impl<'a> Quantities<'a> {
     fn atom(&mut self,depth:usize)->Result<Typed,String>{
         if depth>MAX_DEPTH {return Err("expression depth budget exceeded".into());}
         if self.p.take(Token::Punct(b'<'))? {
+            let target=self.refinements.iter().find(|(n,_)|matches!(self.p.current,Token::Word(s) if s==n)).map(|(_,r)|*r);
+            if let Some(r)=target{
+                self.p.next()?;self.p.expect(Token::Punct(b'>'))?;
+                let value=self.atom(depth+1)?;return self.checked_refinement(value,r);
+            }
             self.p.checked_i64_cast_target()?;
             self.p.expect(Token::Punct(b'>'))?;
             let value=self.atom(depth+1)?;Self::scalar(&value)?;return Ok(value);
@@ -191,14 +249,14 @@ impl<'a> Quantities<'a> {
         // Quantity casts/ascriptions have lower precedence than arithmetic.
         // Parenthesize attachment when used as a subsequent operand.
         if min_bp==0 && self.p.take(Token::Word("as"))? {
-            self.target(&mut lhs,true)?;
+            lhs=self.target(lhs,true)?;
         }
         Ok(lhs)
     }
 }
 pub(super) fn parse(p:Parser<'_>)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new()};
-    q.declarations()?;
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new()};
+    q.declarations()?;q.refinement_declarations()?;
     q.p.take(Token::Word("pub"))?;
     q.p.expect(Token::Word("fnc"))?;
     q.p.expect(Token::Word("main"))?;

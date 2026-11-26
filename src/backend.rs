@@ -217,6 +217,10 @@ fn validate_guest_expr(
                     work.push((part, depth + 1));
                 }
             }
+            Expr::RefinementCast(x,lo,hi) => {
+                if lo>hi {return Err("E_REFINEMENT_INTERVAL: forged interval".into());}
+                work.push((x,depth+1));
+            }
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
             Expr::Add(a, b)
             | Expr::Sub(a, b)
@@ -244,6 +248,7 @@ fn emit(
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
+    refinement_error: Block,
 ) -> Value {
     use Expr::*;
     match e {
@@ -258,6 +263,7 @@ fn emit(
             error,
             divisor_error,
             negative_exponent_error,
+            refinement_error,
         ),
         Sequence(prefix, last) => {
             for part in prefix {
@@ -269,6 +275,7 @@ fn emit(
                     error,
                     divisor_error,
                     negative_exponent_error,
+            refinement_error,
                 );
             }
             emit(
@@ -279,6 +286,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             )
         }
         Seq(parts) => {
@@ -294,6 +302,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             for part in rest {
                 value = emit(
@@ -304,6 +313,7 @@ fn emit(
                     error,
                     divisor_error,
                     negative_exponent_error,
+            refinement_error,
                 );
             }
             value
@@ -320,6 +330,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
@@ -336,6 +347,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             let rhs = emit(
                 y,
@@ -345,6 +357,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
@@ -353,9 +366,20 @@ fn emit(
                 _ => unreachable!(),
             }
         }
+        RefinementCast(x,lo,hi) => {
+            // Evaluate exactly once, retaining prior arithmetic errors.
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,*lo);
+            let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,*hi);
+            let invalid=b.ins().bor(below,above);
+            let valid=b.create_block();
+            b.ins().brif(invalid,refinement_error,&[],valid,&[]);
+            b.switch_to_block(valid);b.seal_block(valid);
+            value
+        }
         QuantityDiv(x, y) => {
-            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
             let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
             let nonzero = b.create_block();
             b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
@@ -379,6 +403,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             let right = emit(
                 y,
@@ -388,6 +413,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
@@ -412,6 +438,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             let exponent = emit(
                 y,
@@ -421,6 +448,7 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
             );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
@@ -435,6 +463,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
@@ -448,6 +477,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     let rhs = emit(
                         y,
@@ -457,6 +487,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
@@ -469,6 +500,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     let rhs = emit(
                         y,
@@ -478,6 +510,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
@@ -490,6 +523,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     let rhs = emit(
                         y,
@@ -499,6 +533,7 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
                     );
                     b.ins().smul_overflow(lhs, rhs)
                 }
@@ -564,7 +599,7 @@ fn prepare_ir(
     validate_trace_steps(source)?;
     let mut sig = module.make_signature();
     // Stable internal entry ABI: four i64 values + output pointer -> i32 status.
-    // 0 succeeds; 1 is checked overflow, 2 divisor zero, 3 negative exponent.
+    // 0 succeeds; 1 overflow, 2 divisor zero, 3 negative exponent, 7 refinement.
     // All failures leave output unchanged.
     for _ in 0..4 {
         sig.params.push(AbiParam::new(types::I64));
@@ -625,6 +660,7 @@ fn prepare_ir(
     let failure = b.create_block();
     let divisor_error = b.create_block();
     let negative_exponent_error = b.create_block();
+    let refinement_error = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
@@ -663,6 +699,7 @@ fn prepare_ir(
             failure,
             divisor_error,
             negative_exponent_error,
+            refinement_error,
         );
         locals.push(value);
     }
@@ -674,6 +711,7 @@ fn prepare_ir(
         failure,
         divisor_error,
         negative_exponent_error,
+        refinement_error,
     );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
@@ -681,6 +719,7 @@ fn prepare_ir(
         (failure, 1),
         (divisor_error, 2),
         (negative_exponent_error, 3),
+        (refinement_error, 7),
     ] {
         b.switch_to_block(block);
         return_status(&mut b, status, cleanup);
@@ -813,6 +852,8 @@ impl Compiled {
             Err("integer divisor zero".into())
         } else if status == 3 {
             Err("negative integer exponent".into())
+        } else if status == 7 {
+            Err("E_REFINEMENT_VIOLATION".into())
         } else {
             Err("invalid generated native status".into())
         }

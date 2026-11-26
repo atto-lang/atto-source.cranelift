@@ -163,6 +163,7 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     QuantityDiv(Box<Expr>, Box<Expr>),
+    RefinementCast(Box<Expr>, i64, i64),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -1624,6 +1625,10 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((part, level + 1));
                 }
             }
+            Expr::RefinementCast(inner, lo, hi) => {
+                if lo>hi { return Err("E_REFINEMENT_INTERVAL: invalid bounds".into()); }
+                pending.push((inner.as_ref(), level+1));
+            }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
@@ -1667,7 +1672,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
-        Expr::QuantityDiv(_, _) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        Expr::RefinementCast(_,_,_) | Expr::QuantityDiv(_, _) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
             "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
@@ -2275,6 +2280,7 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::RefinementCast(inner,lo,hi) => {let v=eval(inner,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
             Expr::QuantityDiv(a, b) => { let left=eval(a,args)?; let right=eval(b,args)?; if right==0 { Err("division by zero") } else { left.checked_div(right).ok_or("overflow") } },
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
             Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
