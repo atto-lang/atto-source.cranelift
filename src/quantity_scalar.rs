@@ -1186,19 +1186,42 @@ impl<'a> Quantities<'a> {
         }
         Ok(n)
     }
+    fn contract_annotations(&mut self) -> Result<Vec<(Cursor<'a>,Cursor<'a>,bool)>,String> {
+        let mut spans=Vec::new();
+        while self.p.take(Token::Punct(b'@'))? {
+            if spans.len()>=16 {return Err("E_REFINEMENT_CONTRACT: contract budget".into());}
+            let req=self.p.take(Token::Word("requires"))?;
+            if !req&&!self.p.take(Token::Word("ensures"))? {return Err("E_REFINEMENT_CONTRACT: unsupported annotation".into());}
+            self.p.expect(Token::Punct(b'('))?;
+            let start=self.cursor();let mut count=0;
+            while self.p.current!=Token::Punct(b')') {
+                count+=1;
+                if count>32||matches!(self.p.current,Token::End|Token::Punct(b'('|b'{'|b'}'|b';'|b'@')) {return Err("E_REFINEMENT_CONTRACT: invalid bounded annotation predicate".into());}
+                self.p.next()?;
+            }
+            let end=self.cursor();self.p.next()?;spans.push((start,end,req));
+        }
+        Ok(spans)
+    }
     fn contracts(
         &mut self,
         params: &mut [Refinement],
         result: Refinement,
         main: bool,
+        annotations: &[(Cursor<'a>,Cursor<'a>,bool)],
     ) -> Result<Vec<Contract>, String> {
         let mut out = Vec::new();
         let mut count = 0;
+        let mut spans=annotations.iter();
         loop {
-            let require = self.p.take(Token::Word("requires"))?;
-            if !require && !self.p.take(Token::Word("ensures"))? {
-                break;
-            }
+            let resume=self.cursor();
+            let span=spans.next();
+            let require=if let Some(&(start,_,req))=span {self.seek(start);req}
+            else {
+                let req=self.p.take(Token::Word("requires"))?;
+                if !req&&!self.p.take(Token::Word("ensures"))? {break;}
+                req
+            };
             count += 1;
             if main || count > 16 {
                 return Err("E_REFINEMENT_CONTRACT: contract limit or exported entry".into());
@@ -1271,6 +1294,10 @@ impl<'a> Quantities<'a> {
                         bound: Some(n),
                     });
                 }
+            }
+            if let Some(&(_,end,_))=span {
+                if self.cursor()!=end {return Err("E_REFINEMENT_CONTRACT: trailing annotation tokens".into());}
+                self.seek(resume);
             }
         }
         Ok(out)
@@ -2006,6 +2033,7 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         q.bindings.clear();
         q.locals.clear();
         q.arrays.clear();
+        let annotations=q.contract_annotations()?;
         let public = q.p.take(Token::Word("pub"))?;
         q.p.expect(Token::Word("fnc"))?;
         let name = q.p.name()?;
@@ -2061,8 +2089,8 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
             return Err("E_UNIT_ERASURE: main requires plain int".into());
         }
         let result = q.annotation(&ty)?;
-        let contracted = matches!(q.p.current, Token::Word("requires" | "ensures"));
-        let contracts = q.contracts(&mut params, result, main)?;
+        let contracted = !annotations.is_empty() || matches!(q.p.current, Token::Word("requires" | "ensures"));
+        let contracts = q.contracts(&mut params, result, main, &annotations)?;
         let end_delimited = if q.p.take(Token::Punct(b'{'))? { false }
         else if q.pair(b':')? { true }
         else if q.p.current == Token::Word("begin") {
