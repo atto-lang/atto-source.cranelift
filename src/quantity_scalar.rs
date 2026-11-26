@@ -94,6 +94,7 @@ fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
         Expr::Div(a,b)=>Expr::Div(one(a)?,one(b)?),
         Expr::Compare(op,a,b)=>Expr::Compare(*op,one(a)?,one(b)?),
         Expr::Choose(c,y,n)=>Expr::Choose(one(c)?,one(y)?,one(n)?),
+        Expr::InductiveWhile(i,c,step)=>Expr::InductiveWhile(*slots.get(*i).ok_or("E_UNIT_CALL: invalid loop slot")?,one(c)?,one(step)?),
         // Only call-site arguments refer to the outer helper's slots.
         Expr::ScopedCall(args,locals,body)=>Expr::ScopedCall(args.iter().map(|a|remap(a,slots)).collect::<Result<Vec<_>,_>>()?,locals.clone(),body.clone()),
         Expr::I32Checked(x)=>Expr::I32Checked(one(x)?),
@@ -107,6 +108,7 @@ struct Quantities<'a> {
     units: Vec<(String, usize, Scale)>,
     refinements: Vec<(String,Refinement)>,
     bindings: Vec<(String,Binding)>,
+    mutable_types: Vec<(String,Refinement)>,
     strict: bool,
     guarded: bool,
     locals:Vec<Expr>,
@@ -390,7 +392,9 @@ impl<'a> Quantities<'a> {
         Ok(())
     }
     fn bindings(&mut self)->Result<(),String>{
-        while self.p.take(Token::Word("val"))?{
+        while self.p.current==Token::Word("val")||(self.strict&&self.p.current==Token::Word("let")){
+            let mutable=self.p.take(Token::Word("let"))?;
+            if !mutable{self.p.expect(Token::Word("val"))?;}
             if self.locals.len()==64{return Err("E_UNIT_LIMIT: local bindings".into());}
             let first=self.p.name()?;
             let (name,want)=if self.p.take(Token::Punct(b':'))?{
@@ -401,6 +405,11 @@ impl<'a> Quantities<'a> {
                 let want=self.annotation(&first)?;(self.p.name()?,Some(want))
             };
             self.binding_name(&name)?;
+            if mutable {
+                let w=want.ok_or("E_VERIFY_UNSUPPORTED: mutable binding requires a declared invariant")?;
+                if w.width!=Width::I64{return Err("E_VERIFY_UNSUPPORTED: strict mutable i64 only".into());}
+                self.mutable_types.push((name.clone(),w));
+            }
             self.p.expect(Token::Punct(b'='))?;
             let mut value=self.expr(0,0)?;
             self.p.expect(Token::Punct(b';'))?;
@@ -410,6 +419,51 @@ impl<'a> Quantities<'a> {
             }else if value.width==Width::Literal{value.width=Width::I64;}
             let slot=self.push_local(value.expr)?;
             self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot,width:value.width}));
+        }
+        Ok(())
+    }
+    // Rebindings publish fresh SSA slots. The loop header widens only its
+    // sole mutable slot to the declared invariant, not the initializer fact.
+    fn strict_updates(&mut self)->Result<(),String>{
+        while self.strict {
+            if self.p.take(Token::Word("while"))? {
+                if self.mutable_types.len()!=1{return Err("E_VERIFY_UNSUPPORTED: strict while requires one mutable slot".into());}
+                let (name,want)=self.mutable_types[0].clone();
+                let i=self.bindings.iter().position(|(n,_)|n==&name).ok_or("E_VERIFY_UNSUPPORTED: missing loop slot")?;
+                let current=self.bindings[i].1;
+                if !current.range.contained(want.lo,want.hi){return Err("E_REFINEMENT_BINDING: unproved loop entry".into());}
+                let mut header=self.bindings.clone();
+                header[i].1.range=Range{lo:want.lo,hi:want.hi,holes:0};
+                let old=self.guarded;self.guarded=true;
+                let before=self.locals.len();
+                let (condition,yes,no)=self.guard_or(&header,0)?;
+                self.p.expect(Token::Punct(b'{'))?;
+                self.bindings=yes;
+                if self.p.name()?!=name{return Err("E_VERIFY_UNSUPPORTED: strict loop must update its sole mutable slot".into());}
+                self.p.expect(Token::Punct(b'='))?;
+                let next=self.expr(0,0)?;
+                self.p.expect(Token::Punct(b';'))?;
+                Self::boundary(want,&next,"E_REFINEMENT_BINDING")?;
+                if !self.p.take(Token::Punct(b'}'))?{return Err("E_VERIFY_UNSUPPORTED: strict while permits one direct update".into());}
+                if self.locals.len()!=before{return Err("E_VERIFY_UNSUPPORTED: loop expression leaked lexical slots".into());}
+                self.guarded=old;
+                let expr=self.p.node(Expr::InductiveWhile(current.slot,Box::new(condition),Box::new(next.expr)))?;
+                let slot=self.push_local(expr)?;
+                self.bindings=no;
+                self.bindings[i].1.slot=slot;
+            } else if let Token::Word(n)=self.p.current {
+                if n=="return"||n=="if"{break;}
+                let name=n.to_string();
+                let Some((_,want))=self.mutable_types.iter().find(|(s,_)|s==&name).cloned() else{
+                    return Err("E_VERIFY_UNSUPPORTED: strict assignment requires mutable slot".into());
+                };
+                self.p.next()?;self.p.expect(Token::Punct(b'='))?;
+                let value=self.expr(0,0)?;self.p.expect(Token::Punct(b';'))?;
+                Self::boundary(want,&value,"E_REFINEMENT_BINDING")?;
+                let slot=self.push_local(value.expr)?;
+                let i=self.bindings.iter().position(|(n,_)|n==&name).ok_or("E_VERIFY_UNSUPPORTED: missing mutable slot")?;
+                self.bindings[i].1=Binding{dim:want.dim,scale:want.scale,range:value.range,slot,width:want.width};
+            } else {break;}
         }
         Ok(())
     }
@@ -606,11 +660,11 @@ impl<'a> Quantities<'a> {
     }
 }
 pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new()};
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),mutable_types:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new()};
     q.declarations()?;q.refinement_declarations()?;
     if strict&&q.refinements.is_empty(){return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());}
     loop{
-        q.bindings.clear();q.locals.clear();
+        q.bindings.clear();q.mutable_types.clear();q.locals.clear();
         let public=q.p.take(Token::Word("pub"))?;
         q.p.expect(Token::Word("fnc"))?;
         let name=q.p.name()?;
@@ -641,6 +695,7 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
         let contracts=q.contracts(&mut params,result,main)?;
         q.p.expect(Token::Punct(b'{'))?;
         q.bindings()?;
+        q.strict_updates()?;
         if q.p.current==Token::Word("let"){return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());}
         let value=q.returning(0)?;
         if main{Quantities::scalar(&value)?;}
