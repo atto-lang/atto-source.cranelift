@@ -32,5 +32,12 @@ fn trailing_exports_reject_package_and_conflicting_authority() {
 #[test]
 fn raw_export_directive_budget_is_enforced() {
     assert!(parse(&format!("{}{MAIN}", "export pub main;\n".repeat(128))).is_ok());
-    assert!(parse(&format!("{}{MAIN}\nexport pub main;", "export pub main;\n".repeat(128))).unwrap_err().contains("EXPORT_SOURCE_LIMIT"));
+    assert!(
+        parse(&format!(
+            "{}{MAIN}\nexport pub main;",
+            "export pub main;\n".repeat(128)
+        ))
+        .unwrap_err()
+        .contains("EXPORT_SOURCE_LIMIT")
+    );
 }

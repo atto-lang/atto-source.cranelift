@@ -14,6 +14,9 @@ mod module_link;
 mod owned_region;
 #[allow(dead_code)]
 mod result_int_parse_v1;
+// Host-only continuation lease; compiler guest lowering remains gated.
+#[allow(dead_code)]
+mod select_continuation_fence;
 // Backend-local trusted host primitive; guest lowering pending.
 mod owned_bytes_v1;
 mod state_region;
