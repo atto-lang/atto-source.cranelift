@@ -274,6 +274,7 @@ struct Parser<'a> {
     nodes: usize,
     parameters: Vec<String>,
     mutex_scan: bool,
+    strict_fixed_arrays: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
 }
@@ -336,6 +337,7 @@ impl<'a> Parser<'a> {
             nodes: 0,
             parameters: Vec::new(),
             mutex_scan,
+            strict_fixed_arrays:false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
         };
@@ -587,7 +589,7 @@ impl<'a> Parser<'a> {
                         | "ReadLoan"
                         | "WriteLoan"
                 )
-            ) {
+            ) && !(self.strict_fixed_arrays&&self.current==Token::Word("Array")) {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
             // cpu/gpu/quantum are execution-domain words reserved by every
@@ -1891,7 +1893,7 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
 }
 
 #[allow(dead_code)]
-pub fn parse_verified_strict_i64(text:&str)->Result<Program,String>{validate_source_envelope(text)?;quantity_scalar::parse_mode(Parser::new(text)?,true)}
+pub fn parse_verified_strict_i64(text:&str)->Result<Program,String>{validate_source_envelope(text)?;let mut p=Parser::new(text)?;p.strict_fixed_arrays=true;quantity_scalar::parse_mode(p,true)}
 
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;

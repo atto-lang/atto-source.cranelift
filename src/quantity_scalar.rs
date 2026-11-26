@@ -119,6 +119,7 @@ struct Quantities<'a> {
     guarded: bool,
     locals:Vec<Expr>,
     helpers:Vec<(String,Helper)>,
+    arrays:Vec<(String,Vec<String>)>,
 }
 impl<'a> Quantities<'a> {
     fn declaration_name(&mut self) -> Result<String,String> {
@@ -315,6 +316,21 @@ impl<'a> Quantities<'a> {
         if let Token::Word(name)=self.p.current{
             if let Some((_,b))=self.bindings.iter().find(|(n,_)|n==name){
                 let b=*b;self.p.next()?;
+                if let Some((_,names))=self.arrays.iter().find(|(n,_)|n==name).cloned(){
+                    if !self.p.take(Token::Punct(b'['))?{return Err("E_VERIFY_UNSUPPORTED: array cannot escape or be used as scalar".into());}
+                    let index=self.expr(0,depth+1)?;self.p.expect(Token::Punct(b']'))?;Self::scalar(&index)?;
+                    let(lo,hi)=(index.range.lo,index.range.hi);
+                    if lo<0||hi>=names.len() as i64{return Err("E_VERIFY_UNPROVEN: index not proved within receiver bounds".into());}
+                    if !matches!(index.expr,Expr::Local(_)|Expr::Literal(_)){return Err("E_VERIFY_UNSUPPORTED: fixed index requires local or literal".into());}
+                    let read=|k:i64|self.bindings.iter().find(|(n,_)|n==&names[k as usize]).map(|(_,b)|*b).ok_or("E_VERIFY_UNSUPPORTED: array cell outside scope");
+                    let last=read(hi)?;let mut value=Expr::Local(last.slot);let mut range=last.range;
+                    for k in (lo..hi).rev(){
+                        let cell=read(k)?;range=range.join(cell.range);
+                        value=Expr::Choose(Box::new(Expr::Compare(0,Box::new(index.expr.clone()),Box::new(Expr::Literal(k)))),Box::new(Expr::Local(cell.slot)),Box::new(value));
+                    }
+                    validate_ast_depth(&value)?;
+                    return self.postfix(Typed{expr:value,dim:SCALAR,scale:Scale::ONE,range,width:Width::I64},false,false);
+                }
                 let expr=self.p.node(Expr::Local(b.slot))?;
                 return self.postfix(Typed{expr,dim:b.dim,scale:b.scale,range:b.range,width:b.width},false,false);
             }
@@ -392,7 +408,7 @@ impl<'a> Quantities<'a> {
     }
     fn binding_name(&self,name:&str)->Result<(),String>{
         if !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase) || matches!(name,"using"|"dimension"|"unit"|"val"|"let"|"int"|"i64"|"i32"|"bool"|"float"|"string"|"void"|"return"|"self"|"main"|"fnc"|"pub"|"define"|"type"|"where"|"as"|"and"|"units"|"in"|"true"|"false"|"if"|"else"|"end"|"begin"|"while"|"loop"|"task"|"await"|"suspends"|"infer"|"new"|"match"|"const"|"mut"|"_" ) ||
-           self.dimensions.iter().any(|n|n==name)||self.units.iter().any(|(n,_,_)|n==name)||self.refinements.iter().any(|(n,_)|n==name)||self.bindings.iter().any(|(n,_)|n==name)||self.helpers.iter().any(|(n,_)|n==name){
+           self.dimensions.iter().any(|n|n==name)||self.units.iter().any(|(n,_,_)|n==name)||self.refinements.iter().any(|(n,_)|n==name)||self.bindings.iter().any(|(n,_)|n==name)||self.helpers.iter().any(|(n,_)|n==name)||self.arrays.iter().any(|(n,_)|n==name){
             return Err("E_UNIT_BINDING: reserved or duplicate binding".into());
         }
         Ok(())
@@ -432,6 +448,22 @@ impl<'a> Quantities<'a> {
             if mutable&&want.is_none(){return Err("E_VERIFY_UNSUPPORTED: mutable binding requires explicit type".into());}
             self.binding_name(&name)?;
             self.p.expect(Token::Punct(b'='))?;
+            if self.strict&&self.p.take(Token::Word("Array"))?{
+                if mutable||want.is_some(){return Err("E_VERIFY_UNSUPPORTED: fixed array requires inferred val".into());}
+                self.p.expect(Token::Punct(b'.'))?;self.p.expect(Token::Word("of"))?;self.p.expect(Token::Punct(b'('))?;
+                let mut names=Vec::new();let serial=self.arrays.len();
+                loop{
+                    if names.len()>=16{return Err("E_UNIT_LIMIT: fixed array cell budget".into());}
+                    let v=self.expr(0,0)?;Self::scalar(&v)?;
+                    let cell=if names.is_empty(){name.clone()}else{format!("$array{serial}:{}",names.len())};
+                    let slot=self.push_local(v.expr)?;
+                    self.bindings.push((cell.clone(),Binding{dim:SCALAR,scale:Scale::ONE,range:v.range,slot,width:Width::I64}));
+                    names.push(cell);
+                    if self.p.take(Token::Punct(b')'))?{break;}
+                    self.p.expect(Token::Punct(b','))?;
+                }
+                self.p.expect(Token::Punct(b';'))?;self.arrays.push((name,names));continue;
+            }
             let mut value=self.expr(0,0)?;
             self.p.expect(Token::Punct(b';'))?;
             if let Some(w)=want{
@@ -796,11 +828,11 @@ impl<'a> Quantities<'a> {
     }
 }
 pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new()};
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new(),arrays:Vec::new()};
     q.declarations()?;q.refinement_declarations()?;
     if strict&&q.refinements.is_empty(){return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());}
     loop{
-        q.bindings.clear();q.locals.clear();
+        q.bindings.clear();q.locals.clear();q.arrays.clear();
         let public=q.p.take(Token::Word("pub"))?;
         q.p.expect(Token::Word("fnc"))?;
         let name=q.p.name()?;
