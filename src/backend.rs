@@ -1575,12 +1575,12 @@ mod scoped_helper_frame_tests {
     #[test]
     fn scoped_frames_do_not_admit_caller_or_forward_slot_references() {
         let valid=Expr::ScopedCall(vec![Expr::Local(0)],vec![Expr::Local(0)],Box::new(Expr::Local(1)));
-        assert!(validate_guest_expr(&valid,1,0,&mut 0).is_ok());
+        assert!(validate_guest_expr(&valid,1,0,&mut 0,&mut std::collections::BTreeSet::new()).is_ok());
         for bad in [
             Expr::ScopedCall(vec![],vec![],Box::new(Expr::Local(0))),
             Expr::ScopedCall(vec![Expr::Literal(1)],vec![Expr::Local(1)],Box::new(Expr::Local(0))),
             Expr::ScopedCall(vec![],vec![],Box::new(Expr::Param(0))),
             Expr::ScopedCall(vec![Expr::Literal(1);9],vec![],Box::new(Expr::Local(0))),
-        ] { assert!(validate_guest_expr(&bad,2,1,&mut 0).is_err()); }
+        ] { assert!(validate_guest_expr(&bad,2,1,&mut 0,&mut std::collections::BTreeSet::new()).is_err()); }
     }
 }
