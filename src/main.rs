@@ -211,12 +211,17 @@ fn run() -> Result<(), String> {
     if mode == "emit-namespace-provider-object" {
         let namespace=argv.next().ok_or("missing namespace")?.into_string().map_err(|_|"invalid namespace encoding")?;
         let symbol=argv.next().ok_or("missing symbol")?.into_string().map_err(|_|"invalid symbol encoding")?;
+        let arity=match argv.next(){
+            None=>0,
+            Some(v)=>{let v=v.into_string().map_err(|_|"invalid arity encoding")?;
+                match v.as_str(){"0"=>0,"1"=>1,"2"=>2,"3"=>3,"4"=>4,_=>return Err("E_NAMESPACE_ARITY: invalid expected arity".into())}}
+        };
         if argv.next().is_some(){return Err("unexpected provider arguments".into());}
         let mut bytes=Vec::new();
         std::io::stdin().lock().take(4097).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
         if bytes.len()>4096{return Err("E_NAMESPACE_PROFILE: source budget".into());}
         let source=std::str::from_utf8(&bytes).map_err(|_|"invalid UTF-8")?;
-        let object=namespace_provider::compile(source,&namespace,&symbol)?;
+        let object=namespace_provider::compile_arity(source,&namespace,&symbol,arity)?;
         return std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string());
     }
     if mode == "hotload-capabilities" {
