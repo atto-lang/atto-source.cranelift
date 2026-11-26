@@ -73,3 +73,20 @@ fn comments_and_longer_identifiers_stay_ordinary() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
 }
+
+#[test]
+fn unsafe_is_reserved_before_native_emission() {
+    for source in [
+        "unsafe fnc main(): int { return 42; }",
+        "fnc main(): int { unsafe { } return 42; }",
+        "fnc unsafe(): int { return 42; }",
+        "fnc main(): int { return 42; } // inert\runsafe",
+    ] {
+        for mode in ["run", "ir"] {
+            let output = run_source(source, mode, &[]);
+            assert!(!output.status.success(), "{mode} accepted {source}");
+            assert!(output.stdout.is_empty(), "{mode} emitted an artifact");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("E_UNSAFE_UNSUPPORTED"), "{mode}: {:?}", output.stderr);
+        }
+    }
+}
