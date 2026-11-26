@@ -282,7 +282,12 @@ fn run() -> Result<(), String> {
     // Any linked-native validation failure is returned by run_linked_native;
     // it may never fall back to an inliner or a different semantic profile.
     // Keep explicit pipe/inline-arrow syntax on the existing pure pipeline lane.
-    if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
+    let generic_program = functional_pipelines::parse_generic_identity(source)?;
+    if generic_program.is_some() && !matches!(mode.as_str(), "check" | "ir" | "run" | "emit-object") {
+        return Err("E_GENERIC_MODE_UNSUPPORTED".into());
+    }
+    if generic_program.is_none()
+        && path.extension().and_then(|ext| ext.to_str()) == Some("atto")
         && !source.contains("|>")
         && !source.contains("<|")
         && !source.contains(": int ->")
@@ -291,7 +296,7 @@ fn run() -> Result<(), String> {
     {
         return run_linked_native(&mode, &values, &functions);
     }
-    let parsed = match frontend::parse(source) {
+    let parsed = if let Some(program) = generic_program { program } else { match frontend::parse(source) {
         Ok(program) => program,
         Err(original)
             if source.contains("|>") || source.contains("<|") || source.contains(": int ->") =>
@@ -302,7 +307,7 @@ fn run() -> Result<(), String> {
                 .map_err(|reason| format!("{reason} (stage-0: {original})"))?
         }
         Err(original) => return Err(original),
-    };
+    } };
     // Parser-only admission: never create a JIT module, write CLIF or execute.
     // A successful check is NOT a native compilation or guest-execution receipt.
     if mode == "check" {
