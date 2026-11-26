@@ -253,7 +253,7 @@ fn remap(expr: &Expr, slots: &[usize]) -> Result<Expr, String> {
         _ => return Err("E_UNIT_CALL: unsupported helper expression".into()),
     })
 }
-type Cursor<'a> = (usize, Token<'a>);
+type Cursor<'a> = (usize, Token<'a>, bool);
 type MutableTypes = Vec<(String, Refinement)>;
 type Tail<'a> = std::rc::Rc<BranchTail<'a>>;
 struct BranchTail<'a> {
@@ -1496,11 +1496,12 @@ impl<'a> Quantities<'a> {
         Ok((e, yes, no))
     }
     fn cursor(&self) -> Cursor<'a> {
-        (self.p.pos, self.p.current)
+        (self.p.pos, self.p.current, self.p.newline_before_current)
     }
     fn seek(&mut self, c: Cursor<'a>) {
         self.p.pos = c.0;
         self.p.current = c.1;
+        self.p.newline_before_current = c.2;
     }
     fn closing(&mut self) -> Result<Cursor<'a>, String> {
         if self.p.current != Token::Punct(b'{') {
@@ -2060,8 +2061,17 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
             return Err("E_UNIT_ERASURE: main requires plain int".into());
         }
         let result = q.annotation(&ty)?;
+        let contracted = matches!(q.p.current, Token::Word("requires" | "ensures"));
         let contracts = q.contracts(&mut params, result, main)?;
-        q.p.expect(Token::Punct(b'{'))?;
+        let end_delimited = if q.p.take(Token::Punct(b'{'))? { false }
+        else if q.pair(b':')? { true }
+        else if q.p.current == Token::Word("begin") {
+            if contracted && !q.p.newline_before_current {
+                return Err("E_SYNTAX: contracted begin must start on a later line".into());
+            }
+            q.p.next()?;
+            true
+        } else { return Err("E_SYNTAX: expected verified callable body opener".into()); };
         if !strict && q.p.current == Token::Word("let") {
             return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());
         }
@@ -2071,7 +2081,7 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         }
         Quantities::boundary(result, &value, "E_REFINEMENT_RETURN")?;
         q.prove_contracts(&contracts, &value, &params)?;
-        q.p.expect(Token::Punct(b'}'))?;
+        q.p.expect(if end_delimited { Token::Word("end") } else { Token::Punct(b'}') })?;
         validate_ast_depth(&value.expr)?;
         if main {
             q.p.expect(Token::End)?;
