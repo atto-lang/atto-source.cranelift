@@ -530,6 +530,12 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         let start = self.pos;
+        // Exact UTF-8 suspension aliases share the existing fail-closed effect gate.
+        if self.input[start..].starts_with('⧖') || self.input[start..].starts_with('∂') {
+            self.pos += 3;
+            self.current = Token::Word("suspends");
+            return Ok(());
+        }
         let first = b[self.pos];
         self.pos += 1;
         // Stage-0 cannot bind injected state lifetimes or borrow authority.
@@ -562,7 +568,8 @@ impl<'a> Parser<'a> {
             {
                 self.pos += 1;
             }
-            self.current = Token::Word(&self.input[start..self.pos]);
+            let spelling = &self.input[start..self.pos];
+            self.current = Token::Word(if spelling == "susp" { "suspends" } else { spelling });
             // Scalar stage-0 has no compiler-owned library linker.
             if self.current == Token::Word("import") {
                 return Err("E_LIBRARY_PROFILE_UNSUPPORTED: atto.core/alloc/std and actor modules require verified import/profile lowering".into());
