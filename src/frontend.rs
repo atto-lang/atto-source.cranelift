@@ -822,7 +822,7 @@ impl<'a> Parser<'a> {
         }
         let old_params = std::mem::take(&mut self.parameters);
         let old_bindings = std::mem::replace(&mut self.bindings, bindings);
-        let parsed = (|| {
+        let parsed = (|| -> Result<(Vec<Expr>, Expr), String> {
             let mut initializers = Vec::new();
             while self.take(Token::Word("val"))? {
                 let typed = self.take(Token::Word("int"))?;
