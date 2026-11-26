@@ -187,6 +187,30 @@ mod tests {
         );
     }
     #[test]
+    fn concurrent_parser_incarnations_never_share_error_authority() {
+        let workers: Vec<_> = (0..16).map(|_| std::thread::spawn(|| {
+            let mut parser = TenantParser::new(7).unwrap();
+            let TaggedResult::Err(error) = parser.parse("bad") else { panic!("parse accepted") };
+            (parser, error)
+        })).collect();
+        let mut incarnations: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        let errors: Vec<_> = incarnations.iter().map(|(_, err)| err.clone()).collect();
+        for (i, (parser, own)) in incarnations.iter_mut().enumerate() {
+            assert_eq!(own.identity, 1);
+            for (j, error) in errors.iter().enumerate() {
+                assert_eq!(parser.can_observe(error), i == j);
+                if i != j {
+                    assert_eq!(parser.unwrap_result(TaggedResult::Err(error.clone())),
+                        Err(UnwrapFailure::ForeignError));
+                }
+            }
+            let Err(UnwrapFailure::Ordinary(next)) = parser.unwrap_option(None) else {
+                panic!("expected ordinary None");
+            };
+            assert_eq!(next.error().identity, 2, "foreign denial must not mint Error");
+        }
+    }
+    #[test]
     fn checked_decimal_40k_boundary_and_owned_identity() {
         let mut a = TenantParser::new(101).unwrap();
         let mut b = TenantParser::new(102).unwrap();
