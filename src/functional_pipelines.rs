@@ -76,6 +76,11 @@ pub(crate) struct Fn {
     pub(crate) locals: Vec<(String, Raw)>,
     pub(crate) result: Raw,
 }
+// Keep the alternate scalar frontend aligned with the primary lexer.
+// These are nominal sum types/constructors, never scalar callable aliases.
+pub(crate) fn reserved_sum_name(word: &str) -> bool {
+    matches!(word, "Option" | "Result" | "Some" | "None" | "Ok" | "Err")
+}
 fn lex(text: &str) -> Result<Vec<String>, String> {
     if text.len() > MAX_SOURCE {
         return Err("E_PIPE_SOURCE_LIMIT".into());
@@ -133,7 +138,11 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
         }
-        tokens.push(text[start..i].to_owned());
+        let token = &text[start..i];
+        if reserved_sum_name(token) {
+            return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
+        }
+        tokens.push(token.to_owned());
     }
     tokens.push("<eof>".into());
     Ok(tokens)
@@ -726,6 +735,9 @@ pub(crate) fn parse_linked_native(
     validate_source_envelope(entry)?;
     let mut selected = Parser::new(entry)?.parse()?;
     for (requested, local, text) in units {
+        if reserved_sum_name(requested) || reserved_sum_name(local) {
+            return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
+        }
         validate_source_envelope(text)?;
         let candidates = Parser::new(text)?.parse()?;
         let mut exported = candidates
