@@ -176,8 +176,13 @@ fn contracted_delimiters_native_guests() {
             .unwrap();
         assert!(!out.status.success() && out.stdout.is_empty(), "{body}");
     }
-    // Physical source policy rejects Unicode line separators before lexing.
-    fs::write(&input, format!("{header}\u{2028}begin return 84/x; end{tail}")).unwrap();
+    // The physical source policy rejects Unicode separators such as U+2028
+    // before lexing. CR and LF above remain accepted; do not relax the guard.
+    fs::write(
+        &input,
+        format!("{header}\u{2028}begin return 84/x; end{tail}"),
+    )
+    .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
         .arg("emit-object")
         .arg(&input)
