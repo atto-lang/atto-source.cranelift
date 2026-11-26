@@ -254,9 +254,16 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 }
 
 #[test]
-fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
+fn undocumented_caret_does_not_gain_fake_glm_feature_support() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
-    expect_unsupported("pub fnc main():int{return 3 / 2;}");
+}
+
+#[test]
+fn documented_checked_i64_division_executes_without_claiming_glm_support() {
+    // The scalar compiler now documents checked signed division; admitting
+    // that operation is not evidence of tensor or GLM feature support.
+    expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
+    expect_native("pub fnc main():int{return -3 / 2;}", &[], "-1\n");
 }
 
 #[test]
