@@ -1401,13 +1401,13 @@ impl<'a> Parser<'a> {
             })
             .into());
         }
-        let mut seen_export = false;
+        let mut export_count = 0usize;
         while self.current == Token::Word("export") {
-            if seen_export {
-                return Err("EXPORT_DUPLICATE: main".into());
+            if export_count >= 128 {
+                return Err("EXPORT_SOURCE_LIMIT: too many directives".into());
             }
             self.file_export()?;
-            seen_export = true;
+            export_count += 1;
         }
         let mut seen_define = false;
         let mut seen_pub = false;
@@ -1730,11 +1730,11 @@ impl<'a> Parser<'a> {
             result
         };
         while self.current == Token::Word("export") {
-            if seen_export {
-                return Err("EXPORT_DUPLICATE: main".into());
+            if export_count >= 128 {
+                return Err("EXPORT_SOURCE_LIMIT: too many directives".into());
             }
             self.file_export()?;
-            seen_export = true;
+            export_count += 1;
         }
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
             return Err(

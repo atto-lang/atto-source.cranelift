@@ -26,6 +26,8 @@ fn exports_before_or_after_main_compile_and_execute() {
     for source in [
         format!("export pub main;\n{MAIN}"),
         format!("{MAIN}\nexport pub fnc main;"),
+        format!("export pub main;\nexport pub fnc main;\n{MAIN}"),
+        format!("export pub main;\n{MAIN}\nexport pub main;"),
     ] {
         let run = invoke("run", &source);
         assert_eq!(
@@ -53,7 +55,7 @@ fn exports_before_or_after_main_compile_and_execute() {
 }
 
 #[test]
-fn unsupported_and_duplicate_exports_fail_before_ir_or_guest_stdout() {
+fn unsupported_and_conflicting_exports_fail_before_ir_or_guest_stdout() {
     for (source, diagnostic) in [
         (
             format!("export pub[pkg] fnc main;\n{MAIN}"),
@@ -65,12 +67,12 @@ fn unsupported_and_duplicate_exports_fail_before_ir_or_guest_stdout() {
         ),
         (format!("export pub Missing;\n{MAIN}"), "unexpected token"),
         (
-            format!("export pub main;\nexport pub fnc main;\n{MAIN}"),
-            "EXPORT_DUPLICATE",
+            format!("export pub main;\nexport pub[pkg] fnc main;\n{MAIN}"),
+            "EXPORT_PACKAGE_LINKER_UNSUPPORTED",
         ),
         (
-            format!("export pub main;\n{MAIN}\nexport pub main;"),
-            "EXPORT_DUPLICATE",
+            format!("export pub main;\n{MAIN}\nexport pub class main;"),
+            "EXPORT_KIND_UNSUPPORTED",
         ),
         (
             format!("export pub[friend] fnc main;\n{MAIN}"),
