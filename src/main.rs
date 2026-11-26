@@ -222,7 +222,15 @@ fn run() -> Result<(), String> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+        "run"
+            | "run-traced"
+            | "ir"
+            | "isolate"
+            | "check"
+            | "emit-object"
+            | "emit-object-strict"
+            | "emit-durable-counter-object"
+            | "emit-durable-scalar-object"
     ) {
         return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
@@ -234,7 +242,11 @@ fn run() -> Result<(), String> {
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
     if matches!(
         mode.as_str(),
-        "ir" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+        "ir" | "check"
+            | "emit-object"
+            | "emit-object-strict"
+            | "emit-durable-counter-object"
+            | "emit-durable-scalar-object"
     ) && !supplied.is_empty()
     {
         return Err("ir/check mode does not accept runtime arguments".into());
@@ -280,8 +292,15 @@ fn run() -> Result<(), String> {
         if path.extension().and_then(|ext| ext.to_str()) != Some("atto") {
             return Err("E_DURABLE_COUNTER_ACTOR_ABI: expected .atto".into());
         }
-        let object = if mode == "emit-durable-scalar-object" { backend::emit_durable_scalar_object(source)? } else { backend::emit_durable_counter_object(source)? };
-        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+        let object = if mode == "emit-durable-scalar-object" {
+            backend::emit_durable_scalar_object(source)?
+        } else {
+            backend::emit_durable_counter_object(source)?
+        };
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
     }
     let linked_source = has_real_import_header(source);
     if linked_source {
