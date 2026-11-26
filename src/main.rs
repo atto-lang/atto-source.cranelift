@@ -204,7 +204,7 @@ fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
     let mode = argv.next().ok_or(
-        "usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+        "usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities",
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
@@ -222,9 +222,9 @@ fn run() -> Result<(), String> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict"
+        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
     ) {
-        return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
+        return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
@@ -234,7 +234,7 @@ fn run() -> Result<(), String> {
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
     if matches!(
         mode.as_str(),
-        "ir" | "check" | "emit-object" | "emit-object-strict"
+        "ir" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
     ) && !supplied.is_empty()
     {
         return Err("ir/check mode does not accept runtime arguments".into());
@@ -276,6 +276,13 @@ fn run() -> Result<(), String> {
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
     frontend::validate_source_envelope(source)?;
+    if mode == "emit-durable-counter-object" || mode == "emit-durable-scalar-object" {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("atto") {
+            return Err("E_DURABLE_COUNTER_ACTOR_ABI: expected .atto".into());
+        }
+        let object = if mode == "emit-durable-scalar-object" { backend::emit_durable_scalar_object(source)? } else { backend::emit_durable_counter_object(source)? };
+        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+    }
     let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated
@@ -297,13 +304,33 @@ fn run() -> Result<(), String> {
     // it may never fall back to an inliner or a different semantic profile.
     // Keep explicit pipe/inline-arrow syntax on the existing pure pipeline lane.
     if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
-        && !source.contains("|>")
-        && !source.contains("<|")
-        && !source.contains(": int ->")
         && let Ok(functions) = functional_pipelines::parse_linked_native(source, &[])
-        && functions.len() > 1
+        && (functional_pipelines::requires_tuple_lowering(&functions)
+            || (!source.contains("|>")
+                && !source.contains("<|")
+                && !source.contains(": int ->")
+                && functions.len() > 1))
     {
+        // Tuple patterns require native SSA temporaries, including discards.
         return run_linked_native(&mode, &values, &functions);
+    }
+    if let Some(library) = frontend::scalar_library::parse_if_library(source)? {
+        return match mode.as_str() {
+            "check" => Ok(()),
+            "ir" => {
+                let (ir, _) = library.compile(false)?;
+                print!("{ir}");
+                Ok(())
+            }
+            "emit-object" => {
+                let (_, bytes) = library.compile(true)?;
+                std::io::stdout()
+                    .lock()
+                    .write_all(&bytes)
+                    .map_err(|e| e.to_string())
+            }
+            _ => Err("E_LIBRARY_NO_ENTRY: named library requires native object linking".into()),
+        };
     }
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
