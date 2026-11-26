@@ -34,6 +34,14 @@ jobs:
             if "$emitter" Ledger x:int "$invalid" > "$RUNNER_TEMP/rejected.o"; then exit 1; fi
             test ! -s "$RUNNER_TEMP/rejected.o"
           done
+          python3 - "$emitter" <<'PY'
+          import subprocess, sys
+          emitter = sys.argv[1].encode()
+          cases = [[b'Ledger', b'x:\xff'], [b'Ledger', b'x'*129+b':int'], [b'Ledger', *[f'f{i}:bool'.encode() for i in range(257)]]]
+          for args in cases:
+              p = subprocess.run([emitter, *args], capture_output=True, timeout=10)
+              assert p.returncode == 1 and p.stdout == b'' and p.stderr == b'E_DURABLE_BOUNDED_SCHEMA_V2\n', p
+          PY
           gcc -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -c native/durable_bounded_v2_runtime.c -o "$RUNNER_TEMP/runtime.o"
           g++ -std=c++17 -O1 -g -Wall -Wextra -Wpedantic -Werror -UNDEBUG -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie tests/durable_bounded_v2_native.cpp "$RUNNER_TEMP/ledger.o" "$RUNNER_TEMP/runtime.o" -o "$RUNNER_TEMP/guest"
           ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 timeout 60 "$RUNNER_TEMP/guest"
