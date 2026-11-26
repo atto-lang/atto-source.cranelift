@@ -163,6 +163,8 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
+    Compare(u8, Box<Expr>, Box<Expr>),
+    Choose(Box<Expr>, Box<Expr>, Box<Expr>),
     RefinementCast(Box<Expr>,i64,i64),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
@@ -1693,6 +1695,13 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
+            Expr::Choose(c,y,n) => {
+                pending.push((c,level+1));pending.push((y,level+1));pending.push((n,level+1));
+            }
+            Expr::Compare(op,a,b) => {
+                if *op>5{return Err("invalid comparison opcode".into());}
+                pending.push((a,level+1));pending.push((b,level+1));
+            }
             Expr::Add(left, right)
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
@@ -1716,6 +1725,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
 // This evaluator deliberately refuses function calls, including Integer.*.
 fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
+        Expr::Choose(_,_,_) | Expr::Compare(_,_,_) => Err("E_NON_CONST_INITIALIZER: strict guard is not constexpr".into()),
         Expr::Literal(value) => Ok(*value),
         Expr::Seq(parts) => {
             // A constexpr sequence is permitted only when EVERY member is
@@ -2336,6 +2346,8 @@ end"#;
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
             Expr::Local(_) => Err("test evaluator does not execute runtime local sequences"),
+            Expr::Choose(c,y,n) => if eval(c,args)?!=0{eval(y,args)}else{eval(n,args)},
+            Expr::Compare(op,a,b) => {let a=eval(a,args)?;let b=eval(b,args)?;Ok(match op{0=>a==b,1=>a!=b,2=>a<b,3=>a<=b,4=>a>b,5=>a>=b,_=>return Err("invalid comparison")} as i64)},
             Expr::InlineTask(body) => eval(body, args),
             Expr::Sequence(prefix, last) => {
                 for part in prefix {
