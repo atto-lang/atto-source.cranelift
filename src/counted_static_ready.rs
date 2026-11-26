@@ -342,17 +342,7 @@ impl Parser {
             if !terminal || self.pending.is_some() {
                 return Err(err("await only in terminal return or array initializer"));
             }
-            let legacy = self.eat("nb");
-            if self.eat("select") { return Ok(Value::Int(self.default_scalar()?)); }
-            if legacy { return Err(err("nb requires select")); }
-            let n = self.name()?;
-            return match self.slots.get_mut(&n) {
-                Some(Slot::Future { value, retired }) if !*retired => {
-                    *retired = true;
-                    Ok(Value::Int(value.clone()))
-                }
-                _ => Err(err("expected live Future")),
-            };
+            return Ok(Value::Int(self.scalar_await()?));
         }
         let n = self.name()?;
         match self.slots.get(&n).cloned() {
@@ -502,6 +492,28 @@ impl Parser {
         }
         Ok(out)
     }
+    // An explicit scalar await consumes only a live scalar Future or a
+    // closed default projection. It never drives a pending counted plan.
+    fn scalar_await(&mut self) -> R<Expr> {
+        if self.pending.is_some() {
+            return Err(err("await outstanding batch first"));
+        }
+        let legacy = self.eat("nb");
+        if self.eat("select") {
+            return self.default_scalar();
+        }
+        if legacy {
+            return Err(err("nb requires select"));
+        }
+        let n = self.name()?;
+        match self.slots.get_mut(&n) {
+            Some(Slot::Future { value, retired }) if !*retired => {
+                *retired = true;
+                Ok(value.clone())
+            }
+            _ => Err(err("expected live Future")),
+        }
+    }
     fn default_scalar(&mut self) -> R<Expr> {
         if self.eat("<") { self.need("int")?; self.need(">")?; }
         let over = self.eat("over");
@@ -594,7 +606,13 @@ impl Parser {
                 Slot::Array(self.drive(p)?)
             }
             "int" => {
-                let v = self.expr(0, None, false)?.int()?;
+                // Admit a standalone awaited scalar initializer only. Other
+                // expression positions retain their existing effect fences.
+                let v = if self.eat("await") {
+                    self.scalar_await()?
+                } else {
+                    self.expr(0, None, false)?.int()?
+                };
                 Slot::Scalar(self.local(v)?, mutable)
             }
             _ => return Err(err("type")),
