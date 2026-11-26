@@ -471,9 +471,7 @@ fn emit(
         ScalarLoop(args, _, condition, steps, tail, body) => {
             let mut frame = args
                 .iter()
-                .map(|x| {
-                    emit(x, b, params, locals, errors)
-                })
+                .map(|x| emit(x, b, params, locals, errors))
                 .collect::<Vec<_>>();
             emit_scalar_loop(condition, steps, b, &mut frame, errors);
             for x in tail {

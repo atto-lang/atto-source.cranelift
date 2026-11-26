@@ -635,7 +635,8 @@ impl<'a> Quantities<'a> {
         }
         if self.p.take(Token::Punct(b'-'))? {
             if let Token::Number(n) = self.p.current
-                && integer_digits(n)? == "9223372036854775808" {
+                && integer_digits(n)? == "9223372036854775808"
+            {
                 let end = self.p.pos;
                 self.p.next()?;
                 let compact = self.p.pos == end + 1;
@@ -693,7 +694,8 @@ impl<'a> Quantities<'a> {
             );
         }
         if let Token::Word(name) = self.p.current
-            && let Some((_, b)) = self.bindings.iter().find(|(n, _)| n == name) {
+            && let Some((_, b)) = self.bindings.iter().find(|(n, _)| n == name)
+        {
             let b = *b;
             self.p.next()?;
             if let Some((_, names)) = self.arrays.iter().find(|(n, _)| n == name).cloned() {
@@ -707,9 +709,7 @@ impl<'a> Quantities<'a> {
                 Self::scalar(&index)?;
                 let (lo, hi) = (index.range.lo, index.range.hi);
                 if lo < 0 || hi >= names.len() as i64 {
-                    return Err(
-                        "E_VERIFY_UNPROVEN: index not proved within receiver bounds".into()
-                    );
+                    return Err("E_VERIFY_UNPROVEN: index not proved within receiver bounds".into());
                 }
                 if !matches!(index.expr, Expr::Local(_) | Expr::Literal(_)) {
                     return Err(
@@ -766,20 +766,21 @@ impl<'a> Quantities<'a> {
             );
         }
         if let Token::Word(name) = self.p.current
-            && let Some((_, helper)) = self.helpers.iter().find(|(n, _)| n == name) {
+            && let Some((_, helper)) = self.helpers.iter().find(|(n, _)| n == name)
+        {
             let helper = helper.clone();
             self.p.next()?;
             return self.call(helper, depth + 1);
         }
         if let Token::Word(_) = self.p.current
             && self
-            .p
-            .input
-            .as_bytes()
-            .get(self.p.pos..)
-            .is_some_and(|tail| {
-                tail.iter().copied().find(|c| !c.is_ascii_whitespace()) == Some(b'(')
-            })
+                .p
+                .input
+                .as_bytes()
+                .get(self.p.pos..)
+                .is_some_and(|tail| {
+                    tail.iter().copied().find(|c| !c.is_ascii_whitespace()) == Some(b'(')
+                })
         {
             return Err("E_REFINEMENT_CALL: unknown or recursive helper".into());
         }
@@ -1807,7 +1808,8 @@ impl<'a> Quantities<'a> {
             return Ok(value);
         }
         if self.p.current == Token::Punct(b'}')
-            && let Some(t) = tail {
+            && let Some(t) = tail
+        {
             let saved = self.cursor();
             self.bindings.retain(|(name, _)| t.scope.contains(name));
             self.seek(t.resume);
