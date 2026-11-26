@@ -239,6 +239,18 @@ mod tests {
             })
             .is_err()
         );
+        // Exercise the actual inclusive dependency bound, not just overflow.
+        // Every cyclic permutation must retain the same canonical key.
+        let names: Vec<String> = (0..128).map(|n| format!("dep-{n:03}")).collect();
+        let digests: Vec<String> = (0..128).map(|n| format!("{n:02x}").repeat(32)).collect();
+        let mut max_deps: Vec<Dependency<'_>> = names.iter().zip(&digests)
+            .map(|(identity, digest)| Dependency { identity, digest }).collect();
+        let max_key = encode(&Input { dependencies: &max_deps, ..b }).unwrap();
+        for _ in 0..128 {
+            max_deps.rotate_left(1);
+            assert_eq!(encode(&Input { dependencies: &max_deps, ..b }).unwrap(), max_key);
+        }
+        assert_ne!(encode(&Input { dependencies: &max_deps[..127], ..b }).unwrap(), max_key);
         println!(
             "CACHE_KEY_RUST|vector={expected}|permutation|field-drift|framing|malformed-rejected"
         );
