@@ -326,16 +326,21 @@ fn validate_guest_expr(
     Ok(())
 }
 
-fn emit_scalar_loop(
-    condition: &Expr,
-    steps: &[crate::frontend::LoopStep],
-    b: &mut FunctionBuilder<'_>,
-    frame: &mut Vec<Value>,
+#[derive(Clone, Copy)]
+struct ScalarErrorBlocks {
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
     refinement_error: Block,
     i32_error: Block,
+}
+
+fn emit_scalar_loop(
+    condition: &Expr,
+    steps: &[crate::frontend::LoopStep],
+    b: &mut FunctionBuilder<'_>,
+    frame: &mut Vec<Value>,
+    errors: ScalarErrorBlocks,
 ) {
     use crate::frontend::LoopStep;
     let count = frame.len();
@@ -359,13 +364,9 @@ fn emit_scalar_loop(
         b,
         &[],
         &header_values,
-        error,
-        divisor_error,
-        negative_exponent_error,
-        refinement_error,
-        i32_error,
+        errors,
     );
-    let truth = b.ins().icmp_imm(IntCC::NotEqual, test, 0);
+    let truth = b.ins().icmp_imm_s(IntCC::NotEqual, test, 0);
     let false_args = header_values
         .iter()
         .copied()
@@ -383,11 +384,7 @@ fn emit_scalar_loop(
                     b,
                     &[],
                     &current,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
                 current.push(value);
             }
@@ -397,11 +394,7 @@ fn emit_scalar_loop(
                     b,
                     &[],
                     &current,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
                 current[*i] = value;
             }
@@ -410,11 +403,7 @@ fn emit_scalar_loop(
                 ss,
                 b,
                 &mut current,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             ),
             LoopStep::Exit(c, breaking) => {
                 let test = emit(
@@ -422,13 +411,9 @@ fn emit_scalar_loop(
                     b,
                     &[],
                     &current,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
-                let truth = b.ins().icmp_imm(IntCC::NotEqual, test, 0);
+                let truth = b.ins().icmp_imm_s(IntCC::NotEqual, test, 0);
                 let next = b.create_block();
                 let values = current[..count]
                     .iter()
@@ -464,12 +449,15 @@ fn emit(
     b: &mut FunctionBuilder,
     params: &[cranelift_codegen::ir::Value],
     locals: &[cranelift_codegen::ir::Value],
-    error: Block,
-    divisor_error: Block,
-    negative_exponent_error: Block,
-    refinement_error: Block,
-    i32_error: Block,
+    errors: ScalarErrorBlocks,
 ) -> Value {
+    let ScalarErrorBlocks {
+        error,
+        divisor_error,
+        negative_exponent_error,
+        refinement_error,
+        i32_error,
+    } = errors;
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
@@ -481,22 +469,14 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let z = emit(
                 y,
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let cc = match op {
                 0 => IntCC::Equal,
@@ -516,17 +496,13 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let yes = b.create_block();
             let no = b.create_block();
             let done = b.create_block();
             b.append_block_param(done, types::I64);
-            let truth = b.ins().icmp_imm(IntCC::NotEqual, test, 0);
+            let truth = b.ins().icmp_imm_s(IntCC::NotEqual, test, 0);
             b.ins().brif(truth, yes, &[], no, &[]);
             b.switch_to_block(yes);
             b.seal_block(yes);
@@ -535,11 +511,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             b.ins().jump(done, &[BlockArg::Value(a)]);
             b.switch_to_block(no);
@@ -549,11 +521,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             b.ins().jump(done, &[BlockArg::Value(z)]);
             b.switch_to_block(done);
@@ -569,11 +537,7 @@ fn emit(
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -582,11 +546,7 @@ fn emit(
                 steps,
                 b,
                 &mut frame,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             for x in tail {
                 let value = emit(
@@ -594,11 +554,7 @@ fn emit(
                     b,
                     &[],
                     &frame,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
                 frame.push(value);
             }
@@ -607,11 +563,7 @@ fn emit(
                 b,
                 &[],
                 &frame,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             )
         }
         ScopedCall(args, initializers, body) => {
@@ -625,11 +577,7 @@ fn emit(
                     b,
                     params,
                     locals,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 ));
             }
             for init in initializers {
@@ -638,11 +586,7 @@ fn emit(
                     b,
                     &[],
                     &frame,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
                 frame.push(value);
             }
@@ -651,11 +595,7 @@ fn emit(
                 b,
                 &[],
                 &frame,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             )
         }
         InlineTask(body) => emit(
@@ -663,11 +603,7 @@ fn emit(
             b,
             params,
             locals,
-            error,
-            divisor_error,
-            negative_exponent_error,
-            refinement_error,
-            i32_error,
+            errors,
         ),
         Sequence(prefix, last) => {
             for part in prefix {
@@ -676,11 +612,7 @@ fn emit(
                     b,
                     params,
                     locals,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
             }
             emit(
@@ -688,11 +620,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             )
         }
         Seq(parts) => {
@@ -705,11 +633,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             for part in rest {
                 value = emit(
@@ -717,11 +641,7 @@ fn emit(
                     b,
                     params,
                     locals,
-                    error,
-                    divisor_error,
-                    negative_exponent_error,
-                    refinement_error,
-                    i32_error,
+                    errors,
                 );
             }
             value
@@ -735,11 +655,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
@@ -753,22 +669,14 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let rhs = emit(
                 y,
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
@@ -783,11 +691,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let below = b
                 .ins()
@@ -808,11 +712,7 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let below = b.ins().icmp_imm_s(IntCC::SignedLessThan, value, *lo);
             let above = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, value, *hi);
@@ -829,22 +729,14 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let right = emit(
                 y,
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
             let nonzero = b.create_block();
@@ -866,22 +758,14 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let right = emit(
                 y,
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
@@ -903,22 +787,14 @@ fn emit(
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             let exponent = emit(
                 y,
                 b,
                 params,
                 locals,
-                error,
-                divisor_error,
-                negative_exponent_error,
-                refinement_error,
-                i32_error,
+                errors,
             );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
@@ -930,11 +806,7 @@ fn emit(
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
@@ -945,22 +817,14 @@ fn emit(
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     let rhs = emit(
                         y,
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
@@ -970,22 +834,14 @@ fn emit(
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     let rhs = emit(
                         y,
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
@@ -995,22 +851,14 @@ fn emit(
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     let rhs = emit(
                         y,
                         b,
                         params,
                         locals,
-                        error,
-                        divisor_error,
-                        negative_exponent_error,
-                        refinement_error,
-                        i32_error,
+                        errors,
                     );
                     b.ins().smul_overflow(lhs, rhs)
                 }
@@ -1139,6 +987,13 @@ fn prepare_ir(
     let negative_exponent_error = b.create_block();
     let refinement_error = b.create_block();
     let i32_error = b.create_block();
+    let errors = ScalarErrorBlocks {
+        error,
+        divisor_error,
+        negative_exponent_error,
+        refinement_error,
+        i32_error,
+    };
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
