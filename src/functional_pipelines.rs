@@ -77,7 +77,7 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || bytes[i..].starts_with(b"->")
         {
             i += 2;
-        } else if b"(){}:,;+-*=".contains(&bytes[i]) {
+        } else if b"(){}:,;+-*=<>".contains(&bytes[i]) {
             i += 1;
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
@@ -90,12 +90,16 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
 struct Parser {
     tokens: Vec<String>,
     at: usize,
+    generic_profile: bool,
+    generic_formals: HashMap<String, (String, String)>,
 }
 impl Parser {
     fn new(src: &str) -> Result<Self, String> {
         Ok(Self {
             tokens: lex(src)?,
             at: 0,
+            generic_profile: false,
+            generic_formals: HashMap::new(),
         })
     }
     fn peek(&self) -> &str {
@@ -238,7 +242,28 @@ impl Parser {
             return Err("E_PIPE_TYPE: Boolean cannot inhabit int64".into());
         } else {
             let name = self.name()?;
-            if self.peek() == "(" {
+            let formal = self.generic_formals.get(&name).cloned();
+            if self.generic_profile && self.eat("<") {
+                let (ty, _) = formal.as_ref().ok_or("E_GENERIC_BINDER: not a declared generic")?;
+                if self.peek() != "int" {
+                    let label = self.name()?;
+                    self.need("=")?;
+                    if &label != ty { return Err("E_GENERIC_BINDER: unknown type label".into()); }
+                }
+                self.need("int")?;
+                self.need(">")?;
+                if self.peek() != "(" { return Err("E_GENERIC_BINDER: expected call".into()); }
+            }
+            if let Some((_, label)) = formal {
+                self.need("(")?;
+                if self.tokens.get(self.at + 1).is_some_and(|t| t == ":") {
+                    if self.name()? != label { return Err("E_GENERIC_BINDER: unknown value label".into()); }
+                    self.need(":")?;
+                }
+                let value = self.expr(0, depth + 1, None)?;
+                self.need(")")?;
+                Raw::Call(name, vec![value])
+            } else if self.peek() == "(" {
                 Raw::Call(name, self.args(depth)?)
             } else {
                 Raw::Name(name)
@@ -329,6 +354,41 @@ impl Parser {
             let public = self.eat("pub");
             self.need("fnc")?;
             let name = self.name()?;
+            if self.generic_profile && self.eat("<") {
+                if public || name == "main" || name == "init" || name == "_" ||
+                    fns.len() >= 15 || self.generic_formals.contains_key(&name) {
+                    return Err("E_GENERIC_UNSUPPORTED: private identity required".into());
+                }
+                let ty = self.name()?;
+                if ty == name || ty == "_" { return Err("E_GENERIC_BINDER: invalid type binder".into()); }
+                self.need(">")?;
+                self.need("(")?;
+                let first = self.name()?;
+                let parameter = if self.eat(":") {
+                    self.need(&ty)?;
+                    first
+                } else {
+                    if first != ty { return Err("E_GENERIC_BINDER: expected type parameter".into()); }
+                    self.name()?
+                };
+                if parameter == ty || parameter == name || parameter == "_" {
+                    return Err("E_GENERIC_BINDER: invalid value binder".into());
+                }
+                self.need(")")?;
+                if !self.eat(":") { self.need("->")?; }
+                self.need(&ty)?;
+                self.need("{")?;
+                self.need("return")?;
+                self.need(&parameter)?;
+                self.need(";")?;
+                self.need("}")?;
+                self.generic_formals.insert(name.clone(), (ty, parameter.clone()));
+                fns.push(Fn { public, name, params: vec![parameter.clone()], locals: Vec::new(), result: Raw::Name(parameter) });
+                continue;
+            }
+            if self.generic_profile && (name != "main" || self.generic_formals.is_empty()) {
+                return Err("E_GENERIC_UNSUPPORTED: only root identities followed by main".into());
+            }
             self.need("(")?;
             let mut params = Vec::new();
             if self.peek() != ")" {
@@ -376,6 +436,9 @@ impl Parser {
             } else {
                 return Err("E_PIPE_BODY".into());
             };
+            if self.generic_profile && (!params.is_empty() || !locals.is_empty() || self.peek() != "<eof>") {
+                return Err("E_GENERIC_UNSUPPORTED: terminal zero-argument main without locals required".into());
+            }
             fns.push(Fn {
                 public,
                 name,
@@ -504,6 +567,21 @@ impl Lower<'_> {
 pub fn parse(source: &str) -> Result<Program, String> {
     validate_source_envelope(source)?;
     compile_functions(Parser::new(source)?.parse()?)
+}
+
+/// Restricted generic profile: parse whole token stream, validate the exact
+/// parametric identity body, then lower through the bounded static inliner.
+/// No runtime type values or generic ABI; import/pipeline paths stay separate.
+pub(crate) fn parse_generic_identity(source: &str) -> Result<Option<Program>, String> {
+    if !source.contains('<') { return Ok(None); }
+    let tokens = match lex(source) {
+        Ok(tokens) => tokens,
+        Err(_) => return Ok(None), // existing frontend still rejects unsupported syntax
+    };
+    if !tokens.windows(3).any(|w| w[0] == "fnc" && w[2] == "<") { return Ok(None); }
+    validate_source_envelope(source)?;
+    let parser = Parser { tokens, at: 0, generic_profile: true, generic_formals: HashMap::new() };
+    Ok(Some(compile_functions(parser.parse()?)?))
 }
 
 /// Preserve the separately parsed function graph and symbolic calls for
