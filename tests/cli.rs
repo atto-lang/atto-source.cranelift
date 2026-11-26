@@ -1359,7 +1359,7 @@ fn native_java_v1_reserved_parameter_gate_and_scalar_controls() {
 fn odb1_native_signed_shift8_scalar_gate() {
     // Real native JIT guest checks of the ODB1 scalar byte extraction floor.
     // DOES NOT establish WAL List/Result/actor/module support.
-    let source = "fnc main(x:int):int{return x>>8;}";
+    let source = "fnc main(x:int):int{return x ashr 8;}";
     for (operand, expected) in [
         ("0", "0\n"),
         ("255", "0\n"),
@@ -1372,15 +1372,15 @@ fn odb1_native_signed_shift8_scalar_gate() {
     ] {
         fixture(source, &[operand], true, expected);
     }
-    fixture("fnc main(x:int):int{return x+1>>8;}", &["255"], true, "1\n");
+    fixture("fnc main(x:int):int{return x+1 ashr 8;}", &["255"], true, "1\n");
     fixture(
-        "fnc main(x:int):int{return x+1>>8;}",
+        "fnc main(x:int):int{return x+1 ashr 8;}",
         &["9223372036854775807"],
         false,
         "",
     );
     fixture(
-        "fnc main(x:int):int{return x>>8>>8;}",
+        "fnc main(x:int):int{return x ashr 8 ashr 8;}",
         &["65536"],
         true,
         "1\n",
@@ -1388,9 +1388,12 @@ fn odb1_native_signed_shift8_scalar_gate() {
     // No silent lowering of any other shift, dynamic count, float division,
     // unsigned shift or module/ADT heap features.
     for invalid in [
-        "fnc main(x:int):int{return x>>7;}",
-        "fnc main(x:int,y:int):int{return x>>y;}",
-        "fnc main(x:int):int{return x>>8+1;}",
+        "fnc main(x:int):int{return x>>8;}",
+        "fnc main(x:int):int{return x ashr 7;}",
+        "fnc main(x:int):int{return x ashr 64;}",
+        "fnc main(x:int):int{return x ashr -8;}",
+        "fnc main(x:int,y:int):int{return x ashr y;}",
+        "fnc main(x:int):int{return x ashr 8+1;}",
         "fnc main(x:int):int{return x>>>8;}",
         "fnc main(x:int):int{return x>8;}",
         "fnc main(x:int):int{return x<<8;}",

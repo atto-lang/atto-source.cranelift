@@ -636,7 +636,7 @@ impl<'a> Parser<'a> {
             }
             let (l_bp, r_bp, op) = match self.current {
                 // Low to high: XOR, shift, additive, multiplicative.
-                // Signed >> 8 is the stage-0 slice of the full shift grammar.
+                // Signed ashr 8 is the bounded stage-0 slice of the canonical shift grammar.
                 // The leading ^ is a return statement. Only TWO CARETS
                 // directly adjacent in the original source denote i64 XOR.
                 // The lexer emits one punctuation token at a time: self.pos
@@ -645,7 +645,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'^') if self.input.as_bytes().get(self.pos) == Some(&b'^') => (0, 1, b'^'),
                 Token::Punct(b'^') => return Err(format!(
                     "E_OPERATOR_CARET: single infix ^ is not XOR at byte {}", self.pos.saturating_sub(1))),
-                Token::Punct(b'>') => (1, 2, b'>'),
+                Token::Word("ashr") => (1, 2, b'>'),
                 Token::Punct(b'+') => (2, 3, b'+'),
                 Token::Punct(b'-') => (2, 3, b'-'),
                 Token::Punct(b'*') => (4, 5, b'*'),
@@ -656,9 +656,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.next()?;
-            if op == b'>' {
-                self.expect(Token::Punct(b'>'))?;
-            } else if op == b'^' {
+            if op == b'^' {
                 self.expect(Token::Punct(b'^'))?; // consume adjacent second caret
             }
             let rhs = self.expr(r_bp, depth + 1)?;
@@ -670,7 +668,7 @@ impl<'a> Parser<'a> {
                 b'^' => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
-                        return Err("stage-0 only supports signed >> 8 with literal count".into());
+                        return Err("stage-0 only supports signed ashr 8 with literal count".into());
                     }
                     Expr::ShiftRight8(Box::new(lhs))
                 }
@@ -1680,7 +1678,7 @@ mod tests {
         for (source, value) in [
             ("fnc main():int{return 11 ^^ 4;}", 15i64),
             ("fnc main():int{return 5 + 6 ^^ 4;}", 15),
-            ("fnc main():int{return 1 ^^ 256 >> 8;}", 0),
+            ("fnc main():int{return 1 ^^ 256 ashr 8;}", 0),
             ("fnc main():int{return -1 ^^ 9223372036854775807;}", i64::MIN),
         ] {
             let parsed = parse(source).expect("int XOR source must compile");
@@ -1802,7 +1800,7 @@ mod tests {
 
     #[test]
     fn odb1_checked_arithmetic_right_shift_by_eight() {
-        let p = parse("fnc main(x:int):int{return x>>8;}").unwrap();
+        let p = parse("fnc main(x:int):int{return x ashr 8;}").unwrap();
         for (n, expected) in [
             (0_i64, 0_i64),
             (255, 0),
@@ -1815,16 +1813,18 @@ mod tests {
         ] {
             assert_eq!(eval(&p.result, &[n]), Ok(expected));
         }
-        let add_before_shift = parse("fnc main(x:int):int{return x+1>>8;}").unwrap();
+        let add_before_shift = parse("fnc main(x:int):int{return x+1 ashr 8;}").unwrap();
         assert_eq!(eval(&add_before_shift.result, &[255]), Ok(1));
         assert!(eval(&add_before_shift.result, &[i64::MAX]).is_err());
-        let chained = parse("fnc main(x:int):int{return x>>8>>8;}").unwrap();
+        let chained = parse("fnc main(x:int):int{return x ashr 8 ashr 8;}").unwrap();
         assert_eq!(eval(&chained.result, &[65536]), Ok(1));
         for invalid in [
-            "fnc main(x:int):int{return x>>7;}",
-            "fnc main(x:int,y:int):int{return x>>y;}",
-            "fnc main(x:int):int{return x>>8+1;}",
-            "fnc main(x:int):int{return x>>-8;}",
+            "fnc main(x:int):int{return x>>8;}",
+            "fnc main(x:int):int{return x ashr 7;}",
+            "fnc main(x:int):int{return x ashr 64;}",
+            "fnc main(x:int,y:int):int{return x ashr y;}",
+            "fnc main(x:int):int{return x ashr 8+1;}",
+            "fnc main(x:int):int{return x ashr -8;}",
             "fnc main(x:int):int{return x>>>8;}",
             "fnc main(x:int):int{return x>8;}",
             "fnc main(x:int):int{return x<<8;}",
