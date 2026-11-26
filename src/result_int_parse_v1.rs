@@ -127,6 +127,43 @@ impl TenantParser {
 mod tests {
     use super::*;
     #[test]
+    fn checked_unwrap_retains_original_and_fences_parser_generations() {
+        let mut owner = TenantParser::new(101).unwrap();
+        let mut sibling = TenantParser::new(102).unwrap();
+        let mut reincarnated = TenantParser::new(101).unwrap();
+        for value in [i64::MIN, -1, 0, 42, i64::MAX] {
+            assert_eq!(owner.unwrap_option(Some(value)), Ok(value));
+            assert_eq!(owner.unwrap_result(TaggedResult::Ok(value)), Ok(value));
+        }
+        let Err(UnwrapFailure::Ordinary(none)) = owner.unwrap_option(None) else {
+            panic!("None must become an ordinary failure");
+        };
+        assert_eq!(none.kind(), &UnwrapKind::OptionNone);
+        assert_eq!(none.original(), None);
+        assert!(owner.can_observe(none.error()));
+        let TaggedResult::Err(original) = owner.parse("bad") else {
+            panic!("expected parse failure");
+        };
+        assert!(!sibling.can_observe(&original));
+        assert!(!reincarnated.can_observe(&original));
+        for foreign in [&mut sibling, &mut reincarnated] {
+            assert_eq!(foreign.unwrap_result(TaggedResult::Err(original.clone())),
+                Err(UnwrapFailure::ForeignError));
+        }
+        let Err(UnwrapFailure::Ordinary(wrapped)) =
+            owner.unwrap_result(TaggedResult::Err(original.clone())) else {
+            panic!("Err must become ordinary failure");
+        };
+        assert_eq!(wrapped.kind(), &UnwrapKind::ResultErr);
+        assert_eq!(wrapped.original(), Some(&original));
+        assert_ne!(wrapped.error(), &original);
+        assert!(owner.can_observe(wrapped.error()));
+        assert!(!reincarnated.can_observe(wrapped.error()));
+        assert_eq!(wrapped, wrapped.clone());
+        assert_ne!(owner.unwrap_result(TaggedResult::Err(original)),
+            Err(UnwrapFailure::Ordinary(wrapped)));
+    }
+    #[test]
     fn checked_decimal_40k_boundary_and_owned_identity() {
         let mut a = TenantParser::new(101).unwrap();
         let mut b = TenantParser::new(102).unwrap();
