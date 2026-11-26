@@ -3,6 +3,9 @@
 mod actor_isolation_access_v1;
 mod backend;
 mod counted_static_ready;
+// Host-only continuation lease; compiler guest lowering remains gated.
+#[allow(dead_code)]
+mod select_continuation_fence;
 pub mod critical_gate;
 mod frontend;
 mod functional_pipelines;
