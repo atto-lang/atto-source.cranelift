@@ -256,7 +256,12 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 #[test]
 fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
-    expect_unsupported("pub fnc main():int{return 3 / 2;}");
+    // Signed quotient now has native lowering. Keep reserved caret denied,
+    // and exercise real quotient execution rather than calling it GLM support.
+    expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
+    expect_native("pub fnc main():int{return -7 / 3;}", &[], "-2\n");
+    expect_unsupported("pub fnc main():int{return 3 / 0;}");
+    expect_unsupported("pub fnc main():int{return -9223372036854775808 / -1;}");
 }
 
 #[test]
