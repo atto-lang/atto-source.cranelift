@@ -210,10 +210,33 @@ fn pair_key_and_owned_product_boundaries_are_fail_closed() {
             "i64 literal out of range",
         ),
         (
-            r#"fnc main():int{return Pair.of("count",1+2).second;}"#,
-            "unexpected token",
+            r#"fnc main():int{return Pair.of("count",missing).second;}"#,
+            "unbound or unsupported identifier",
         ),
     ] {
         rejected(source, diagnostic);
     }
+}
+
+#[test]
+fn checked_pair_projection_preserves_parameter_arithmetic_and_traps() {
+    admitted(
+        r#"fnc main(a:int):int{return Pair.of<int>("key",a*2).second;}"#,
+        &["21"],
+        b"42\n",
+    );
+    admitted(
+        r#"fnc main(a:int):int{return Pair.of<int>("outer",Pair.of("inner",a+1).second).second;}"#,
+        &["41"],
+        b"42\n",
+    );
+    rejected(
+        r#"fnc main(a:int):int{val n=a;return Pair.of("key",n).second;}"#,
+        "E_PAIR_VALUE_UNSUPPORTED",
+    );
+    let source = r#"fnc main(a:int):int{return Pair.of("key",a+1).second;}"#;
+    let output = execute("run", source, &["9223372036854775807"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
 }

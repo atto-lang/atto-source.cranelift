@@ -955,7 +955,7 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
-    // Restricted pure literal projection. No owned Pair ABI is constructed.
+    // Restricted checked i64 expression projection. No owned Pair ABI is constructed.
     // Scan source tokens once per compilation, not once per projection.
     fn check_pair_scope(&mut self) -> Result<(), String> {
         if self.pair_scope_checked {
@@ -984,7 +984,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn pair_projection(&mut self) -> Result<Expr, String> {
+    fn pair_projection(&mut self, depth: usize) -> Result<Expr, String> {
         self.check_pair_scope()?;
         self.expect(Token::Word("Pair"))?;
         self.expect(Token::Punct(b'.'))?;
@@ -1021,20 +1021,24 @@ impl<'a> Parser<'a> {
         }
         self.next()?;
         self.expect(Token::Punct(b','))?;
-        let negative = self.take(Token::Punct(b'-'))?;
-        let Token::Number(raw) = self.current else {
-            return Err("E_PAIR_VALUE_UNSUPPORTED: pure int literal required".into());
-        };
-        let digits = integer_digits(raw)?;
-        let signed = if negative {
-            format!("-{digits}")
-        } else {
-            digits
-        };
-        let value = signed
-            .parse::<i64>()
-            .map_err(|_| "i64 literal out of range")?;
-        self.next()?;
+        let value = self.expr(0, depth + 1)?;
+        // Stage-0 has no general type witness for locals or effects. Permit
+        // only known i64 parameters, literals and checked arithmetic trees.
+        // Iterative inspection is bounded by the parser's existing node cap.
+        let mut pending = vec![&value];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Expr::Literal(_) | Expr::Param(_) => {}
+                Expr::Neg(inner) => pending.push(inner),
+                Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) => {
+                    pending.push(a);
+                    pending.push(b);
+                }
+                _ => {
+                    return Err("E_PAIR_VALUE_UNSUPPORTED: checked i64 expression required".into());
+                }
+            }
+        }
         self.expect(Token::Punct(b')'))?;
         if !self.take(Token::Punct(b'.'))? {
             return Err("E_PAIR_ESCAPE_UNSUPPORTED: native owned Pair ABI unavailable".into());
@@ -1044,7 +1048,7 @@ impl<'a> Parser<'a> {
                 "E_PAIR_PROJECTION_UNSUPPORTED: only i64 second projection admitted".into(),
             );
         }
-        self.node(Expr::Literal(value))
+        Ok(value)
     }
 
     fn atom_base(&mut self, depth: usize) -> Result<Expr, String> {
@@ -1099,7 +1103,7 @@ impl<'a> Parser<'a> {
                 }
                 self.inline_task(depth + 1, false)
             }
-            Token::Word("Pair") if self.next_significant_is(b'.') => self.pair_projection(),
+            Token::Word("Pair") if self.next_significant_is(b'.') => self.pair_projection(depth),
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
