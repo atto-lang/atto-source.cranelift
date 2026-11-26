@@ -84,6 +84,9 @@ fn checked_division_native_object_fault_order_and_atomic_output() {
         (1, "pub fnc main(a:int,b:int):int{return (a+1)/b;}"),
         (2, "pub fnc main(a:int,b:int):int{return seq(a/b,9223372036854775807+1);}"),
         (3, "pub fnc main(a:int,b:int):int{val unused=a/b;return 42;}"),
+        (4, "pub fnc main(a:int,b:int):int{return a/(b+1);}"),
+        (5, "pub fnc main(a:int,b:int):int{return seq(a+1,a/b);}"),
+        (6, "pub fnc main(a:int,b:int):int{return (a+1)/(b+1);}"),
     ] {
         let source=dir.join(format!("guest-{mode}.atto"));
         let object=dir.join(format!("guest-{mode}.o"));
