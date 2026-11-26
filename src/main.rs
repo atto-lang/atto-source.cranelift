@@ -418,6 +418,10 @@ mod incremental_object_tests{
         std::fs::remove_dir_all(dir).unwrap();println!("INCREMENTAL_CRANELIFT|actual-aot-guest=42/43|rollback");
     }
 }
+// Canonical compiler-cache host substrate, exact shared Rust source vectors.
+mod sha256;
+mod compiler_cache_key;
+mod compiler_artifact_receipt;
 fn main() {
     if let Err(e) = run() {
         eprintln!("orescranelift: {e}");

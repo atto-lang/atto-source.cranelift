@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'src/main.rs'
+      - 'src/sha256.rs'
+      - 'src/compiler_cache_key.rs'
+      - 'src/compiler_artifact_receipt.rs'
       - '.github/workflows/incremental-session-candidate.yml'
   workflow_dispatch:
 permissions: {contents: read}
@@ -18,3 +21,6 @@ jobs:
         run: |
           set -eu
           cargo test --locked --bin orescranelift incremental_object_tests::exact_native_object_reuse -- --nocapture
+          cargo test --locked --bin orescranelift sha256::tests:: -- --nocapture
+          cargo test --locked --bin orescranelift compiler_cache_key::tests:: -- --nocapture
+          cargo test --locked --bin orescranelift compiler_artifact_receipt::tests:: -- --nocapture
