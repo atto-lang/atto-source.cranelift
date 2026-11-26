@@ -118,7 +118,7 @@ fn variant(p: &mut Parser<'_>) -> Result<Option<Expr>, String> {
 
 enum OptionValue {
     Closed(Option<Expr>),
-    Conditional(Expr, Option<Expr>, Option<Expr>),
+    Conditional(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>),
 }
 
 pub(super) fn parse(text: &str) -> Result<Program, String> {
@@ -171,7 +171,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
         if yes.is_some() == no.is_some() {
             return Err("E_CLOSED_OPTION_TAGS".into());
         }
-        OptionValue::Conditional(condition, yes, no)
+        OptionValue::Conditional(Box::new(condition), yes.map(Box::new), no.map(Box::new))
     };
     p.expect(Token::Punct(b';'))?;
     p.expect(Token::Word("return"))?;
@@ -228,14 +228,14 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
         OptionValue::Closed(Some(value)) => value,
         OptionValue::Closed(None) => fallback,
         OptionValue::Conditional(cond, Some(value), None) => p.node(Expr::Choose(
-            Box::new(cond),
-            Box::new(value),
+            cond,
+            value,
             Box::new(fallback),
         ))?,
         OptionValue::Conditional(cond, None, Some(value)) => p.node(Expr::Choose(
-            Box::new(cond),
+            cond,
             Box::new(fallback),
-            Box::new(value),
+            value,
         ))?,
         _ => return Err("E_CLOSED_OPTION_TAGS".into()),
     };

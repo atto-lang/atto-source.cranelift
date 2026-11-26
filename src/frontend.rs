@@ -800,9 +800,9 @@ impl<'a> Parser<'a> {
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if self.closed_option_profile && first == b'?' {
-            self.current = Token::Punct(first);
-        } else if b"()+-*/{}[];:,><=.!&|".contains(&first) {
+        } else if (self.closed_option_profile && first == b'?')
+            || b"()+-*/{}[];:,><=.!&|".contains(&first)
+        {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -2271,10 +2271,12 @@ pub fn parse(text: &str) -> Result<Program, String> {
     let original = Parser::new(text)?.program();
     // Only a complete, independently typed closed Option program can enter
     // the fused scalar lowering. Preserve all ordinary parser denials otherwise.
-    if original.is_err() && text.contains("trap!") && text.contains("match") {
-        if let Ok(program) = closed_option::parse(text) {
-            return Ok(program);
-        }
+    if original.is_err()
+        && text.contains("trap!")
+        && text.contains("match")
+        && let Ok(program) = closed_option::parse(text)
+    {
+        return Ok(program);
     }
     // Preserve authoritative declaration/effect/export diagnostics. Refine
     // only generic grammar denials (or the specific unsupported Struct case).
