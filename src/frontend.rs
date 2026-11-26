@@ -941,9 +941,8 @@ impl<'a> Parser<'a> {
             loop {
                 let mutable = self.take(Token::Word("let"))?;
                 let declaration = mutable || self.take(Token::Word("val"))?;
-                let target;
                 let name;
-                if declaration {
+                let target = if declaration {
                     let typed = self.take(Token::Word("int"))?;
                     name = self.name()?;
                     if is_java_v1_reserved_parameter_name(&name)
@@ -955,16 +954,16 @@ impl<'a> Parser<'a> {
                     if !typed && self.take(Token::Punct(b':'))? {
                         self.expect(Token::Word("int"))?;
                     }
-                    target = None;
+                    None
                 } else {
                     let Token::Word(word) = self.current else { break; };
                     if !mutable_locals.iter().any(|known| known == word) {
                         break;
                     }
                     name = self.name()?;
-                    target = Some(self.bindings.iter().position(|(known, _, _)| known == &name)
-                        .ok_or("E_TASK_LOCAL: missing mutable binding")?);
-                }
+                    Some(self.bindings.iter().position(|(known, _, _)| known == &name)
+                        .ok_or("E_TASK_LOCAL: missing mutable binding")?)
+                };
                 if captures.len() + initializers.len() >= MAX_LOCALS {
                     return Err("E_TASK_LOCAL: over-budget inline local or write".into());
                 }
