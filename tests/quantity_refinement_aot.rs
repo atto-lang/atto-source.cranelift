@@ -39,3 +39,26 @@ fn checked_refinement_native_objects_preserve_failure_status_and_output(){
  assert!(!out.stdout.is_empty());
  fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn strict_snapshots_after_assignment_and_loop_are_eager_native_values() {
+ let dir=std::env::temp_dir().join(format!("atto-strict-snapshots-{}",std::process::id()));
+ fs::create_dir(&dir).unwrap();
+ let source=dir.join("guest.atto");let object=dir.join("guest.o");let harness=dir.join("host.c");let binary=dir.join("guest");
+ let pre="type Bounded = int where self >= 1 and self <= 42;";
+ let compile=|body:&str|{
+  fs::write(&source,format!("{pre} pub fnc main() -> int {{{body}}}")).unwrap();
+  Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("emit-object-strict").arg(&source).output().unwrap()
+ };
+ let out=compile("let Bounded x = 1; x = 2; val before = x; while x < 42 { x = x + 1; } val after = x; x = 1; return before + after + x;");
+ assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+ fs::write(&object,out.stdout).unwrap();
+ fs::write(&harness,"#include <stdint.h>\n#include <assert.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=0;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==45);}").unwrap();
+ let link=Command::new("cc").args(["-std=c11","-Wall","-Werror"]).arg(&harness).arg(&object).arg("-o").arg(&binary).output().unwrap();
+ assert!(link.status.success(),"{}",String::from_utf8_lossy(&link.stderr));
+ assert!(Command::new(&binary).status().unwrap().success());
+ let denied=compile("let Bounded x = 1; x = 2; val before = x; x = 1; return 10 / (x - 1);");
+ assert!(!denied.status.success());assert!(denied.stdout.is_empty());
+ fs::remove_dir_all(dir).unwrap();
+}
