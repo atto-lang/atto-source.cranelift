@@ -532,6 +532,7 @@ impl<'a> Parser<'a> {
                 end += 1;
             }
             let name = &self.input[self.pos..end];
+            if matches!(name,"requires"|"ensures") { self.current=Token::Punct(b'@'); return Ok(()); }
             if matches!(
                 name,
                 "Inject" | "StateBacked" | "MutableStateContainer" | "StateContainer"
