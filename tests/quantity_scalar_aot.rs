@@ -2,7 +2,7 @@ use std::{fs,process::Command};
 #[cfg(unix)]
 #[test]
 fn quantity_source_emits_and_links_native_objects(){
- let dir=std::env::temp_dir().join(format!("atto-quantity-legacy-aot-{}",std::process::id()));
+ let dir=std::env::temp_dir().join(format!("atto-quantity-aot-{}",std::process::id()));
  fs::create_dir(&dir).unwrap();
  let source=dir.join("guest.atto");let object=dir.join("guest.o");let harness=dir.join("host.c");let binary=dir.join("guest");
  let pre="define dimension Time; define dimension Length; define unit Second: Time; define unit Meter: Length; define unit Tick: Time = Second; define unit Millis: Time = Second / 1000; define unit Kilo: Time = 1000 * Second; define unit Round: Time = Millis * 1000;";
@@ -39,7 +39,7 @@ fn quantity_source_emits_and_links_native_objects(){
   let out=compile(pre,expr);assert!(!out.status.success(),"{expr}");assert!(out.stdout.is_empty(),"{expr} emitted native object");
   println!("QUANTITY_NATIVE_REJECT {expr}");
  }
- for decl in ["define dimension Time; define unit Second: Time; define unit Tick: Time;","define dimension Time; define dimension Length; define unit Meter: Length; define unit Tick: Time = Meter;","define dimension Time; define unit Tick: Time = Second; define unit Second: Time;","define dimension Time; define dimension Time;","define unit Second: Unknown;","define dimension Time; define unit Time: Time;","define dimension Time; define unit Second: Time; define unit Second: Time;","define dimension Time; define unit Second: Time; define unit Millis: Time = Second / 0;","define dimension Time; define unit Second: Time; define unit Bad: Time = Second * -1;","define dimension Time; define unit Second: Time; define unit Huge: Time = Second * 9223372036854775807; define unit H2: Time = Huge * 9223372036854775807; define unit H3: Time = H2 * 9223372036854775807; define unit H4: Time = H3 * 9223372036854775807; define unit TooBig: Time = H4 * 9223372036854775807;"] {
+ for decl in ["define dimension Time; define unit Second: Time; define unit Tick: Time;","define dimension Time; define dimension Length; define unit Meter: Length; define unit Tick: Time = Meter;","define dimension Time; define unit Tick: Time = Second; define unit Second: Time;","define dimension Time; define dimension Time;","define unit Second: Unknown;","define dimension Time; define unit Time: Time;","define dimension Time; define unit Second: Time; define unit Second: Time;","define dimension Time; define unit Second: Time; define unit Millis: Time = Second / 0;","define dimension Time; define unit Second: Time; define unit Bad: Time = Second * -1;","define dimension Time; define unit Second: Time; define unit Huge: Time = Second * 9223372036854775807; define unit Huge2: Time = Huge * 9223372036854775807; define unit Huge3: Time = Huge2 * 9223372036854775807; define unit Huge4: Time = Huge3 * 9223372036854775807; define unit Huge5: Time = Huge4 * 9223372036854775807;"] {
   let out=compile(decl,"42");assert!(!out.status.success(),"{decl}");assert!(out.stdout.is_empty());
  }
  fs::remove_dir_all(dir).unwrap();
