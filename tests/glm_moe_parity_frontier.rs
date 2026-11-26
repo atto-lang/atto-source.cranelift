@@ -260,8 +260,29 @@ fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
     // and exercise real quotient execution rather than calling it GLM support.
     expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
     expect_native("pub fnc main():int{return -7 / 3;}", &[], "-2\n");
-    expect_unsupported("pub fnc main():int{return 3 / 0;}");
-    expect_unsupported("pub fnc main():int{return -9223372036854775808 / -1;}");
+    // A checked arithmetic error is not a lexical rejection. IR is allowed
+    // to describe it, but native execution must fail without guest output.
+    for source in [
+        "pub fnc main():int{return 3 / 0;}",
+        "pub fnc main():int{return -9223372036854775808 / -1;}",
+    ] {
+        let run = run_guest("run", source, &[]);
+        assert_eq!(run.status.code(), Some(1), "{source}: {:?}", run);
+        assert!(run.stdout.is_empty(), "{source}: unexpected guest output");
+        let diag = String::from_utf8_lossy(&run.stderr);
+        assert!(diag.starts_with("orescranelift: ") && !diag.contains("panicked at"), "{source}: {diag}");
+        let ir = run_guest("ir", source, &[]);
+        if ir.status.success() {
+            let code = String::from_utf8_lossy(&ir.stdout);
+            assert!(code.contains("sdiv") && code.matches("brif").count() >= 2,
+                "{source}: checked quotient IR lost a guard");
+            assert!(ir.stderr.is_empty());
+        } else {
+            assert_eq!(ir.status.code(), Some(1), "{source}: {:?}", ir);
+            assert!(ir.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&ir.stderr).starts_with("orescranelift: "));
+        }
+    }
 }
 
 #[test]
