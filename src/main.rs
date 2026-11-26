@@ -222,7 +222,7 @@ fn run() -> Result<(), String> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object"
+        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-durable-counter-object"
     ) {
         return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
@@ -232,7 +232,7 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if matches!(mode.as_str(), "ir" | "check" | "emit-object") && !supplied.is_empty() {
+    if matches!(mode.as_str(), "ir" | "check" | "emit-object" | "emit-durable-counter-object") && !supplied.is_empty() {
         return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
@@ -262,6 +262,13 @@ fn run() -> Result<(), String> {
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
     frontend::validate_source_envelope(source)?;
+    if mode == "emit-durable-counter-object" {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("atto") {
+            return Err("E_DURABLE_COUNTER_ACTOR_ABI: expected .atto".into());
+        }
+        let object = backend::emit_durable_counter_object(source)?;
+        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+    }
     let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated
