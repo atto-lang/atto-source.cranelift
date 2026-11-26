@@ -81,4 +81,17 @@ for count in '17' '0 - 1' '9223372036854775807 + 1'; do
   if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
   test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
 done
+# Preserve the competing literal-count lane's mutation and readiness boundaries.
+# Arithmetic singleton facts are now supported, but immutable mutation and
+# a non-ready closed-world batch still cannot emit a native object.
+for body in \
+ 'val int count = 1; count = 0; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
+ 'val int count = 17; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
+ 'val int count = 1 + 1; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
+ 'let int count = 1; count = count + 1; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;'; do
+  printf 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(1); %s }\n' "$body" > "$work/bad.atto"
+  if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
+  test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+  echo CRANELIFT_LEXICAL_COUNT_REJECT_PASS
+done
 echo CRANELIFT_COUNTED_STATIC_NATIVE_PASS
