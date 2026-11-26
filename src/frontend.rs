@@ -197,28 +197,58 @@ enum Token<'a> {
     End,
 }
 
-// Bounded exact rational scale with positive reduced i64 components.
+// Bounded scale arithmetic: 256-bit normalized components, 512-bit
+// intermediates. No new dependency and no host integer overflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScaleUInt([u32;16]);
+impl ScaleUInt {
+    const ZERO: Self=Self([0;16]);
+    const ONE: Self=Self([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
+    fn from_u64(n:u64)->Self {let mut x=Self::ZERO;x.0[0]=n as u32;x.0[1]=(n>>32) as u32;x}
+    fn low64(self)->u64{u64::from(self.0[0])|(u64::from(self.0[1])<<32)}
+    fn fits256(self)->bool{self.0[8..].iter().all(|v|*v==0)}
+    fn cmp(self,b:Self)->std::cmp::Ordering{self.0.iter().rev().cmp(b.0.iter().rev())}
+    fn sub(&mut self,b:Self){let mut borrow=0u64;for i in 0..16{let a=u64::from(self.0[i]);let v=u64::from(b.0[i])+borrow;self.0[i]=a.wrapping_sub(v) as u32;borrow=u64::from(a<v);}}
+    fn shift(&mut self){let mut carry=0;for word in &mut self.0{let next=*word>>31;*word=(*word<<1)|carry;carry=next;}}
+    fn mul256(self,b:Self)->Self{
+        let mut out=Self::ZERO;
+        for i in 0..8{let mut carry=0u64;for j in 0..8{
+            let v=u64::from(self.0[i])*u64::from(b.0[j])+u64::from(out.0[i+j])+carry;
+            out.0[i+j]=v as u32;carry=v>>32;
+        }out.0[i+8]=carry as u32;}
+        out
+    }
+    fn divmod(self,b:Self)->(Self,Self){
+        debug_assert!(b!=Self::ZERO);
+        let mut q=Self::ZERO;let mut r=Self::ZERO;
+        for i in (0..512).rev(){let carry=r.0[15]>>31!=0;r.shift();r.0[0]|=(self.0[i/32]>>(i%32))&1;
+            if carry||!r.cmp(b).is_lt(){r.sub(b);q.0[i/32]|=1u32<<(i%32);}
+        }(q,r)
+    }
+    fn gcd(mut a:Self,mut b:Self)->Self{while b!=Self::ZERO{let r=a.divmod(b).1;a=b;b=r;}a}
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-struct QuantityScale(i64,i64);
+struct QuantityScale(ScaleUInt,ScaleUInt);
 impl QuantityScale {
-    const ONE:Self=Self(1,1);
-    fn gcd(mut a:i128,mut b:i128)->i128{while b!=0{let r=a%b;a=b;b=r;}a}
+    const ONE:Self=Self(ScaleUInt::ONE,ScaleUInt::ONE);
     fn inv(self)->Self{Self(self.1,self.0)}
     fn mul(self,rhs:Self)->Result<Self,String>{
-        let n=i128::from(self.0)*i128::from(rhs.0);
-        let d=i128::from(self.1)*i128::from(rhs.1);
-        let g=Self::gcd(n,d);
-        Ok(Self(i64::try_from(n/g).map_err(|_|"E_UNIT_LIMIT: numerator")?,i64::try_from(d/g).map_err(|_|"E_UNIT_LIMIT: denominator")?))
+        let n=self.0.mul256(rhs.0);let d=self.1.mul256(rhs.1);
+        let g=ScaleUInt::gcd(n,d);let n=n.divmod(g).0;let d=d.divmod(g).0;
+        if !n.fits256()||!d.fits256(){return Err("E_UNIT_LIMIT: scale components exceed 256 bits".into());}
+        Ok(Self(n,d))
     }
     fn convert(self,v:i64,target:Self)->Result<i64,String>{
         if v==0{return Ok(0);}
-        let n=i128::from(self.0)*i128::from(target.1);
-        let d=i128::from(self.1)*i128::from(target.0);
-        let g=Self::gcd(n,d);let (n,d)=(n/g,d/g);
-        let v=i128::from(v);
-        if v%d!=0{return Err("E_UNIT_INEXACT: integer conversion".into());}
-        let value=(v/d).checked_mul(n).ok_or("E_UNIT_RANGE: integer conversion")?;
-        i64::try_from(value).map_err(|_|"E_UNIT_RANGE: integer conversion".into())
+        let n=self.0.mul256(target.1);let d=self.1.mul256(target.0);
+        let g=ScaleUInt::gcd(n,d);let n=n.divmod(g).0;let d=d.divmod(g).0;
+        let (q,r)=ScaleUInt::from_u64(v.unsigned_abs()).divmod(d);
+        if r!=ScaleUInt::ZERO{return Err("E_UNIT_INEXACT: integer conversion".into());}
+        let limit=if v<0{1u64<<63}else{i64::MAX as u64};
+        if n.cmp(ScaleUInt::from_u64(limit)).is_gt()||q.cmp(ScaleUInt::from_u64(limit/n.low64())).is_gt(){return Err("E_UNIT_RANGE: integer conversion".into());}
+        let m=q.low64()*n.low64();
+        if v<0&&m==1u64<<63{return Ok(i64::MIN);}
+        Ok(if v<0{-(m as i64)}else{m as i64})
     }
 }
 type QuantityDim=([i8;8],QuantityScale);
@@ -1006,12 +1036,14 @@ impl<'a> Parser<'a> {
                 if self.take(Token::Punct(b'='))? {
                     let prefix=matches!(self.current,Token::Number(_));
                     let mut factor=QuantityScale::ONE;
-                    if prefix{factor.0=self.quantity_factor()?;self.expect(Token::Punct(b'*'))?;}
+                    if prefix{factor.0=ScaleUInt::from_u64(self.quantity_factor()? as u64);self.expect(Token::Punct(b'*'))?;}
                     let base=self.name()?;
-                    let b=units.iter().find(|(n,d,_)| *n==base && *d==index).ok_or("E_UNIT_NAME: unknown or incompatible alias")?.2;
+                    let (_,base_dim,b)=units.iter().find(|(n,_,_)| *n==base).ok_or("E_UNIT_NAME: unknown alias")?;
+                    if *base_dim!=index{return Err("E_UNIT_DIMENSION: incompatible alias".into());}
+                    let b=*b;
                     if !prefix{
-                        if self.take(Token::Punct(b'*'))?{factor.0=self.quantity_factor()?;}
-                        else if self.take(Token::Punct(b'/'))?{factor.1=self.quantity_factor()?;}
+                        if self.take(Token::Punct(b'*'))?{factor.0=ScaleUInt::from_u64(self.quantity_factor()? as u64);}
+                        else if self.take(Token::Punct(b'/'))?{factor.1=ScaleUInt::from_u64(self.quantity_factor()? as u64);}
                     }
                     scale=b.mul(factor)?;
                 } else if units.iter().any(|(_,d,_)| *d == index) {
