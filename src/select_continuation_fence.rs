@@ -91,6 +91,14 @@ impl Drop for Execution {
     }
 }
 
+impl Drop for Fence {
+    fn drop(&mut self) {
+        // Pending tickets must not outlive their fence merely because an
+        // executing lease retains the allocation for physical retirement.
+        let _ = self.close();
+    }
+}
+
 impl Fence {
     pub fn new(generation: u64, capacity: usize) -> Result<Self, AdmissionError> {
         if generation == 0 {
@@ -228,6 +236,19 @@ mod tests {
         assert_eq!(a.advance(u64::MAX), Err(AdmissionError::IdentityExhausted));
         assert_eq!(a.counts(), (1, 0));
         assert!(ticket.close());
+    }
+
+    #[test]
+    fn dropping_owner_revokes_pending_even_with_live_execution() {
+        let fence = Fence::new(1, 2).unwrap();
+        let a = fence.register(1).unwrap();
+        let b = fence.register(1).unwrap();
+        let execution = fence.claim(&a).unwrap();
+        drop(fence);
+        assert!(!b.close());
+        assert_eq!(execution.generation(), 1);
+        drop(execution);
+        assert!(!a.close());
     }
 
     #[test]
