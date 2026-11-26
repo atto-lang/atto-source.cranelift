@@ -92,10 +92,15 @@ fn checked_unwrap_guest_remains_unsupported_without_verified_tagged_abi() {
         for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
             let output = compile(mode, source.as_bytes());
             assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
-            assert!(output.stdout.is_empty(), "unexpected artifact {mode}: {source}");
+            assert!(
+                output.stdout.is_empty(),
+                "unexpected artifact {mode}: {source}"
+            );
             let err = String::from_utf8_lossy(&output.stderr);
-            assert!(err.starts_with("orescranelift: ") && !err.contains("panicked"),
-                "unsanitized diagnostic {mode}: {err}");
+            assert!(
+                err.starts_with("orescranelift: ") && !err.contains("panicked"),
+                "unsanitized diagnostic {mode}: {err}"
+            );
         }
     }
 }
