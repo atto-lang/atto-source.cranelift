@@ -107,13 +107,22 @@ fn unsupported_ownership_actor_and_decimal_source_never_emits_ir() {
         "new Actor()",
         "1.5",
         "1.0 / 2.0",
-        "1 / 0",
-        "-9223372036854775808 / -1",
         "1__0",
         "1 ^ 2",
         "1 ^^ 2",
         "unknown_scalar",
     ] {
         refuse(expression);
+    }
+}
+
+#[test]
+fn checked_quotient_failures_do_not_publish_execution_results() {
+    // Compilation of guarded division is permitted; execution must reject.
+    for expr in ["1 / 0", "-9223372036854775808 / -1"] {
+        let output = cli(&guest(expr), "run");
+        assert_eq!(output.status.code(), Some(1), "{expr} incorrectly ran");
+        assert!(output.stdout.is_empty(), "{expr} leaked a success result");
+        assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "));
     }
 }
