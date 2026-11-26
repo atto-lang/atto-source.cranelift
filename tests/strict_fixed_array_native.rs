@@ -88,19 +88,14 @@ impl Drop for Scratch {
 }
 
 fn main_program(body: &str) -> String {
-    format!(
-        "type Bounded = int where self >= 1 and self <= 42; pub fnc main()->int {{ {body} }}"
-    )
+    format!("type Bounded = int where self >= 1 and self <= 42; pub fnc main()->int {{ {body} }}")
 }
 
 #[test]
 fn strict_fixed_array_native_object_values() {
     let dir = Scratch::new();
     for (name, body) in [
-        (
-            "singleton",
-            "val cells = Array.of(42); return cells[0];",
-        ),
+        ("singleton", "val cells = Array.of(42); return cells[0];"),
         (
             "literal-index",
             "val cells = Array.of(1,42,3); return cells[1];",
