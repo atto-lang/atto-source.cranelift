@@ -353,6 +353,7 @@ struct Parser<'a> {
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
+    entry_scope_checked: bool,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -418,6 +419,7 @@ impl<'a> Parser<'a> {
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             pair_scope_checked: false,
+            entry_scope_checked: false,
         };
         p.next()?;
         Ok(p)
@@ -721,6 +723,7 @@ impl<'a> Parser<'a> {
                         | "WriteLoan"
                 )
             ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
+                && !(self.current == Token::Word("Entry") && self.next_significant_is(b'.'))
             {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
@@ -989,6 +992,86 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    fn check_entry_scope(&mut self) -> Result<(), String> {
+        if self.entry_scope_checked {
+            return Ok(());
+        }
+        let mut scan = Parser::new(self.input)?;
+        let mut previous = Token::End;
+        while scan.current != Token::End {
+            if scan.current == Token::Word("Entry") {
+                if previous == Token::Punct(b'.')
+                    || previous == Token::Punct(b':')
+                    || !scan.next_significant_is(b'.')
+                {
+                    return Err("E_ENTRY_SCOPE_UNSUPPORTED: competing Entry name".into());
+                }
+                scan.next()?;
+                scan.expect(Token::Punct(b'.'))?;
+                scan.expect(Token::Word("of"))?;
+                previous = Token::Word("of");
+                continue;
+            }
+            previous = scan.current;
+            scan.next()?;
+        }
+        self.entry_scope_checked = true;
+        Ok(())
+    }
+
+    // A restricted i64 projection: evaluate both operands in the caller's
+    // frame, then select an already evaluated slot in an isolated frame.
+    // No first-class Entry allocation or arbitrary-key ABI is admitted.
+    fn entry_projection(&mut self, depth: usize) -> Result<Expr, String> {
+        self.check_entry_scope()?;
+        self.expect(Token::Word("Entry"))?;
+        self.expect(Token::Punct(b'.'))?;
+        self.expect(Token::Word("of"))?;
+        if self.take(Token::Punct(b'<'))? {
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b','))?;
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'>'))?;
+        }
+        self.expect(Token::Punct(b'('))?;
+        let first = self.expr(0, depth + 1)?;
+        self.expect(Token::Punct(b','))?;
+        let second = self.expr(0, depth + 1)?;
+        // Only proven i64 parameters and arithmetic are admitted. Do not
+        // infer types for runtime locals, calls, booleans or arbitrary keys.
+        let mut pending = vec![&first, &second];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Expr::Literal(_) | Expr::Param(_) => {}
+                Expr::Neg(inner) => pending.push(inner),
+                Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) => {
+                    pending.push(a);
+                    pending.push(b);
+                }
+                _ => {
+                    return Err("E_ENTRY_VALUE_UNSUPPORTED: checked i64 operands required".into());
+                }
+            }
+        }
+        self.expect(Token::Punct(b')'))?;
+        if !self.take(Token::Punct(b'.'))? {
+            return Err("E_ENTRY_ESCAPE_UNSUPPORTED: native owned Entry ABI unavailable".into());
+        }
+        let slot = if self.take(Token::Word("key"))? {
+            0
+        } else if self.take(Token::Word("value"))? {
+            1
+        } else {
+            return Err("E_ENTRY_PROJECTION_UNSUPPORTED: expected key or value".into());
+        };
+        let body = self.node(Expr::Local(slot))?;
+        self.node(Expr::ScopedCall(
+            vec![first, second],
+            vec![],
+            Box::new(body),
+        ))
+    }
+
     fn pair_projection(&mut self, depth: usize) -> Result<Expr, String> {
         self.check_pair_scope()?;
         self.expect(Token::Word("Pair"))?;
@@ -1109,6 +1192,7 @@ impl<'a> Parser<'a> {
                 self.inline_task(depth + 1, false)
             }
             Token::Word("Pair") if self.next_significant_is(b'.') => self.pair_projection(depth),
+            Token::Word("Entry") if self.next_significant_is(b'.') => self.entry_projection(depth),
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
