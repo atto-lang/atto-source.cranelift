@@ -625,10 +625,10 @@ impl<'a> Parser<'a> {
             ));
         } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
             return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
-        } else if first == b'!' {
+        } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*/{}[];:,><=.".contains(&first) {
+        } else if b"()+-*/{}[];:,><=.!&|".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
