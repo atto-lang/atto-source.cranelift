@@ -22,6 +22,30 @@ const MAX_EXPR_DEPTH: usize = 32;
 const MAX_EXPR_NODES: usize = 4096;
 const MAX_LOCALS: usize = 4;
 
+// Only the linked typed scalar profile supports these reductions. Ordinary
+// linked declarations take precedence; no array or untyped truthiness lowering.
+fn named_reduction(name: &str, args: &[Raw]) -> Result<Option<Raw>, String> {
+    if !matches!(name, "And" | "Or" | "Xor") {
+        return Ok(None);
+    }
+    if !(2..=4).contains(&args.len()) {
+        return Err("E_LINK_BOOLEAN_ARITY".into());
+    }
+    let mut operands = args.iter().cloned();
+    let mut result = operands.next().expect("checked operand minimum");
+    for rhs in operands {
+        let lhs = Box::new(result);
+        let rhs = Box::new(rhs);
+        result = match name {
+            "And" => Raw::And(lhs, rhs),
+            "Or" => Raw::Or(lhs, rhs),
+            "Xor" => Raw::Xor(lhs, rhs),
+            _ => unreachable!(),
+        };
+    }
+    Ok(Some(result))
+}
+
 fn inspect_expression(
     expr: &Raw,
     scope: &HashMap<String, ScalarType>,
@@ -119,6 +143,20 @@ fn inspect_expression(
             Ok(y)
         }
         Raw::Call(target, args) => {
+            // Non-callable lexical names must not fall through to an ordinary
+            // declaration or the intrinsic solely because the spelling matches.
+            if matches!(target.as_str(), "And" | "Or" | "Xor") && scope.contains_key(target) {
+                return Err("E_LINK_BOOLEAN_SHADOW".into());
+            }
+            if !functions.contains_key(target) {
+                if let Some(expanded) = named_reduction(target, args)? {
+                    // Validate the expanded typed tree, including skipped operands,
+                    // under the existing depth, node and call-graph budgets.
+                    return inspect_expression(
+                        &expanded, scope, functions, program, dependencies, nodes, depth,
+                    );
+                }
+            }
             let index = functions.get(target).ok_or("E_LINK_UNBOUND_CALLEE")?;
             let callee = &program[*index];
             if target == "main" || args.len() != callee.params.len() {
@@ -352,6 +390,14 @@ fn emit_expr(
             Ok(value)
         }
         Raw::Call(name, arguments) => {
+            if matches!(name.as_str(), "And" | "Or" | "Xor") && scope.contains_key(name) {
+                return Err("E_LINK_BOOLEAN_SHADOW".into());
+            }
+            if !refs.contains_key(name) {
+                if let Some(expanded) = named_reduction(name, arguments)? {
+                    return emit_expr(&expanded, builder, scope, refs, failure, depth);
+                }
+            }
             let func_ref = *refs.get(name).ok_or("E_LINK_UNBOUND_CALLEE")?;
             let mut values = Vec::with_capacity(arguments.len());
             for argument in arguments {
