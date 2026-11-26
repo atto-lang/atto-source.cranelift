@@ -4,6 +4,7 @@ mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
+mod namespace_provider;
 mod functional_pipelines;
 mod isolate;
 pub mod layout;
@@ -206,6 +207,18 @@ fn run() -> Result<(), String> {
     let mode = argv.next().ok_or(
         "usage: orescranelift run|run-traced|ir|isolate|check|emit-object <file.atto|file.ores> [i64 args...] or hotload-capabilities",
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
+    // Explicit trusted-host adapter. No file discovery, JIT or implicit imports.
+    if mode == "emit-namespace-provider-object" {
+        let namespace=argv.next().ok_or("missing namespace")?.into_string().map_err(|_|"invalid namespace encoding")?;
+        let symbol=argv.next().ok_or("missing symbol")?.into_string().map_err(|_|"invalid symbol encoding")?;
+        if argv.next().is_some(){return Err("unexpected provider arguments".into());}
+        let mut bytes=Vec::new();
+        std::io::stdin().lock().take(4097).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+        if bytes.len()>4096{return Err("E_NAMESPACE_PROFILE: source budget".into());}
+        let source=std::str::from_utf8(&bytes).map_err(|_|"invalid UTF-8")?;
+        let object=namespace_provider::compile(source,&namespace,&symbol)?;
+        return std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string());
+    }
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
             return Err("hotload-capabilities accepts no source or guest arguments".into());
