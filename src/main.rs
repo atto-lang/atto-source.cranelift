@@ -312,6 +312,24 @@ fn run() -> Result<(), String> {
     {
         return run_linked_native(&mode, &values, &functions);
     }
+    if let Some(library) = frontend::scalar_library::parse_if_library(source)? {
+        return match mode.as_str() {
+            "check" => Ok(()),
+            "ir" => {
+                let (ir, _) = library.compile(false)?;
+                print!("{ir}");
+                Ok(())
+            }
+            "emit-object" => {
+                let (_, bytes) = library.compile(true)?;
+                std::io::stdout()
+                    .lock()
+                    .write_all(&bytes)
+                    .map_err(|e| e.to_string())
+            }
+            _ => Err("E_LIBRARY_NO_ENTRY: named library requires native object linking".into()),
+        };
+    }
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
         Err(original)
