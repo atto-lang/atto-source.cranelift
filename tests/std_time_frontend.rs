@@ -1,6 +1,9 @@
 // Concrete compiler-front-end admission, not a README or file-existence pass.
 // This directly compiles the real backend parser (included by path for a
 // dependency-free rustc gate), not a surrogate regex source scanner.
+// Parser-only test crate intentionally imports a subset of the production frontend.
+// Production binary retains its independent strict dead-code gate.
+#[allow(dead_code)]
 #[path = "../src/frontend.rs"]
 mod frontend;
 
