@@ -437,17 +437,26 @@ fn reserved_sum_names_cannot_be_scalar_callables_in_alternate_frontends() {
                 assert_eq!(rejected.status.code(), Some(1), "{mode}: {source}");
                 assert!(rejected.stdout.is_empty(), "{mode} published an artifact");
                 let diagnostic = String::from_utf8_lossy(&rejected.stderr);
-                assert!(diagnostic.contains("typed Option/Result/trap is unsupported"),
-                    "{mode}: wrong diagnostic: {diagnostic}");
+                assert!(
+                    diagnostic.contains("typed Option/Result/trap is unsupported"),
+                    "{mode}: wrong diagnostic: {diagnostic}"
+                );
             }
         }
     }
 }
 #[test]
 fn sum_name_fence_preserves_comments_and_longer_scalar_identifiers() {
-    let file = Source::new("/* Option Result Some None Ok Err */ fnc SomeValue(int x): int -> x; pub fnc main(): int -> 42 |> SomeValue;");
+    let file = Source::new(
+        "/* Option Result Some None Ok Err */ fnc SomeValue(int x): int -> x; pub fnc main(): int -> 42 |> SomeValue;",
+    );
     let result = invoke("run", &file.0);
-    assert_eq!(result.status.code(), Some(0), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(result.stdout, b"42\n");
 }
 #[test]
@@ -462,9 +471,12 @@ fn tagged_sum_import_aliases_reject_before_resolving_source_paths() {
                 let rejected = invoke(mode, &file.0);
                 assert_eq!(rejected.status.code(), Some(1), "{mode}: {header}");
                 assert!(rejected.stdout.is_empty());
-                assert!(String::from_utf8_lossy(&rejected.stderr)
-                    .contains("E_PIPE_TAGGED_SUM_UNSUPPORTED"), "{mode}: {header}: {}",
-                    String::from_utf8_lossy(&rejected.stderr));
+                assert!(
+                    String::from_utf8_lossy(&rejected.stderr)
+                        .contains("E_PIPE_TAGGED_SUM_UNSUPPORTED"),
+                    "{mode}: {header}: {}",
+                    String::from_utf8_lossy(&rejected.stderr)
+                );
             }
         }
     }
