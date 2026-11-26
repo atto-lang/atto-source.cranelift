@@ -11,10 +11,7 @@ pub struct Error {
     message: &'static str,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnwrapKind {
-    OptionNone,
-    ResultErr,
-}
+pub enum UnwrapKind { OptionNone, ResultErr }
 /// Host-only error envelope. The original Error is retained without formatting.
 /// Fields are private to prevent minting an authorized envelope from host data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,15 +26,9 @@ pub enum UnwrapFailure {
     ForeignError,
 }
 impl CheckedUnwrapError {
-    pub fn kind(&self) -> &UnwrapKind {
-        &self.kind
-    }
-    pub fn original(&self) -> Option<&Error> {
-        self.original.as_ref()
-    }
-    pub fn error(&self) -> &Error {
-        &self.error
-    }
+    pub fn kind(&self) -> &UnwrapKind { &self.kind }
+    pub fn original(&self) -> Option<&Error> { self.original.as_ref() }
+    pub fn error(&self) -> &Error { &self.error }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaggedResult {
@@ -55,12 +46,11 @@ impl TenantParser {
         if tenant_id == 0 {
             return Err("E_TENANT_ID");
         }
-        let generation = NEXT_PARSER_GENERATION
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
-            .map_err(|_| "E_PARSER_GENERATION_EXHAUSTED")?;
+        let generation = NEXT_PARSER_GENERATION.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1)
+        ).map_err(|_| "E_PARSER_GENERATION_EXHAUSTED")?;
         Ok(Self {
-            tenant_id,
-            generation,
+            tenant_id, generation,
             next_error: 0,
         })
     }
@@ -68,15 +58,11 @@ impl TenantParser {
         err.identity != 0 && err.tenant_id == self.tenant_id && err.generation == self.generation
     }
     fn mint(&mut self, message: &'static str) -> Error {
-        self.next_error = self
-            .next_error
-            .checked_add(1)
+        self.next_error = self.next_error.checked_add(1)
             .expect("E_ERROR_ID_EXHAUSTED: fatal trusted runtime quota");
         Error {
-            tenant_id: self.tenant_id,
-            generation: self.generation,
-            identity: self.next_error,
-            message,
+            tenant_id: self.tenant_id, generation: self.generation,
+            identity: self.next_error, message,
         }
     }
     fn invalid(&mut self) -> TaggedResult {
@@ -87,8 +73,7 @@ impl TenantParser {
             Some(n) => Ok(n),
             None => Err(UnwrapFailure::Ordinary(CheckedUnwrapError {
                 error: self.mint("called Option::unwrap() on a None value"),
-                kind: UnwrapKind::OptionNone,
-                original: None,
+                kind: UnwrapKind::OptionNone, original: None,
             })),
         }
     }
@@ -96,13 +81,10 @@ impl TenantParser {
         match value {
             TaggedResult::Ok(n) => Ok(n),
             TaggedResult::Err(original) => {
-                if !self.can_observe(&original) {
-                    return Err(UnwrapFailure::ForeignError);
-                }
+                if !self.can_observe(&original) { return Err(UnwrapFailure::ForeignError); }
                 Err(UnwrapFailure::Ordinary(CheckedUnwrapError {
                     error: self.mint("called Result::unwrap() on an Err value"),
-                    kind: UnwrapKind::ResultErr,
-                    original: Some(original),
+                    kind: UnwrapKind::ResultErr, original: Some(original),
                 }))
             }
         }
@@ -165,14 +147,11 @@ mod tests {
         assert!(!sibling.can_observe(&original));
         assert!(!reincarnated.can_observe(&original));
         for foreign in [&mut sibling, &mut reincarnated] {
-            assert_eq!(
-                foreign.unwrap_result(TaggedResult::Err(original.clone())),
-                Err(UnwrapFailure::ForeignError)
-            );
+            assert_eq!(foreign.unwrap_result(TaggedResult::Err(original.clone())),
+                Err(UnwrapFailure::ForeignError));
         }
         let Err(UnwrapFailure::Ordinary(wrapped)) =
-            owner.unwrap_result(TaggedResult::Err(original.clone()))
-        else {
+            owner.unwrap_result(TaggedResult::Err(original.clone())) else {
             panic!("Err must become ordinary failure");
         };
         assert_eq!(wrapped.kind(), &UnwrapKind::ResultErr);
@@ -181,10 +160,32 @@ mod tests {
         assert!(owner.can_observe(wrapped.error()));
         assert!(!reincarnated.can_observe(wrapped.error()));
         assert_eq!(wrapped, wrapped.clone());
-        assert_ne!(
-            owner.unwrap_result(TaggedResult::Err(original)),
-            Err(UnwrapFailure::Ordinary(wrapped))
-        );
+        assert_ne!(owner.unwrap_result(TaggedResult::Err(original)),
+            Err(UnwrapFailure::Ordinary(wrapped)));
+    }
+    #[test]
+    fn concurrent_parser_incarnations_never_share_error_authority() {
+        let workers: Vec<_> = (0..16).map(|_| std::thread::spawn(|| {
+            let mut parser = TenantParser::new(7).unwrap();
+            let TaggedResult::Err(error) = parser.parse("bad") else { panic!("parse accepted") };
+            (parser, error)
+        })).collect();
+        let mut incarnations: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        let errors: Vec<_> = incarnations.iter().map(|(_, err)| err.clone()).collect();
+        for (i, (parser, own)) in incarnations.iter_mut().enumerate() {
+            assert_eq!(own.identity, 1);
+            for (j, error) in errors.iter().enumerate() {
+                assert_eq!(parser.can_observe(error), i == j);
+                if i != j {
+                    assert_eq!(parser.unwrap_result(TaggedResult::Err(error.clone())),
+                        Err(UnwrapFailure::ForeignError));
+                }
+            }
+            let Err(UnwrapFailure::Ordinary(next)) = parser.unwrap_option(None) else {
+                panic!("expected ordinary None");
+            };
+            assert_eq!(next.error().identity, 2, "foreign denial must not mint Error");
+        }
     }
     #[test]
     fn checked_decimal_40k_boundary_and_owned_identity() {

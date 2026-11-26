@@ -18,18 +18,15 @@ conformance on exact source/tree/toolchain. Never promote source-only
 or host-only tests as guest pass. Follow spec #124, conformance #68,
 parity tracker #20.
 
-## Checked unwrap host contract (2026-11-26)
+## Checked unwrap host carrier, generation fencing
 
-The host-only carrier now distinguishes ordinary OptionNone and ResultErr
-unwrap failures from foreign Error rejection. A fresh private parser
-generation plus tenant and monotonic identity fences repeated tenant IDs;
-wrapping an owned Err retains its original Error value and identity and
-mints a separate envelope. This is not an authenticated guest-visible
-native handle, public subtype hierarchy or linked Cranelift lowering.
-
-Four unwrap source cases must reject in check, run, ir, emit-object and
-emit-object-strict modes with no emitted artifact. These are negative
-admission controls, not positive semantics. The new Rust host test and
-compiler tests are AUTHORED_NOT_EXECUTED: a local Rust toolchain is absent.
-Full typed ADT representation, ordinary error status transport, cleanup,
-JIT/object execution and independent review remain required.
+This forward-port isolates the host-only subset of #143 from unrelated stale
+compiler changes. Errors have private tenant, parser generation and identity
+fields. A fresh parser incarnation cannot observe another incarnation's Error,
+even with the same tenant ID. A foreign Error is a distinct denial, not a
+catchable ordinary unwrap Error; it must not allocate an Error identity.
+Checked Option None and Result Err produce ordinary envelopes; Result retains
+the original Error without formatting or replacing its identity. The native
+guest ABI, cleanup, transfer, and scheduler integration are still unsupported.
+The real compiler must continue to reject checked unwrap source without CLIF,
+JIT output or object bytes. This is not a guest parity promotion.

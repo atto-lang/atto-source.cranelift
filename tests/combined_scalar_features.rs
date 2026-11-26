@@ -294,3 +294,49 @@ fn entry_projection_rejects_unproved_operands_escape_and_shadowing() {
         assert!(output.stdout.is_empty());
     }
 }
+
+#[test]
+fn entry_projection_preserves_first_fault_for_both_fields() {
+    // Both operands trap with different native error statuses. Selecting an
+    // earlier slot must not erase the second evaluation; selecting the later
+    // slot must not move its evaluation ahead of the first.
+    for (source, diagnostic) in [
+        (
+            "fnc main(a:int):int{return Entry.of(a/0,9223372036854775807+a).key;}",
+            "integer divisor zero",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(a/0,9223372036854775807+a).value;}",
+            "integer divisor zero",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(9223372036854775807+a,a/0).key;}",
+            "i64 arithmetic overflow",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(9223372036854775807+a,a/0).value;}",
+            "i64 arithmetic overflow",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(42,a/0).key;}",
+            "integer divisor zero",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(a/0,42).value;}",
+            "integer divisor zero",
+        ),
+    ] {
+        let output = execute("run", source, &["1"]);
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        assert!(
+            output.stdout.is_empty(),
+            "{source}: output published after fault"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.trim(),
+            format!("orescranelift: {diagnostic}"),
+            "{source}"
+        );
+    }
+}
