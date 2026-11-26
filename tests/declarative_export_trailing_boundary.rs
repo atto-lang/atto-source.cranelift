@@ -26,3 +26,9 @@ fn trailing_exports_reject_package_and_duplicate_authority() {
         assert!(parse(&format!("{MAIN}\n{suffix}")).is_err(), "{suffix}");
     }
 }
+
+#[test]
+fn durable_profiles_do_not_accept_ordinary_scalar_source() {
+    assert!(frontend::durable_counter_descriptor("fnc main():int{return 42;}").is_err());
+    assert!(frontend::durable_scalar_schema("fnc main():int{return 42;}").is_err());
+}

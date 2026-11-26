@@ -218,6 +218,8 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    Xor,
+    XorAssign,
     End,
 }
 
@@ -785,6 +787,14 @@ impl<'a> Parser<'a> {
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
+        } else if first == b'^' && b.get(self.pos) == Some(&b'^') {
+            self.pos += 1;
+            if b.get(self.pos) == Some(&b'=') {
+                self.pos += 1;
+                self.current = Token::XorAssign;
+            } else {
+                self.current = Token::Xor;
+            }
         } else if b"()+-*/{}[];:,><=.!&|".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -880,6 +890,13 @@ impl<'a> Parser<'a> {
             return Err("E_TASK_RETURN_TYPE: do sync task requires void".into());
         }
         self.expect(Token::Punct(b'{'))?;
+        // Use the existing checked SSA frame for immutable task locals.
+        // Captures are scalar snapshots, not new scheduled tasks or owners.
+        // Only a leading val sequence is admitted; its initializers execute
+        // in the selected task body, not before the enclosing branch.
+        if matches!(self.current, Token::Word("val" | "let")) {
+            return self.inline_local_frame(depth, discard, payload);
+        }
         let effects = self.inline_statements(depth + 1)?;
         let value = if self.take(Token::Word("return"))? {
             if self.take(Token::Punct(b';'))? {
@@ -915,6 +932,126 @@ impl<'a> Parser<'a> {
             self.node(Expr::Sequence(effects, Box::new(value)))?
         };
         self.node(Expr::InlineTask(Box::new(body)))
+    }
+
+    fn inline_local_frame(
+        &mut self,
+        depth: usize,
+        discard: bool,
+        payload: Option<bool>,
+    ) -> Result<Expr, String> {
+        let mut captures = Vec::new();
+        let mut bindings = Vec::new();
+        for (index, name) in self.parameters.clone().into_iter().enumerate() {
+            bindings.push((name, None, captures.len()));
+            captures.push(self.node(Expr::Param(index))?);
+        }
+        for (name, constant, slot) in self.bindings.clone() {
+            if constant.is_some() {
+                bindings.push((name, constant, 0));
+            } else {
+                bindings.push((name, None, captures.len()));
+                captures.push(self.node(Expr::Local(slot))?);
+            }
+        }
+        if captures.len() > 8 {
+            return Err("E_TASK_CAPTURE_LIMIT: inline scalar frame admits eight captures".into());
+        }
+        let old_params = std::mem::take(&mut self.parameters);
+        let old_bindings = std::mem::replace(&mut self.bindings, bindings);
+        let parsed = (|| -> Result<(Vec<Expr>, Expr), String> {
+            let mut initializers = Vec::new();
+            let mut mutable_locals = Vec::<String>::new();
+            loop {
+                let mutable = self.take(Token::Word("let"))?;
+                let declaration = mutable || self.take(Token::Word("val"))?;
+                let name;
+                let target = if declaration {
+                    let typed = self.take(Token::Word("int"))?;
+                    name = self.name()?;
+                    if is_java_v1_reserved_parameter_name(&name)
+                        || matches!(name.as_str(), "sync" | "task" | "yield" | "Integer" | "main" | "int" | "seq")
+                        || self.bindings.iter().any(|(known, _, _)| known == &name)
+                    {
+                        return Err("E_TASK_LOCAL: invalid or duplicate inline local".into());
+                    }
+                    if !typed && self.take(Token::Punct(b':'))? {
+                        self.expect(Token::Word("int"))?;
+                    }
+                    None
+                } else {
+                    let Token::Word(word) = self.current else { break; };
+                    if !mutable_locals.iter().any(|known| known == word) {
+                        break;
+                    }
+                    name = self.name()?;
+                    Some(self.bindings.iter().position(|(known, _, _)| known == &name)
+                        .ok_or("E_TASK_LOCAL: missing mutable binding")?)
+                };
+                if captures.len() + initializers.len() >= MAX_LOCALS {
+                    return Err("E_TASK_LOCAL: over-budget inline local or write".into());
+                }
+                // Only a previously declared mutable task-local can consume
+                // contiguous ^^=. Captures and immutable locals never become
+                // writable. Read the old SSA slot before parsing the RHS.
+                let old = if self.take(Token::XorAssign)? {
+                    let index = target.ok_or("E_TASK_LOCAL: compound XOR requires an existing mutable local")?;
+                    Some(self.node(Expr::Local(self.bindings[index].2))?)
+                } else {
+                    self.expect(Token::Punct(b'='))?;
+                    None
+                };
+                let rhs = self.expr(0, depth + 1)?;
+                let init = match old {
+                    Some(left) => self.node(Expr::BitXor(Box::new(left), Box::new(rhs)))?,
+                    None => rhs,
+                };
+                self.expect(Token::Punct(b';'))?;
+                let slot = captures.len() + initializers.len();
+                initializers.push(init);
+                if let Some(index) = target {
+                    self.bindings[index].2 = slot;
+                } else {
+                    if mutable { mutable_locals.push(name.clone()); }
+                    self.bindings.push((name, None, slot));
+                }
+            }
+            let effects = self.inline_statements(depth + 1)?;
+            let value = if self.take(Token::Word("return"))? {
+                if self.take(Token::Punct(b';'))? {
+                    None
+                } else {
+                    let v = self.expr(0, depth + 1)?;
+                    self.expect(Token::Punct(b';'))?;
+                    Some(v)
+                }
+            } else {
+                None
+            };
+            self.expect(Token::Punct(b'}'))?;
+            if (discard && value.is_some())
+                || (!discard && value.is_none())
+                || (payload == Some(true) && value.is_none())
+                || (payload == Some(false) && value.is_some())
+            {
+                return Err("E_TASK_RETURN_TYPE: inline task payload and return do not agree".into());
+            }
+            let value = match value {
+                Some(v) => v,
+                None => self.node(Expr::Literal(0))?,
+            };
+            let body = if effects.is_empty() {
+                value
+            } else {
+                self.node(Expr::Sequence(effects, Box::new(value)))?
+            };
+            Ok((initializers, body))
+        })();
+        self.parameters = old_params;
+        self.bindings = old_bindings;
+        let (initializers, body) = parsed?;
+        let frame = self.node(Expr::ScopedCall(captures, initializers, Box::new(body)))?;
+        self.node(Expr::InlineTask(Box::new(frame)))
     }
 
     fn inline_statements(&mut self, depth: usize) -> Result<Vec<Expr>, String> {
@@ -1288,11 +1425,12 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
-                Token::Punct(b'+') => (1, 2, b'+'),
-                Token::Punct(b'-') => (1, 2, b'-'),
-                Token::Punct(b'*') => (3, 4, b'*'),
-                Token::Punct(b'/') => (3, 4, b'/'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                Token::Xor => (0, 1, b'^'),
+                Token::Punct(b'+') => (2, 3, b'+'),
+                Token::Punct(b'-') => (2, 3, b'-'),
+                Token::Punct(b'*') => (4, 5, b'*'),
+                Token::Punct(b'/') => (4, 5, b'/'),
+                Token::Punct(b'>') => (1, 2, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -1308,6 +1446,7 @@ impl<'a> Parser<'a> {
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
                 b'/' => Expr::Div(Box::new(lhs), Box::new(rhs)),
+                b'^' => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -2924,8 +3063,8 @@ end"#;
     }
     #[test]
     fn removed_remainder_operator_is_rejected_before_lowering() {
-        // The language contract removed %, ^ and ^^. The tokenizer must
-        // reject all forms of % rather than accepting a restricted subset.
+        // The language contract removed %. The tokenizer must reject all
+        // forms of % rather than accepting a restricted subset.
         for source in [
             "fnc main():int{return -7%3;}",
             "fnc main():int{return 7%-3;}",

@@ -26,3 +26,9 @@ fn pull_push_remains_fail_closed_until_native_lowering_exists() {
         "negative gate must preserve scalar JIT admission"
     );
 }
+
+#[test]
+fn durable_profiles_do_not_accept_ordinary_scalar_source() {
+    assert!(frontend::durable_counter_descriptor("fnc main():int{return 42;}").is_err());
+    assert!(frontend::durable_scalar_schema("fnc main():int{return 42;}").is_err());
+}

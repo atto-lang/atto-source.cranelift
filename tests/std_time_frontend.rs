@@ -38,3 +38,9 @@ fn scalar_frontend_still_admits_existing_compiled_guest_control() {
         .expect("existing scalar JIT syntax must remain available");
     assert!(matches!(program.result, frontend::Expr::Literal(42)));
 }
+
+#[test]
+fn durable_profiles_do_not_accept_ordinary_scalar_source() {
+    assert!(frontend::durable_counter_descriptor("fnc main():int{return 42;}").is_err());
+    assert!(frontend::durable_scalar_schema("fnc main():int{return 42;}").is_err());
+}
