@@ -1,4 +1,4 @@
-//! Actual per-function Cranelift JIT code generation for trusted, bounded
+//! Actual per-function Cranelift JIT and relocatable AOT code generation for trusted, bounded
 //! linked i64 modules. Each selected helper is a separate native function.
 //!
 //! Helper ABI: (i64 arguments...) -> (i64 value, i32 status).
@@ -12,6 +12,8 @@ use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::instructions::BlockArg;
 use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use std::collections::{HashMap, HashSet};
@@ -239,7 +241,7 @@ fn emit_expr(
     }
 }
 
-fn signature(module: &JITModule, helper_params: Option<usize>) -> cranelift_codegen::ir::Signature {
+fn signature<M: Module>(module: &M, helper_params: Option<usize>) -> cranelift_codegen::ir::Signature {
     let mut signature = module.make_signature();
     if let Some(n) = helper_params {
         for _ in 0..n {
@@ -260,17 +262,15 @@ fn signature(module: &JITModule, helper_params: Option<usize>) -> cranelift_code
     signature
 }
 
-struct Prepared {
-    module: JITModule,
+struct Prepared<M: Module> {
+    module: M,
     contexts: Vec<(FuncId, cranelift_codegen::Context)>,
     entry: FuncId,
     clif: String,
 }
 
-fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
+fn prepare<M: Module>(program: &[ScalarFn], mut module: M, entry_symbol: &str, entry_linkage: Linkage) -> Result<Prepared<M>, String> {
     validate(program)?;
-    let jit = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
-    let mut module = JITModule::new(jit);
     let mut ids = HashMap::new();
     let mut signatures = HashMap::new();
     for (index, function) in program.iter().enumerate() {
@@ -284,12 +284,12 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
             },
         );
         let symbol = if is_entry {
-            "atto_link_entry".to_owned()
+            entry_symbol.to_owned()
         } else {
             format!("atto_link_helper_{index}")
         };
         let id = module
-            .declare_function(&symbol, Linkage::Local, &sig)
+            .declare_function(&symbol, if is_entry { entry_linkage } else { Linkage::Local }, &sig)
             .map_err(|e| format!("E_LINK_DECLARE {e}"))?;
         ids.insert(function.name.clone(), id);
         signatures.insert(function.name.clone(), sig);
@@ -365,9 +365,33 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
     })
 }
 
+fn prepare_jit(program: &[ScalarFn]) -> Result<Prepared<JITModule>, String> {
+    let jit = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
+    prepare(program, JITModule::new(jit), "atto_link_entry", Linkage::Local)
+}
+
+/// Standalone linked graph, same checked call/status ABI as the JIT.
+/// Export only the ordinary scalar entry; keep helpers private. No JIT module.
+pub fn emit_object(program: &[ScalarFn]) -> Result<Vec<u8>, String> {
+    validate(program)?;
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder().map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags)).map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_linked_scalar", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let Prepared { mut module, contexts, .. } = prepare(
+        program, ObjectModule::new(builder), "oreslang_scalar_entry", Linkage::Export)?;
+    for (id, mut context) in contexts {
+        module.define_function(id, &mut context).map_err(|e| format!("E_LINK_OBJECT_DEFINE {e}"))?;
+        module.clear_context(&mut context);
+    }
+    module.finish().emit().map_err(|e| format!("E_LINK_OBJECT_EMIT {e}"))
+}
+
 /// IR-only inspection: never define or finalize executable JIT allocations.
 pub fn render_ir(program: &[ScalarFn]) -> Result<String, String> {
-    Ok(prepare(program)?.clif)
+    Ok(prepare_jit(program)?.clif)
 }
 
 pub fn compile(program: &[ScalarFn]) -> Result<Compiled, String> {
@@ -376,7 +400,7 @@ pub fn compile(program: &[ScalarFn]) -> Result<Compiled, String> {
         contexts,
         entry,
         clif: _clif,
-    } = prepare(program)?;
+    } = prepare_jit(program)?;
     for (id, mut context) in contexts {
         module
             .define_function(id, &mut context)
