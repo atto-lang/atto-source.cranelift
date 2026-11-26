@@ -5,14 +5,39 @@ type Dim = [i8; 8];
 const SCALAR: Dim = [0; 8];
 use super::{QuantityScale as Scale, ScaleUInt};
 #[derive(Clone,Copy)]
-struct Range {lo:i64,hi:i64}
+struct Range {lo:i64,hi:i64,holes:u8}
 impl Range {
-    const FULL:Self=Self{lo:i64::MIN,hi:i64::MAX};
-    fn exact(v:i64)->Self{Self{lo:v,hi:v}}
+    const FULL:Self=Self{lo:i64::MIN,hi:i64::MAX,holes:0};
+    fn exact(v:i64)->Self{Self{lo:v,hi:v,holes:0}}
     fn contained(self,lo:i64,hi:i64)->bool{self.lo>=lo&&self.hi<=hi}
+    fn bit(n:i64)->u8{match n{0=>1,-1=>2,_=>0}}
+    fn has(self,n:i64)->bool{self.lo<=n&&n<=self.hi&&self.holes&Self::bit(n)==0}
+    fn normalize(mut self)->Option<Self>{
+        while self.lo<=self.hi&&self.holes&Self::bit(self.lo)!=0{self.lo+=1;}
+        while self.lo<=self.hi&&self.holes&Self::bit(self.hi)!=0{self.hi-=1;}
+        if self.lo>self.hi{None}else{Some(self)}
+    }
+    fn restrict(self,op:u8,n:i64)->Self{
+        let mut r=self;
+        match op{
+            0=>{r.lo=r.lo.max(n);r.hi=r.hi.min(n);}
+            1=>{if !r.has(n){return r;}if r.lo==r.hi{return self;}
+                if r.lo==n{r.lo+=1;}else if r.hi==n{r.hi-=1;}else{r.holes|=Self::bit(n);}}
+            2=>{let Some(v)=n.checked_sub(1) else{return self};r.hi=r.hi.min(v);}
+            3=>r.hi=r.hi.min(n),
+            4=>{let Some(v)=n.checked_add(1) else{return self};r.lo=r.lo.max(v);}
+            5=>r.lo=r.lo.max(n),
+            _=>return self
+        }
+        r.normalize().unwrap_or(self)
+    }
+    fn join(self,r:Self)->Self{
+        let holes=(if !self.has(0)&&!r.has(0){1}else{0})|(if !self.has(-1)&&!r.has(-1){2}else{0});
+        Self{lo:self.lo.min(r.lo),hi:self.hi.max(r.hi),holes}
+    }
     fn bounds(lo:i128,hi:i128)->Self{
         let lo=lo.max(i64::MIN as i128);let hi=hi.min(i64::MAX as i128);
-        if lo>hi{Self::FULL}else{Self{lo:lo as i64,hi:hi as i64}}
+        if lo>hi{Self::FULL}else{Self{lo:lo as i64,hi:hi as i64,holes:0}}
     }
     fn neg(self)->Self{Self::bounds(-(self.hi as i128),-(self.lo as i128))}
     fn proves(self,rhs:Self,op:u8)->bool{
@@ -21,7 +46,7 @@ impl Range {
         match op{
             b'+'=>fits(a+c,b+d),b'-'=>fits(a-d,b-c),
             b'*'=>{let v=[a*c,a*d,b*c,b*d];fits(*v.iter().min().unwrap(),*v.iter().max().unwrap())},
-            b'/'=> (c>0||d<0)&&!(a==i64::MIN as i128&&c<=-1&&d>=-1),
+            b'/'=> !rhs.has(0)&&!(self.has(i64::MIN)&&rhs.has(-1)),
             _=>false
         }
     }
@@ -53,6 +78,8 @@ fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
         Expr::Sub(a,b)=>Expr::Sub(one(a)?,one(b)?),
         Expr::Mul(a,b)=>Expr::Mul(one(a)?,one(b)?),
         Expr::Div(a,b)=>Expr::Div(one(a)?,one(b)?),
+        Expr::Compare(op,a,b)=>Expr::Compare(*op,one(a)?,one(b)?),
+        Expr::Choose(c,y,n)=>Expr::Choose(one(c)?,one(y)?,one(n)?),
         Expr::RefinementCast(x,l,h)=>Expr::RefinementCast(one(x)?,*l,*h),
         _=>return Err("E_UNIT_CALL: unsupported helper expression".into())
     })
@@ -64,6 +91,7 @@ struct Quantities<'a> {
     refinements: Vec<(String,Refinement)>,
     bindings: Vec<(String,Binding)>,
     strict: bool,
+    guarded: bool,
     locals:Vec<Expr>,
     helpers:Vec<(String,Helper)>,
 }
@@ -176,7 +204,7 @@ impl<'a> Quantities<'a> {
         if value.scale!=target.scale{return Err("E_UNIT_SCALE: refinement scale mismatch".into());}
         if self.strict&&!value.range.contained(target.lo,target.hi){return Err("E_VERIFY_UNPROVEN: refinement cast may fail".into());}
         let expr=self.p.node(Expr::RefinementCast(Box::new(value.expr),target.lo,target.hi))?;
-        Ok(Typed{expr,dim:value.dim,scale:value.scale,range:Range{lo:target.lo,hi:target.hi}})
+        Ok(Typed{expr,dim:value.dim,scale:value.scale,range:Range{lo:target.lo,hi:target.hi,holes:0}})
     }
     fn target(&mut self,value:Typed,cast:bool)->Result<Typed,String>{
         let mut value=value;
@@ -263,6 +291,7 @@ impl<'a> Quantities<'a> {
         }
         if let Token::Word(name)=self.p.current{
             if let Some((_,helper))=self.helpers.iter().find(|(n,_)|n==name){
+                if self.guarded{return Err("E_VERIFY_UNSUPPORTED: helper call in lazy branch requires scoped local lowering".into());}
                 let helper=helper.clone();self.p.next()?;
                 return self.call(helper,depth+1);
             }
@@ -302,7 +331,7 @@ impl<'a> Quantities<'a> {
         }
         let slot=self.push_local(remap(&h.body,&slots)?)?;
         let expr=self.p.node(Expr::Local(slot))?;
-        self.postfix(Typed{expr,dim:h.result.dim,scale:h.result.scale,range:Range{lo:h.result.lo,hi:h.result.hi}},false,false)
+        self.postfix(Typed{expr,dim:h.result.dim,scale:h.result.scale,range:Range{lo:h.result.lo,hi:h.result.hi,holes:0}},false,false)
     }
     fn annotation(&self,name:&str)->Result<Refinement,String>{
         if matches!(name,"int"|"i64"){return Ok(Refinement{dim:SCALAR,scale:Scale::ONE,lo:i64::MIN,hi:i64::MAX});}
@@ -338,6 +367,73 @@ impl<'a> Quantities<'a> {
         }
         Ok(())
     }
+    fn pair(&mut self,b:u8)->Result<bool,String>{
+        if self.p.current!=Token::Punct(b)||self.p.input.as_bytes().get(self.p.pos)!=Some(&b){return Ok(false);}
+        self.p.next()?;self.p.expect(Token::Punct(b))?;Ok(true)
+    }
+    fn join_facts(a:&[(String,Binding)],b:&[(String,Binding)])->Vec<(String,Binding)>{
+        a.iter().zip(b).map(|((name,x),(_,y))|{let mut v=*x;v.range=x.range.join(y.range);(name.clone(),v)}).collect()
+    }
+    fn predicate(&mut self, incoming:&[(String,Binding)],depth:usize)->Result<(Expr,Vec<(String,Binding)>,Vec<(String,Binding)>),String>{
+        if depth>16{return Err("E_UNIT_LIMIT: guard depth".into());}
+        self.bindings=incoming.to_vec();
+        if self.p.take(Token::Punct(b'('))?{let p=self.guard_or(incoming,depth+1)?;self.p.expect(Token::Punct(b')'))?;return Ok(p);}
+        let left=self.expr(0,0)?;
+        let Token::Punct(symbol)=self.p.current else{return Err("E_VERIFY_UNSUPPORTED: expected comparison".into());};
+        let paired=self.p.input.as_bytes().get(self.p.pos)==Some(&b'=');
+        self.p.next()?;
+        if paired{self.p.expect(Token::Punct(b'='))?;}
+        let op=match (symbol,paired){(b'=',true)=>0,(b'!',true)=>1,(b'<',false)=>2,(b'<',true)=>3,(b'>',false)=>4,(b'>',true)=>5,_=>return Err("E_VERIFY_UNSUPPORTED: expected comparison".into())};
+        let right=self.expr(0,0)?;
+        if left.dim!=right.dim||left.scale!=right.scale{return Err("E_UNIT_DIMENSION: incompatible guard operands".into());}
+        let mut yes=incoming.to_vec();let mut no=incoming.to_vec();
+        if let Expr::Local(slot)=&left.expr{
+            if right.range.lo==right.range.hi{
+                if let Some(i)=incoming.iter().position(|(_,b)|b.slot==*slot){
+                    let r=incoming[i].1.range;
+                    yes[i].1.range=r.restrict(op,right.range.lo);
+                    no[i].1.range=r.restrict([1,0,5,4,3,2][op as usize],right.range.lo);
+                }
+            }
+        }
+        Ok((self.p.node(Expr::Compare(op,Box::new(left.expr),Box::new(right.expr)))?,yes,no))
+    }
+    fn guard_and(&mut self, incoming:&[(String,Binding)],depth:usize)->Result<(Expr,Vec<(String,Binding)>,Vec<(String,Binding)>),String>{
+        let(mut e,mut yes,mut no)=self.predicate(incoming,depth)?;
+        let mut count=0;
+        while self.pair(b'&')?{
+            count+=1;if count>16{return Err("E_UNIT_LIMIT: conjunction budget".into());}
+            let(q,y,n)=self.predicate(&yes,depth)?;
+            e=self.p.node(Expr::Choose(Box::new(e),Box::new(q),Box::new(Expr::Literal(0))))?;
+            no=Self::join_facts(&no,&n);yes=y;
+        }Ok((e,yes,no))
+    }
+    fn guard_or(&mut self, incoming:&[(String,Binding)],depth:usize)->Result<(Expr,Vec<(String,Binding)>,Vec<(String,Binding)>),String>{
+        let(mut e,mut yes,mut no)=self.guard_and(incoming,depth)?;
+        let mut count=0;
+        while self.pair(b'|')?{
+            count+=1;if count>16{return Err("E_UNIT_LIMIT: disjunction budget".into());}
+            let(q,y,n)=self.guard_and(&no,depth)?;
+            e=self.p.node(Expr::Choose(Box::new(e),Box::new(Expr::Literal(1)),Box::new(q)))?;
+            yes=Self::join_facts(&yes,&y);no=n;
+        }Ok((e,yes,no))
+    }
+    fn returning(&mut self,depth:usize)->Result<Typed,String>{
+        if depth>16{return Err("E_UNIT_LIMIT: returning guard depth".into());}
+        if self.strict&&self.p.take(Token::Word("if"))?{
+            let incoming=self.bindings.clone();let old=self.guarded;self.guarded=true;
+            let(c,yes,no)=self.guard_or(&incoming,0)?;
+            self.p.expect(Token::Punct(b'{'))?;self.bindings=yes;
+            let y=self.returning(depth+1)?;self.p.expect(Token::Punct(b'}'))?;
+            self.bindings=no;let alt=self.p.take(Token::Word("else"))?;
+            if alt{self.p.expect(Token::Punct(b'{'))?;}
+            let n=self.returning(depth+1)?;if alt{self.p.expect(Token::Punct(b'}'))?;}
+            self.bindings=incoming;self.guarded=old;
+            if y.dim!=n.dim||y.scale!=n.scale{return Err("E_UNIT_DIMENSION: incompatible branch return".into());}
+            return Ok(Typed{expr:self.p.node(Expr::Choose(Box::new(c),Box::new(y.expr),Box::new(n.expr)))?,dim:y.dim,scale:y.scale,range:y.range.join(n.range)});
+        }
+        self.p.expect(Token::Word("return"))?;let value=self.expr(0,0)?;self.p.expect(Token::Punct(b';'))?;Ok(value)
+    }
     fn expr(&mut self,min_bp:u8,depth:usize)->Result<Typed,String>{
         if depth>MAX_DEPTH {return Err("expression depth budget exceeded".into());}
         let mut lhs=self.atom(depth+1)?;
@@ -353,7 +449,7 @@ impl<'a> Quantities<'a> {
             self.p.next()?;
             // A later operand can contain an eager helper expansion. Freeze
             // the left operand before parsing it, preserving failure order.
-            if !self.helpers.is_empty(){lhs=self.materialize(lhs)?;}
+            if !self.guarded&&!self.helpers.is_empty(){lhs=self.materialize(lhs)?;}
             let rhs=self.expr(r,depth+1)?;
             let mut dim=lhs.dim;let mut scale=lhs.scale;
             if op==b'+'||op==b'-' {
@@ -384,7 +480,7 @@ impl<'a> Quantities<'a> {
     }
 }
 pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,locals:Vec::new(),helpers:Vec::new()};
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new()};
     q.declarations()?;q.refinement_declarations()?;
     if strict&&q.refinements.is_empty(){return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());}
     loop{
@@ -405,7 +501,7 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
                 let ty=q.p.name()?;let want=q.annotation(&ty)?;
                 let param=q.p.name()?;q.binding_name(&param)?;
                 let slot=q.push_local(Expr::Literal(0))?;
-                q.bindings.push((param,Binding{dim:want.dim,scale:want.scale,range:Range{lo:want.lo,hi:want.hi},slot}));
+                q.bindings.push((param,Binding{dim:want.dim,scale:want.scale,range:Range{lo:want.lo,hi:want.hi,holes:0},slot}));
                 params.push(want);
                 if q.p.take(Token::Punct(b')'))?{break;}
                 q.p.expect(Token::Punct(b','))?;
@@ -417,11 +513,9 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
         let result=q.annotation(&ty)?;
         q.p.expect(Token::Punct(b'{'))?;
         q.bindings()?;
-        q.p.expect(Token::Word("return"))?;
-        let value=q.expr(0,0)?;
+        let value=q.returning(0)?;
         if main{Quantities::scalar(&value)?;}
         Quantities::boundary(result,&value,"E_REFINEMENT_RETURN")?;
-        q.p.expect(Token::Punct(b';'))?;
         q.p.expect(Token::Punct(b'}'))?;
         validate_ast_depth(&value.expr)?;
         if main{
