@@ -298,7 +298,10 @@ fn run() -> Result<(), String> {
     if mode == "emit-object-u64" {
         let parsed = frontend::parse_unsigned(source)?;
         let object = backend::emit_unsigned_object(&parsed)?;
-        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
     }
     if mode == "emit-object-strict" {
         let parsed = frontend::parse_verified_strict_i64(source)?;
