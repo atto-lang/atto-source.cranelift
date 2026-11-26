@@ -12,7 +12,7 @@ const ACTIVE: &str = "active";
 const PENDING_LEDGER: &str = ".ledger.pending";
 const LOCK_SH: c_int = 1;
 const RECORD_MAX: usize = 564;
-pub(crate) struct Authority {
+pub struct Authority {
     root: LockedRoot,
 }
 pub(crate) struct Lease {
@@ -25,7 +25,7 @@ impl Lease {
     }
 }
 impl Authority {
-    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+    pub fn open(path: &Path) -> io::Result<Self> {
         let root = LockedRoot::open(path).map_err(|_| invalid("invalid authority root"))?;
         let m = root.directory().metadata()?;
         if m.uid() != unsafe { geteuid() } || m.mode() & 0o077 != 0 {
@@ -133,7 +133,7 @@ impl Authority {
         }
         result
     }
-    pub(crate) fn provision(
+    pub fn provision(
         &self,
         scope: &str,
         epoch: u64,
@@ -160,7 +160,7 @@ impl Authority {
         let key = ledger::admit(scope, &self.read()?, expected, master).map_err(invalid)?;
         Ok(Lease { _lock: lock, key })
     }
-    pub(crate) fn rotate(
+    pub fn rotate(
         &self,
         scope: &str,
         old_pin: &[u8; 32],
