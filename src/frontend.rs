@@ -1919,7 +1919,7 @@ mod tests {
             "fnc main():float{return 1;}",
             "fnc main():int{return x;}",
             "fnc main():int{return 1;} fnc foo():int{return 2;}",
-            "fnc main():int{return 1;} /*no*/",
+            "fnc main():int{return 1;} /*unclosed",
             "fnc main():int{return 1.0;}",
             "fnc main(x:int,x:int):int{return x;}",
             "fnc main():int{return 1;} unsafe",
@@ -1934,6 +1934,7 @@ mod tests {
         assert!(parse(&format!("fnc main():int{{return {};}}", "(".repeat(150))).is_err());
         assert!(parse(&" ".repeat(MAX_SOURCE + 1)).is_err());
         assert!(parse("fnc main():int{return 42;} // café").is_ok());
+        assert_eq!(eval(&parse("fnc main():int{return 42;} /* inert /* nested */ */").unwrap().result, &[]), Ok(42));
         assert!(
             parse("fnc main():int{return 42;} // comment\rcritical fnc hidden():int{return 1;}")
                 .is_err()
