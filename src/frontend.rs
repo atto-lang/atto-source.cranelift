@@ -343,6 +343,13 @@ impl QuantityScale {
         Ok(if v < 0 { -(m as i64) } else { m as i64 })
     }
 }
+#[derive(Clone)]
+struct NamedAggregate {
+    kind: &'static str,
+    // Typed constants only; the scalar backend owns no aggregate runtime ABI.
+    fields: std::collections::BTreeMap<String, (bool, i64)>,
+}
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -355,6 +362,9 @@ struct Parser<'a> {
     closed_option_profile: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
+    named_aggregate_types: std::collections::BTreeMap<String, NamedAggregate>,
+    named_aggregate_locals: std::collections::BTreeMap<String, NamedAggregate>,
+    allow_aggregate_wrapper_once: bool,
     pair_scope_checked: bool,
     entry_scope_checked: bool,
 }
@@ -422,6 +432,9 @@ impl<'a> Parser<'a> {
             closed_option_profile: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
+            named_aggregate_types: Default::default(),
+            named_aggregate_locals: Default::default(),
+            allow_aggregate_wrapper_once: false,
             pair_scope_checked: false,
             entry_scope_checked: false,
         };
@@ -500,6 +513,7 @@ impl<'a> Parser<'a> {
         let b = self.input.as_bytes();
         let preceded_by_sync = self.current == Token::Word("sync");
         let preceded_by_as = self.current == Token::Word("as");
+        let allow_aggregate_wrapper = std::mem::take(&mut self.allow_aggregate_wrapper_once);
         loop {
             while self.pos < b.len() {
                 let width = whitespace_width(b, self.pos);
@@ -739,6 +753,7 @@ impl<'a> Parser<'a> {
                 )
             ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
                 && !(self.current == Token::Word("Entry") && self.next_significant_is(b'.'))
+                && !(allow_aggregate_wrapper && matches!(self.current, Token::Word("Record" | "Tuple")))
             {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
@@ -964,6 +979,132 @@ impl<'a> Parser<'a> {
             return Err("AST node budget exceeded".into());
         }
         Ok(())
+    }
+
+    fn aggregate_name(&mut self) -> Result<String, String> {
+        let name = self.name()?;
+        if name.len() > 128 || is_java_v1_reserved_parameter_name(&name) ||
+            matches!(name.as_str(), "infer" | "main" | "Record" | "Tuple" | "struct" |
+                "record" | "tuple" | "Integer" | "String" | "Bool" | "Any" | "Unknown" |
+                "Object" | "Error" | "Symbol" | "Array" | "List" | "Vector" | "Slice" |
+                "FixedArray" | "FixedList" | "Map" | "Set" | "Pair" | "Entry" | "Option" |
+                "Result" | "Future" | "Channel" | "ActorId" | "ActorRef" | "Mutex" |
+                "MutexGuard" | "SharedMutex" | "Generator" | "Iterator" | "Function" |
+                "Fnc" | "string" | "bool" | "float" | "int" | "i64" | "void" | "self" |
+                "seq" | "sync" | "task" | "yield" | "unsafe" | "pipe" | "rpipe" |
+                "using" | "pure" | "begin" | "maybe" | "persistent" | "durable" |
+                "guard" | "boolean" | "Pointer" | "ActorMail" | "ReadLoan" | "WriteLoan" |
+                "Atomic" | "AtomicRef" | "AtomicBool" | "AtomicInt" | "AtomicLong" |
+                "AtomicI8" | "AtomicI16" | "AtomicI32" | "AtomicI64" | "AtomicU8" |
+                "AtomicU16" | "AtomicU32" | "AtomicU64" | "Arc" | "Weak" | "Box" | "Rc" |
+                "RwLock" | "RwLockReadGuard" | "RwLockWriteGuard" | "UnsafeCell" |
+                "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" |
+                "f32" | "f64" | "uint" | "decimal" | "bigint") {
+            return Err("E_TYPE_NAME: reserved or oversized aggregate identifier".into());
+        }
+        Ok(name)
+    }
+
+    fn aggregate_literal_field(&mut self) -> Result<(bool, i64), String> {
+        if self.take(Token::Word("true"))? { return Ok((true, 1)); }
+        if self.take(Token::Word("false"))? { return Ok((true, 0)); }
+        let negative = self.take(Token::Punct(b'-'))?;
+        let Token::Number(raw) = self.current else {
+            return Err("E_TYPE_INFER_AMBIGUOUS: bool/int literal required".into());
+        };
+        let digits = integer_digits(raw)?;
+        if digits.len() > 64 { return Err("i64 literal length limit".into()); }
+        let signed = if negative { format!("-{digits}") } else { digits };
+        let value = signed.parse::<i64>().map_err(|_| "i64 literal out of range")?;
+        self.next()?;
+        Ok((false, value))
+    }
+
+    fn named_aggregate_binding(&mut self) -> Result<(), String> {
+        let kind = match self.current {
+            Token::Word("Record") => "Record",
+            Token::Word("Tuple") => "Tuple",
+            Token::Word("struct") => "struct",
+            _ => return Err("E_NAMED_AGGREGATE_PROFILE: expected wrapper".into()),
+        };
+        self.next()?;
+        let mut alias = None;
+        let mut introduce = false;
+        if self.take(Token::Punct(b'<'))? {
+            introduce = self.take(Token::Word("infer"))?;
+            let name = self.aggregate_name()?;
+            self.expect(Token::Punct(b'>'))?;
+            if introduce && self.named_aggregate_types.contains_key(&name) {
+                return Err("E_DUPLICATE_TYPE: aggregate alias already declared".into());
+            }
+            if !introduce {
+                let expected = self.named_aggregate_types.get(&name)
+                    .ok_or("E_UNKNOWN_TYPE: unknown aggregate alias")?;
+                if expected.kind != kind {
+                    return Err("E_AGGREGATE_KIND: aggregate wrapper mismatch".into());
+                }
+            }
+            alias = Some(name);
+        }
+        let name = self.aggregate_name()?;
+        if self.parameters.contains(&name) || self.bindings.iter().any(|(n,_,_)| n == &name)
+            || self.named_aggregate_locals.contains_key(&name) {
+            return Err("duplicate aggregate local".into());
+        }
+        if self.named_aggregate_locals.len() + self.bindings.len() >= MAX_LOCALS {
+            return Err("local binding count exceeds 64".into());
+        }
+        self.expect(Token::Punct(b'='))?;
+        self.expect(Token::Punct(if kind == "struct" { b'{' } else { b'(' }))?;
+        let mut fields = std::collections::BTreeMap::new();
+        loop {
+            if fields.len() >= 64 { return Err("aggregate field budget exceeded".into()); }
+            let key = if kind == "Tuple" { fields.len().to_string() } else { self.aggregate_name()? };
+            if kind != "Tuple" {
+                self.expect(Token::Punct(if kind == "struct" { b':' } else { b'=' }))?;
+            }
+            if fields.contains_key(&key) { return Err("E_DUPLICATE_FIELD: duplicate field".into()); }
+            fields.insert(key, self.aggregate_literal_field()?);
+            if !self.take(Token::Punct(b','))? { break; }
+        }
+        self.expect(Token::Punct(if kind == "struct" { b'}' } else { b')' }))?;
+        self.expect(Token::Punct(b';'))?;
+        let row = NamedAggregate { kind, fields };
+        if let Some(alias) = alias {
+            if introduce {
+                self.named_aggregate_types.insert(alias, row.clone());
+            } else {
+                let expected = &self.named_aggregate_types[&alias];
+                if expected.fields.len() != row.fields.len() ||
+                    row.fields.iter().any(|(key,(is_bool,_))|
+                        expected.fields.get(key).is_none_or(|(ty,_)| ty != is_bool)) {
+                    return Err("E_TYPE_MISMATCH: closed aggregate shape mismatch".into());
+                }
+            }
+        }
+        self.named_aggregate_locals.insert(name, row);
+        Ok(())
+    }
+
+    fn named_aggregate_projection(&mut self, name: &str) -> Result<Expr, String> {
+        let kind = self.named_aggregate_locals[name].kind;
+        let key = if kind == "Tuple" {
+            self.expect(Token::Punct(b'['))?;
+            let Token::Number(raw) = self.current else {
+                return Err("tuple projection requires a static nonnegative index".into());
+            };
+            let slot = integer_digits(raw)?.parse::<usize>().map_err(|_| "invalid tuple index")?;
+            self.next()?;
+            self.expect(Token::Punct(b']'))?;
+            slot.to_string()
+        } else {
+            self.expect(Token::Punct(b'.'))?;
+            self.aggregate_name()?
+        };
+        let &(is_bool, value) = self.named_aggregate_locals[name].fields.get(&key)
+            .ok_or("E_NO_FIELD: unknown aggregate projection")?;
+        if is_bool { return Err("bool projection cannot be used as int".into()); }
+        self.node(Expr::Literal(value))
     }
 
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
@@ -1264,6 +1405,9 @@ impl<'a> Parser<'a> {
             }
             Token::Word(s) => {
                 self.next()?;
+                if self.named_aggregate_locals.contains_key(s) {
+                    return self.named_aggregate_projection(s);
+                }
                 let value = if let Some(index) = self.parameters.iter().position(|p| p == s) {
                     Expr::Param(index)
                 } else if let Some((_, constant, runtime_slot)) =
@@ -1616,6 +1760,16 @@ impl<'a> Parser<'a> {
                 Token::Word("val") => "val",
                 _ => break,
             };
+            if kind == "const"
+                && (self.next_significant_word_is("Record")
+                    || self.next_significant_word_is("Tuple")
+                    || self.next_significant_word_is("struct"))
+            {
+                self.allow_aggregate_wrapper_once = true;
+                self.next()?;
+                self.named_aggregate_binding()?;
+                continue;
+            }
             self.next()?;
             if self.current == Token::Word("mut") {
                 // const mut on scalar int is never a writable variable,
@@ -1635,13 +1789,14 @@ impl<'a> Parser<'a> {
                 || matches!(name.as_str(), "Integer" | "main" | "int" | "seq")
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
+                || self.named_aggregate_locals.contains_key(&name)
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
             if !typed && self.take(Token::Punct(b':'))? {
                 self.expect(Token::Word("int"))?;
             }
-            if self.bindings.len() >= MAX_LOCALS {
+            if self.bindings.len() + self.named_aggregate_locals.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
