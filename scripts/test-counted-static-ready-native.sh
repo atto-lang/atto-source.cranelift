@@ -71,7 +71,19 @@ for body in \
   if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
   test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
 done
-# Only literal-known lexical counts, and mutable scalar assignment, are admitted.
+# Singleton arithmetic proof, native snapshot and rejection of invalid counts.
+printf '%s\n' 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(2); writech a, 21; writech a, 99; let int c = 2 - 1; val Future<Array<int>> p = select<int>(c) { when readch a: int n -> { return n * 2; } }; c = 0; val Array[int] b = await p; return b[0]; }' > "$work/snapshot.atto"
+"$compiler" emit-counted-static-ready-object "$work/snapshot.atto" > "$work/guest.o"
+cc "$work/main.c" "$work/guest.o" -o "$work/guest"
+test "$("$work/guest")" = 42
+for count in '17' '0 - 1' '9223372036854775807 + 1'; do
+  printf 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(1); val int c = %s; val Array[int] b = await select<int>(c) { when readch a: int n -> { return n; } }; return 42; }\n' "$count" > "$work/bad.atto"
+  if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
+  test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+done
+# Preserve the competing literal-count lane's mutation and readiness boundaries.
+# Arithmetic singleton facts are now supported, but immutable mutation and
+# a non-ready closed-world batch still cannot emit a native object.
 for body in \
  'val int count = 1; count = 0; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
  'val int count = 17; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
