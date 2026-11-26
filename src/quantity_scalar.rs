@@ -1078,6 +1078,9 @@ impl<'a> Quantities<'a> {
                 return Err("E_VERIFY_UNSUPPORTED: mutable binding requires explicit type".into());
             }
             self.binding_name(&name)?;
+            if self.strict && self.p.current == Token::Punct(b';') {
+                return Err("E_MISSING_INITIALIZER: explicit initializer required".into());
+            }
             self.p.expect(Token::Punct(b'='))?;
             if self.strict && self.p.take(Token::Word("Array"))? {
                 if mutable || want.is_some() {
@@ -1763,6 +1766,9 @@ impl<'a> Quantities<'a> {
                     );
                 }
                 self.binding_name(&name)?;
+                if self.p.current == Token::Punct(b';') {
+                    return Err("E_MISSING_INITIALIZER: explicit initializer required".into());
+                }
                 self.p.expect(Token::Punct(b'='))?;
                 let value = self.expr(0, 0)?;
                 self.p.expect(Token::Punct(b';'))?;

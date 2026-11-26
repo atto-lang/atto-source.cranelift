@@ -133,6 +133,7 @@ fn contracted_delimiters_native_guests() {
     for body in [
         " { return 84/x; }",
         "\nbegin return 84/x; end",
+        "\rbegin return 84/x; end",
         " :: return 84/x; end",
         "\n:: return 84/x; end",
     ] {
@@ -175,6 +176,15 @@ fn contracted_delimiters_native_guests() {
             .unwrap();
         assert!(!out.status.success() && out.stdout.is_empty(), "{body}");
     }
+    // Physical source policy rejects Unicode line separators before lexing.
+    fs::write(&input, format!("{header}\u{2028}begin return 84/x; end{tail}")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+        .arg("emit-object")
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(!out.status.success() && out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("source_unicode_control"));
     fs::remove_dir_all(dir).unwrap();
 }
 
