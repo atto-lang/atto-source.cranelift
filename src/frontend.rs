@@ -402,6 +402,7 @@ impl<'a> Parser<'a> {
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
         let preceded_by_sync = self.current == Token::Word("sync");
+        let preceded_by_as = self.current == Token::Word("as");
         loop {
             while self.pos < b.len() {
                 let width = whitespace_width(b, self.pos);
@@ -626,6 +627,8 @@ impl<'a> Parser<'a> {
             ));
         } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
             return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
+        } else if first == b'?' && preceded_by_as {
+            return Err("E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into());
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
