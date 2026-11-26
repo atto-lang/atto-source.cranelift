@@ -97,19 +97,21 @@ impl<'a> Quantities<'a> {
             self.p.expect(Token::Word("where"))?;
             let(mut lo,mut hi)=(i64::MIN,i64::MAX);
             let mut count=0;
+            let mut has_units=false;
             loop{
                 self.p.expect(Token::Word("self"))?;
+                let end=self.p.pos;
                 let lower=if self.p.take(Token::Punct(b'>'))?{true}else{self.p.expect(Token::Punct(b'<'))?;false};
-                let inclusive=self.p.take(Token::Punct(b'='))?;
+                let inclusive=self.p.pos==end+1&&self.p.take(Token::Punct(b'='))?;
                 let bound=self.signed_bound()?;
                 if lower{let n=if inclusive{bound}else{bound.checked_add(1).ok_or("E_REFINEMENT_INTERVAL: empty")?};lo=lo.max(n);}
                 else{let n=if inclusive{bound}else{bound.checked_sub(1).ok_or("E_REFINEMENT_INTERVAL: empty")?};hi=hi.min(n);}
                 count+=1;if count>16||lo>hi{return Err("E_REFINEMENT_INTERVAL: empty or excessive predicates".into());}
                 if !self.p.take(Token::Word("and"))?{break;}
-                if self.p.current==Token::Word("units"){break;}
+                if self.p.take(Token::Word("units"))?{has_units=true;break;}
             }
             let(mut dim,mut scale)=(SCALAR,Scale::ONE);
-            if self.p.take(Token::Word("units"))?{
+            if has_units{
                 self.p.expect(Token::Word("in"))?;
                 let name=self.p.name()?;
                 let (_,i,s)=self.units.iter().find(|(n,_,_)|n==&name).ok_or("E_UNIT_NAME: unknown refinement unit")?;
