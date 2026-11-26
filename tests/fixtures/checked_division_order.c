@@ -46,6 +46,21 @@ int main(int argc, char **argv) {
         /* Discarded runtime local must still evaluate its initializer. */
         if (check(7,0,2,0) || check(INT64_MIN,-1,1,0) ||
             check(7,2,0,42) || check(-7,2,0,42)) return 1;
+    } else if (mode == 4) {
+        /* a/(b+1): the divisor expression can fault before division. */
+        if (check(7,INT64_MAX,1,0) || check(7,-1,2,0) ||
+            check(INT64_MIN,-2,1,0) || check(INT64_MIN,0,0,INT64_MIN) ||
+            check(85,1,0,42) || check(-85,1,0,-42)) return 1;
+    } else if (mode == 5) {
+        /* seq(a+1, a/b): earlier overflow must win over later /0. */
+        if (check(INT64_MAX,0,1,0) || check(7,0,2,0) ||
+            check(INT64_MIN,-1,1,0) || check(85,2,0,42) ||
+            check(-85,2,0,-42)) return 1;
+    } else if (mode == 6) {
+        /* (a+1)/(b+1): both operands are checked before quotient. */
+        if (check(INT64_MAX,-1,1,0) || check(7,INT64_MAX,1,0) ||
+            check(7,-1,2,0) || check(INT64_MIN,-2,0,INT64_MAX) ||
+            check(83,1,0,42) || check(-86,1,0,-42)) return 1;
     } else return 2;
     puts("CHECKED_DIVISION_AOT_ORDER_OK");
     return 0;
