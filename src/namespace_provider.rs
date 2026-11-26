@@ -10,6 +10,9 @@ fn compile(input:&str,namespace:&str,symbol:&str)->Result<Vec<u8>,String>{
     compile_arity(input,namespace,symbol,0)
 }
 pub(crate) fn compile_arity(input:&str,namespace:&str,symbol:&str,arity:usize)->Result<Vec<u8>,String>{
+    admit_arity(input,namespace,symbol,arity).and_then(|p|crate::backend::emit_object(&p))
+}
+pub(crate) fn admit_arity(input:&str,namespace:&str,symbol:&str,arity:usize)->Result<crate::frontend::Program,String>{
     if input.len()>4096||input.contains('\0')||!ident(namespace)||!ident(symbol)||symbol=="main"{
         return Err(deny("source or identifier budget"));
     }
@@ -47,7 +50,7 @@ pub(crate) fn compile_arity(input:&str,namespace:&str,symbol:&str,arity:usize)->
         }
     }
     if !closed(&program.result,0,&mut 0,arity){return Err(deny("closed integer expression required"));}
-    crate::backend::emit_object(&program)
+    Ok(program)
 }
 #[cfg(test)]
 mod tests{
