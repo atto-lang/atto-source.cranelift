@@ -94,4 +94,24 @@ for body in \
   test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
   echo CRANELIFT_LEXICAL_COUNT_REJECT_PASS
 done
+# Raw Future infers concrete types; terminal-only scalar observation remains.
+prefix='suspends fnc main(): int { const Channel<int> a = Channel.new<int>(1); writech a, 20; '
+body='const Future f = select { default: -> { return 20; } }; const Future batch = select(1) { when readch a: int n -> { return n; } }; const Array[int] values = await batch; return (await f) + values[0] + (await select<int> { default: -> { return 2; } }); }'
+printf '%s%s\n' "$prefix" "$body" > "$work/raw-future.atto"
+"$compiler" emit-counted-static-ready-object "$work/raw-future.atto" > "$work/guest.o"
+cc "$work/main.c" "$work/guest.o" -o "$work/guest"
+test "$("$work/guest")" = 42
+echo CRANELIFT_NATIVE_GUEST_PASS raw-future
+for body in \
+ 'const Future f = 42; return 42; }' \
+ 'const Future<int> f = select(1) { when readch a: int n -> { return n; } }; return 42; }' \
+ 'const Future f = select { default: -> { return a; } }; return 42; }' \
+ 'const Future b = select(1) { when readch a: int n -> { return n; } }; return 42; }' \
+ 'const Future b = select(1) { when readch a: int n -> { return n; } }; const int wrong = await b; return wrong; }' \
+ 'const Future b = select(1) { when readch a: int n -> { return n; } }; const Array[int] first = await b; const Array[int] second = await b; return first[0]; }'; do
+ printf '%s%s\n' "$prefix" "$body" > "$work/bad.atto"
+ if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
+ test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+ echo CRANELIFT_RAW_FUTURE_REJECT_PASS
+done
 echo CRANELIFT_COUNTED_STATIC_NATIVE_PASS
