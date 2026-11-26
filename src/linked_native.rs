@@ -153,7 +153,13 @@ fn inspect_expression(
                     // Validate the expanded typed tree, including skipped operands,
                     // under the existing depth, node and call-graph budgets.
                     return inspect_expression(
-                        &expanded, scope, functions, program, dependencies, nodes, depth,
+                        &expanded,
+                        scope,
+                        functions,
+                        program,
+                        dependencies,
+                        nodes,
+                        depth,
                     );
                 }
             }
