@@ -1328,3 +1328,78 @@ mod integrated_local_sequence_native_tests {
         );
     }
 }
+
+// Native object only. No JIT allocation or guest storage capability.
+pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
+    let descriptor = crate::frontend::durable_counter_descriptor(source)?;
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_durable_counter", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    let id = module.declare_data("atto_durable_descriptor_v1", Linkage::Export, false, false)
+        .map_err(|e| e.to_string())?;
+    let mut data = DataDescription::new();
+    data.define(descriptor.into_boxed_slice());
+    module.define_data(id, &data).map_err(|e| e.to_string())?;
+    let mut sig = module.make_signature();
+    for _ in 0..3 { sig.params.push(AbiParam::new(types::I64)); }
+    sig.returns.push(AbiParam::new(types::I64));
+    let id = module.declare_function("atto_durable_transition_v1", Linkage::Export, &sig)
+        .map_err(|e| e.to_string())?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+    let entry = b.create_block();
+    let dispatch = b.create_block();
+    let read = b.create_block();
+    let increment = b.create_block();
+    let bounds = b.create_block();
+    let add = b.create_block();
+    let reject = b.create_block();
+    let read_ok = b.create_block();
+    b.append_block_params_for_function_params(entry);
+    b.switch_to_block(entry);
+    let args = b.block_params(entry).to_vec();
+    let (s, op, d) = (args[0], args[1], args[2]);
+    let low = b.ins().icmp_imm_s(IntCC::SignedLessThan, s, 0);
+    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, s, 1_000_000_000);
+    let bad = b.ins().bor(low, high);
+    b.ins().brif(bad, reject, &[], dispatch, &[]);
+    b.switch_to_block(dispatch);
+    let is_read = b.ins().icmp_imm_s(IntCC::Equal, op, 2);
+    b.ins().brif(is_read, read, &[], increment, &[]);
+    b.switch_to_block(read);
+    let zero = b.ins().icmp_imm_s(IntCC::Equal, d, 0);
+    b.ins().brif(zero, read_ok, &[], reject, &[]);
+    b.switch_to_block(read_ok);
+    b.ins().return_(&[s]);
+    b.switch_to_block(increment);
+    let wrong = b.ins().icmp_imm_s(IntCC::NotEqual, op, 1);
+    let low = b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, d, 0);
+    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 1_000_000_000);
+    let bad = b.ins().bor(low, high);
+    let bad = b.ins().bor(bad, wrong);
+    b.ins().brif(bad, reject, &[], bounds, &[]);
+    b.switch_to_block(bounds);
+    let max = b.ins().iconst(types::I64, 1_000_000_000);
+    let remaining = b.ins().isub(max, s);
+    let overflow = b.ins().icmp(IntCC::SignedGreaterThan, d, remaining);
+    b.ins().brif(overflow, reject, &[], add, &[]);
+    b.switch_to_block(add);
+    let next = b.ins().iadd(s, d);
+    b.ins().return_(&[next]);
+    b.switch_to_block(reject);
+    let denied = b.ins().iconst(types::I64, -1);
+    b.ins().return_(&[denied]);
+    b.seal_all_blocks();
+    b.finalize(module.target_config());
+    validate_ir(&ctx.func, module.isa())?;
+    module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    module.finish().emit().map_err(|e| e.to_string())
+}
