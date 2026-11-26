@@ -209,3 +209,82 @@ fn exact_shared_checked_i64_corpus_executes_as_native_jit_guests() {
 fn mutated_expression_cannot_reuse_reviewed_case_identity() {
     adapted("safe-zero", "sum(0,1)");
 }
+
+#[test]
+fn atto_xo_checked_debit_parameterized_jit_adapter() {
+    // Stage-0 does not accept the multi-function guest unchanged. Retain its
+    // original bytes, then adapt the same operations to one four-argument main.
+    const CORPUS: &str = include_str!("../contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let hash = Command::new("git")
+        .arg("hash-object")
+        .arg(path)
+        .output()
+        .expect("hash exact corpus");
+    assert!(hash.status.success());
+    assert_eq!(
+        String::from_utf8(hash.stdout).unwrap().trim(),
+        "6831dbd0c18eeaa2078fa5f3e324d0f88b40771e"
+    );
+    let mut seen = HashSet::new();
+    let (mut values, mut faults) = (0, 0);
+    for row in CORPUS.lines() {
+        let fields: Vec<_> = row.split('|').collect();
+        let [id, expected, price, shares, fee, op, adj, original]: [&str; 8] =
+            fields.try_into().expect("eight pinned columns");
+        assert!(seen.insert(id), "{id}");
+        for n in [price, shares, fee, adj] {
+            assert!(n.parse::<i64>().is_ok(), "{id}: bad operand");
+        }
+        assert_eq!(
+            original,
+            format!(
+                "pub fnc debit(int price,int shares,int fee): int {{ return price*shares+fee; }} pub fnc main(): int {{ return debit({price},{shares},{fee}){op}{adj}; }}"
+            )
+        );
+        let guest = match op {
+            "+" => "pub fnc main(p:int,q:int,f:int,a:int):int{return (p*q+f)+a;}\n",
+            "-" => "pub fnc main(p:int,q:int,f:int,a:int):int{return (p*q+f)-a;}\n",
+            "*" => "pub fnc main(p:int,q:int,f:int,a:int):int{return (p*q+f)*a;}\n",
+            _ => panic!("unreviewed operation"),
+        };
+        let source = SourceFile::new(guest);
+        let compiler = env!("CARGO_BIN_EXE_orescranelift");
+        let ir = Command::new(compiler)
+            .arg("ir")
+            .arg(&source.0)
+            .output()
+            .expect("compile adapted guest to real IR");
+        assert!(
+            ir.status.success(),
+            "{id}: {}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
+        assert!(!ir.stdout.is_empty() && ir.stderr.is_empty(), "{id}");
+        let run = Command::new(compiler)
+            .arg("run")
+            .arg(&source.0)
+            .args([price, shares, fee, adj])
+            .output()
+            .expect("execute native JIT guest");
+        if expected == "overflow" {
+            faults += 1;
+            assert_eq!(run.status.code(), Some(1), "{id}");
+            assert!(run.stdout.is_empty(), "{id}");
+            let stderr = String::from_utf8_lossy(&run.stderr);
+            assert!(
+                stderr.starts_with("orescranelift: ")
+                    && stderr.contains("i64 arithmetic overflow")
+                    && !stderr.contains("panicked at"),
+                "{id}: {stderr}"
+            );
+        } else {
+            values += 1;
+            assert_eq!(run.status.code(), Some(0), "{id}");
+            assert!(run.stderr.is_empty(), "{id}");
+            assert_eq!(run.stdout, format!("{expected}\n").into_bytes(), "{id}");
+        }
+    }
+    assert_eq!((values, faults), (3, 4));
+}
