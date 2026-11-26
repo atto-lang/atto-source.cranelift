@@ -959,6 +959,7 @@ impl<'a> Parser<'a> {
                 }
                 self.inline_task(depth + 1, false)
             }
+            Token::Word("Pair") if self.next_significant_is(b'.') => self.pair_projection(),
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
