@@ -352,6 +352,7 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
+    pair_scope_checked: bool,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -416,6 +417,7 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
+            pair_scope_checked: false,
         };
         p.next()?;
         Ok(p)
@@ -958,6 +960,102 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
+    // Restricted checked i64 expression projection. No owned Pair ABI is constructed.
+    // Scan source tokens once per compilation, not once per projection.
+    fn check_pair_scope(&mut self) -> Result<(), String> {
+        if self.pair_scope_checked {
+            return Ok(());
+        }
+        let mut scan = Parser::new(self.input)?;
+        let mut previous = Token::End;
+        while scan.current != Token::End {
+            if scan.current == Token::Word("Pair") {
+                if previous == Token::Punct(b'.')
+                    || previous == Token::Punct(b':')
+                    || !scan.next_significant_is(b'.')
+                {
+                    return Err("E_PAIR_SCOPE_UNSUPPORTED: competing Pair name".into());
+                }
+                scan.next()?;
+                scan.expect(Token::Punct(b'.'))?;
+                scan.expect(Token::Word("of"))?;
+                previous = Token::Word("of");
+                continue;
+            }
+            previous = scan.current;
+            scan.next()?;
+        }
+        self.pair_scope_checked = true;
+        Ok(())
+    }
+
+    fn pair_projection(&mut self, depth: usize) -> Result<Expr, String> {
+        self.check_pair_scope()?;
+        self.expect(Token::Word("Pair"))?;
+        self.expect(Token::Punct(b'.'))?;
+        self.expect(Token::Word("of"))?;
+        if self.take(Token::Punct(b'<'))? {
+            if self.take(Token::Word("string"))? {
+                self.expect(Token::Punct(b','))?;
+                self.expect(Token::Word("int"))?;
+            } else {
+                self.expect(Token::Word("int"))?;
+                if self.current == Token::Punct(b',') {
+                    return Err(
+                        "E_PAIR_KEY_TYPE: Pair first generic argument must be string".into(),
+                    );
+                }
+            }
+            self.expect(Token::Punct(b'>'))?;
+        }
+        self.expect(Token::Punct(b'('))?;
+        let Token::Quoted(raw) = self.current else {
+            return Err("E_PAIR_KEY_TYPE: Pair requires a string key".into());
+        };
+        // The normal quoted-source scanner validates the token. Restrict
+        // discarded keys to plain ASCII strings; no templates or escapes.
+        let bytes = raw.as_bytes();
+        if bytes.len() < 2 || !matches!(bytes[0], b'\'' | b'"') {
+            return Err("E_PAIR_KEY_TYPE: Pair requires a string key".into());
+        }
+        if !bytes[1..bytes.len() - 1]
+            .iter()
+            .all(|c| (32..=126).contains(c) && *c != 92 && *c != 36)
+        {
+            return Err("E_PAIR_KEY_UNSUPPORTED: plain literal string required".into());
+        }
+        self.next()?;
+        self.expect(Token::Punct(b','))?;
+        let value = self.expr(0, depth + 1)?;
+        // Stage-0 has no general type witness for locals or effects. Permit
+        // only known i64 parameters, literals and checked arithmetic trees.
+        // Iterative inspection is bounded by the parser's existing node cap.
+        let mut pending = vec![&value];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Expr::Literal(_) | Expr::Param(_) => {}
+                Expr::Neg(inner) => pending.push(inner),
+                Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) => {
+                    pending.push(a);
+                    pending.push(b);
+                }
+                _ => {
+                    return Err("E_PAIR_VALUE_UNSUPPORTED: checked i64 expression required".into());
+                }
+            }
+        }
+        self.expect(Token::Punct(b')'))?;
+        if !self.take(Token::Punct(b'.'))? {
+            return Err("E_PAIR_ESCAPE_UNSUPPORTED: native owned Pair ABI unavailable".into());
+        }
+        if !self.take(Token::Word("second"))? {
+            return Err(
+                "E_PAIR_PROJECTION_UNSUPPORTED: only i64 second projection admitted".into(),
+            );
+        }
+        Ok(value)
+    }
+
     fn atom_base(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -1010,6 +1108,7 @@ impl<'a> Parser<'a> {
                 }
                 self.inline_task(depth + 1, false)
             }
+            Token::Word("Pair") if self.next_significant_is(b'.') => self.pair_projection(depth),
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
@@ -3641,3 +3740,6 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
     initial.extend_from_slice(&checksum.to_le_bytes());
     Ok((initial, tags))
 }
+
+#[path = "scalar_library.rs"]
+pub mod scalar_library;

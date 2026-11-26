@@ -305,13 +305,32 @@ fn run() -> Result<(), String> {
     // Keep explicit pipe/inline-arrow syntax on the existing pure pipeline lane.
     if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
         && let Ok(functions) = functional_pipelines::parse_linked_native(source, &[])
-        && (functional_pipelines::requires_tuple_lowering(&functions) ||
-            (!source.contains("|>") && !source.contains("<|") &&
-             !source.contains(": int ->") && functions.len() > 1))
+        && (functional_pipelines::requires_tuple_lowering(&functions)
+            || (!source.contains("|>")
+                && !source.contains("<|")
+                && !source.contains(": int ->")
+                && functions.len() > 1))
     {
-        // Tuple patterns need real SSA temporaries, never the legacy
-        // expression-substitution lane (which cannot preserve discards).
+        // Tuple patterns require native SSA temporaries, including discards.
         return run_linked_native(&mode, &values, &functions);
+    }
+    if let Some(library) = frontend::scalar_library::parse_if_library(source)? {
+        return match mode.as_str() {
+            "check" => Ok(()),
+            "ir" => {
+                let (ir, _) = library.compile(false)?;
+                print!("{ir}");
+                Ok(())
+            }
+            "emit-object" => {
+                let (_, bytes) = library.compile(true)?;
+                std::io::stdout()
+                    .lock()
+                    .write_all(&bytes)
+                    .map_err(|e| e.to_string())
+            }
+            _ => Err("E_LIBRARY_NO_ENTRY: named library requires native object linking".into()),
+        };
     }
     let parsed = match frontend::parse(source) {
         Ok(program) => program,
