@@ -217,6 +217,7 @@ fn validate_guest_expr(
                     work.push((part, depth + 1));
                 }
             }
+            Expr::I32Checked(x)=>work.push((x,depth+1)),
             Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x,depth+1));}
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
             Expr::Choose(c,y,n) => {work.push((c,depth+1));work.push((y,depth+1));work.push((n,depth+1));}
@@ -251,6 +252,7 @@ fn emit(
     divisor_error: Block,
     negative_exponent_error: Block,
     refinement_error: Block,
+    i32_error: Block,
 ) -> Value {
     use Expr::*;
     match e {
@@ -258,22 +260,22 @@ fn emit(
         Param(i) => params[*i],
         Local(i) => locals[*i],
         Compare(op,x,y) => {
-            let a=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
-            let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let a=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             let cc=match op{0=>IntCC::Equal,1=>IntCC::NotEqual,2=>IntCC::SignedLessThan,3=>IntCC::SignedLessThanOrEqual,4=>IntCC::SignedGreaterThan,5=>IntCC::SignedGreaterThanOrEqual,_=>unreachable!()};
             let cmp=b.ins().icmp(cc,a,z);b.ins().uextend(types::I64,cmp)
         }
         Choose(c,y,n) => {
-            let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             let yes=b.create_block();let no=b.create_block();let done=b.create_block();
             b.append_block_param(done,types::I64);
             let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
             b.ins().brif(truth,yes,&[],no,&[]);
             b.switch_to_block(yes);b.seal_block(yes);
-            let a=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let a=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             b.ins().jump(done,&[BlockArg::Value(a)]);
             b.switch_to_block(no);b.seal_block(no);
-            let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             b.ins().jump(done,&[BlockArg::Value(z)]);
             b.switch_to_block(done);b.seal_block(done);
             b.block_params(done)[0]
@@ -287,6 +289,7 @@ fn emit(
             divisor_error,
             negative_exponent_error,
             refinement_error,
+            i32_error,
         ),
         Sequence(prefix, last) => {
             for part in prefix {
@@ -299,6 +302,7 @@ fn emit(
                     divisor_error,
                     negative_exponent_error,
             refinement_error,
+            i32_error,
                 );
             }
             emit(
@@ -310,6 +314,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             )
         }
         Seq(parts) => {
@@ -326,6 +331,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             for part in rest {
                 value = emit(
@@ -337,6 +343,7 @@ fn emit(
                     divisor_error,
                     negative_exponent_error,
             refinement_error,
+            i32_error,
                 );
             }
             value
@@ -354,6 +361,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
@@ -371,6 +379,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             let rhs = emit(
                 y,
@@ -381,6 +390,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
@@ -389,8 +399,16 @@ fn emit(
                 _ => unreachable!(),
             }
         }
+        I32Checked(x)=>{
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,i32::MIN as i64);
+            let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,i32::MAX as i64);
+            let invalid=b.ins().bor(below,above);
+            let valid=b.create_block();b.ins().brif(invalid,i32_error,&[],valid,&[]);
+            b.switch_to_block(valid);b.seal_block(valid);value
+        }
         RefinementCast(x,lo,hi)=>{
-            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,*lo);
             let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,*hi);
             let invalid=b.ins().bor(below,above);
@@ -398,8 +416,8 @@ fn emit(
             b.switch_to_block(valid);b.seal_block(valid);value
         }
         Div(x, y) => {
-            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
-            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error);
             let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
             let nonzero = b.create_block();
             b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
@@ -424,6 +442,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             let right = emit(
                 y,
@@ -434,6 +453,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
@@ -459,6 +479,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             let exponent = emit(
                 y,
@@ -469,6 +490,7 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
+            i32_error,
             );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
@@ -484,6 +506,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
@@ -498,6 +521,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -508,6 +532,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
@@ -521,6 +546,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -531,6 +557,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
@@ -544,6 +571,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -554,6 +582,7 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
+            i32_error,
                     );
                     b.ins().smul_overflow(lhs, rhs)
                 }
@@ -681,6 +710,7 @@ fn prepare_ir(
     let divisor_error = b.create_block();
     let negative_exponent_error = b.create_block();
     let refinement_error=b.create_block();
+    let i32_error=b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
@@ -720,6 +750,7 @@ fn prepare_ir(
             divisor_error,
             negative_exponent_error,
         refinement_error,
+            i32_error,
         );
         locals.push(value);
     }
@@ -732,6 +763,7 @@ fn prepare_ir(
         divisor_error,
         negative_exponent_error,
         refinement_error,
+            i32_error,
     );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
@@ -740,6 +772,7 @@ fn prepare_ir(
         (divisor_error, 2),
         (negative_exponent_error, 3),
         (refinement_error,7),
+        (i32_error,8),
     ] {
         b.switch_to_block(block);
         return_status(&mut b, status, cleanup);
@@ -874,6 +907,8 @@ impl Compiled {
             Err("negative integer exponent".into())
         } else if status == 7 {
             Err("E_REFINEMENT_VIOLATION".into())
+        } else if status == 8 {
+            Err("E_I32_OVERFLOW".into())
         } else {
             Err("invalid generated native status".into())
         }
