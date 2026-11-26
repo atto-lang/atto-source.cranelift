@@ -101,6 +101,13 @@ fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
         _=>return Err("E_UNIT_CALL: unsupported helper expression".into())
     })
 }
+type Cursor<'a>=(usize,Token<'a>);
+type MutableTypes=Vec<(String,Refinement)>;
+type Tail<'a>=std::rc::Rc<BranchTail<'a>>;
+struct BranchTail<'a>{
+    resume:Cursor<'a>,scope:Vec<String>,mutable:MutableTypes,
+    outer:Option<Tail<'a>>,end:std::cell::Cell<Option<Cursor<'a>>>,
+}
 struct Quantities<'a> {
     p: Parser<'a>,
     dimensions: Vec<String>,
@@ -389,8 +396,7 @@ impl<'a> Quantities<'a> {
         }
         Ok(())
     }
-    fn bindings(&mut self)->Result<(),String>{
-        let mut mutable_types:Vec<(String,Refinement)>=Vec::new();
+    fn bindings(&mut self,mutable_types:&mut MutableTypes)->Result<(),String>{
         loop {
             let immutable=self.p.take(Token::Word("val"))?;
             let mutable=!immutable&&self.strict&&self.p.take(Token::Word("let"))?;
@@ -534,8 +540,16 @@ impl<'a> Quantities<'a> {
             if right.range.lo==right.range.hi{
                 if let Some(i)=incoming.iter().position(|(_,b)|b.slot==*slot){
                     let r=incoming[i].1.range;
-                    yes[i].1.range=r.restrict(op,right.range.lo);
-                    no[i].1.range=r.restrict([1,0,5,4,3,2][op as usize],right.range.lo);
+                    let n=right.range.lo;
+                    let edge=|cmp|{
+                        if cmp==1&&Range::bit(n)!=0&&r.lo==n&&r.hi==n {
+                            let (lo,hi)=if incoming[i].1.width==Width::I32{(I32_LO,I32_HI)}else{(i64::MIN,i64::MAX)};
+                            return Range{lo,hi,holes:Range::bit(n)};
+                        }
+                        r.restrict(cmp,n)
+                    };
+                    yes[i].1.range=edge(op);
+                    no[i].1.range=edge([1,0,5,4,3,2][op as usize]);
                 }
             }
         }
@@ -561,16 +575,74 @@ impl<'a> Quantities<'a> {
             yes=Self::join_facts(&yes,&y);no=n;
         }Ok((e,yes,no))
     }
-    fn returning(&mut self,depth:usize)->Result<Typed,String>{
+    fn cursor(&self)->Cursor<'a>{(self.p.pos,self.p.current)}
+    fn seek(&mut self,c:Cursor<'a>){self.p.pos=c.0;self.p.current=c.1;}
+    fn closing(&mut self)->Result<Cursor<'a>,String>{
+        if self.p.current!=Token::Punct(b'{'){return Err("E_VERIFY_UNSUPPORTED: expected branch block".into());}
+        let mut depth=0usize;
+        loop{
+            match self.p.current{
+                Token::Punct(b'{')=>depth+=1,
+                Token::Punct(b'}')=>{depth-=1;if depth==0{return Ok(self.cursor());}},
+                Token::End=>return Err("E_VERIFY_UNSUPPORTED: unterminated branch".into()),
+                _=>{}
+            }
+            self.p.next()?;
+        }
+    }
+    fn record_tail(t:&Tail<'a>,end:Cursor<'a>)->Result<(),String>{
+        if t.end.get().is_some_and(|prior|prior!=end){return Err("E_VERIFY_UNSUPPORTED: inconsistent branch continuation".into());}
+        t.end.set(Some(end));Ok(())
+    }
+    fn scoped_path(&mut self,mut incoming:Vec<(String,Binding)>,mutable:MutableTypes,depth:usize,tail:Option<Tail<'a>>)->Result<Typed,String>{
+        if incoming.len()>8{return Err("E_UNIT_LIMIT: scoped branch frame".into());}
+        let args=incoming.iter().map(|(_,b)|Expr::Local(b.slot)).collect::<Vec<_>>();
+        for(i,(_,b))in incoming.iter_mut().enumerate(){b.slot=i;}
+        let old_locals=std::mem::replace(&mut self.locals,vec![Expr::Literal(0);args.len()]);
+        let old_bindings=std::mem::replace(&mut self.bindings,incoming);
+        let mut value=self.sequence(mutable,depth,tail)?;
+        let inits=std::mem::replace(&mut self.locals,old_locals).into_iter().skip(args.len()).collect::<Vec<_>>();
+        self.bindings=old_bindings;
+        value.expr=self.p.node(Expr::ScopedCall(args,inits,Box::new(value.expr)))?;
+        validate_ast_depth(&value.expr)?;
+        Ok(value)
+    }
+    fn sequence(&mut self,mut mutable:MutableTypes,depth:usize,tail:Option<Tail<'a>>)->Result<Typed,String>{
         if depth>16{return Err("E_UNIT_LIMIT: returning guard depth".into());}
+        self.bindings(&mut mutable)?;
+        if self.p.current==Token::Punct(b'}'){
+            if let Some(t)=tail{
+                let saved=self.cursor();
+                self.bindings.retain(|(name,_)|t.scope.contains(name));
+                self.seek(t.resume);
+                let value=self.sequence(t.mutable.clone(),depth+1,t.outer.clone())?;
+                Self::record_tail(&t,self.cursor())?;
+                self.seek(saved);return Ok(value);
+            }
+        }
         if self.strict&&self.p.take(Token::Word("if"))?{
             let incoming=self.bindings.clone();let old=self.guarded;self.guarded=true;
             let(c,yes,no)=self.guard_or(&incoming,0)?;
-            self.p.expect(Token::Punct(b'{'))?;self.bindings=yes;
-            let y=self.returning(depth+1)?;self.p.expect(Token::Punct(b'}'))?;
-            self.bindings=no;let alt=self.p.take(Token::Word("else"))?;
-            if alt{self.p.expect(Token::Punct(b'{'))?;}
-            let n=self.returning(depth+1)?;if alt{self.p.expect(Token::Punct(b'}'))?;}
+            let yes_open=self.cursor();
+            let yes_close=self.closing()?;self.p.next()?;
+            let has_else=self.p.take(Token::Word("else"))?;
+            let no_open=self.cursor();
+            let no_close=if has_else{let v=self.closing()?;self.p.next()?;Some(v)}else{None};
+            let resume=self.cursor();
+            let next=std::rc::Rc::new(BranchTail{resume,scope:incoming.iter().map(|(n,_)|n.clone()).collect(),mutable:mutable.clone(),outer:tail.clone(),end:std::cell::Cell::new(None)});
+            self.seek(yes_open);self.p.expect(Token::Punct(b'{'))?;
+            let y=self.scoped_path(yes,mutable.clone(),depth+1,Some(next.clone()))?;
+            if self.cursor()!=yes_close{return Err("E_VERIFY_UNSUPPORTED: statement after strict return".into());}
+            let n=if let Some(close)=no_close{
+                self.seek(no_open);self.p.expect(Token::Punct(b'{'))?;
+                let n=self.scoped_path(no,mutable,depth+1,Some(next.clone()))?;
+                if self.cursor()!=close{return Err("E_VERIFY_UNSUPPORTED: statement after strict return".into());}n
+            }else{
+                self.seek(resume);
+                let n=self.scoped_path(no,mutable,depth+1,tail)?;
+                Self::record_tail(&next,self.cursor())?;n
+            };
+            self.seek(next.end.get().unwrap_or(resume));
             self.bindings=incoming;self.guarded=old;
             if y.dim!=n.dim||y.scale!=n.scale{return Err("E_UNIT_DIMENSION: incompatible branch return".into());}
             return Ok(Typed{expr:self.p.node(Expr::Choose(Box::new(c),Box::new(y.expr),Box::new(n.expr)))?,dim:y.dim,scale:y.scale,range:y.range.join(n.range),width:if y.width==n.width{y.width}else{Width::I64}});
@@ -664,9 +736,8 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
         let result=q.annotation(&ty)?;
         let contracts=q.contracts(&mut params,result,main)?;
         q.p.expect(Token::Punct(b'{'))?;
-        q.bindings()?;
-        if q.p.current==Token::Word("let"){return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());}
-        let value=q.returning(0)?;
+        if !strict&&q.p.current==Token::Word("let"){return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());}
+        let value=q.sequence(Vec::new(),0,None)?;
         if main{Quantities::scalar(&value)?;}
         Quantities::boundary(result,&value,"E_REFINEMENT_RETURN")?;
         q.prove_contracts(&contracts,&value,&params)?;
