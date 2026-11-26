@@ -67,6 +67,39 @@ pub(crate) fn requires_tuple_lowering(functions: &[Fn]) -> bool {
             || f.locals.iter().any(|(_, v)| v.requires_tuple_lowering())
     })
 }
+// Dispatch a fully parsed single-main source to the typed linked backend
+// when it contains a named reduction. Never grant admission from raw text.
+fn has_named_boolean_call(expr: &Raw) -> bool {
+    match expr {
+        Raw::Call(name, args) => {
+            matches!(name.as_str(), "And" | "Or" | "Xor") || args.iter().any(has_named_boolean_call)
+        }
+        Raw::Not(v) => has_named_boolean_call(v),
+        Raw::Add(a, b)
+        | Raw::Sub(a, b)
+        | Raw::Mul(a, b)
+        | Raw::Eq(a, b)
+        | Raw::Ne(a, b)
+        | Raw::And(a, b)
+        | Raw::Or(a, b)
+        | Raw::Xor(a, b) => has_named_boolean_call(a) || has_named_boolean_call(b),
+        Raw::If(c, y, n) => {
+            has_named_boolean_call(c) || has_named_boolean_call(y) || has_named_boolean_call(n)
+        }
+        Raw::Tuple(values) => values.iter().any(has_named_boolean_call),
+        Raw::TuplePattern(values, _, body) => {
+            values.iter().any(has_named_boolean_call) || has_named_boolean_call(body)
+        }
+        Raw::Literal(_) | Raw::Bool(_) | Raw::Name(_) => false,
+    }
+}
+
+pub(crate) fn requires_named_boolean_lowering(functions: &[Fn]) -> bool {
+    functions.iter().any(|f| {
+        has_named_boolean_call(&f.result) || f.locals.iter().any(|(_, v)| has_named_boolean_call(v))
+    })
+}
+
 pub(crate) struct Fn {
     pub(crate) public: bool,
     pub(crate) name: String,

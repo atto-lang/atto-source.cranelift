@@ -113,6 +113,11 @@ fn unsupported_sum_effect_escape_and_untyped_variants_fail_closed() {
         good.replace("Some(n)", "Some(x)"),
         good.replace("trap! x", "trap!x"),
         good.replace("trap! x", "trap ! x"),
+        good.replace("|>", "| >"),
+        good.replace("|>", "|/*gap*/>"),
+        good.replace(") -> int", ") - > int"),
+        good.replace("on Ok(v): int ->", "on Ok(v): int - >"),
+        good.replace("on Err(): int ->", "on Err(): int -/*gap*/>"),
         good.replace("x.unwrap()", "x.expect()"),
         good.replace("x.unwrap()", "other.unwrap()"),
         good.replace("on Err()", "on Err(e)"),
@@ -218,7 +223,7 @@ fn bounded_declaration_is_checked_not_stripped() {
     ] {
         fs::write(&file, format!("{header}\n{good}")).unwrap();
         for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
-            let out = invoke(mode, &file, if mode=="run" { &["42"] } else { &[] });
+            let out = invoke(mode, &file, if mode == "run" { &["42"] } else { &[] });
             assert_eq!(out.status.code(), Some(1), "{mode}: {header}");
             assert!(out.stdout.is_empty(), "{mode}: emitted artifact");
         }
