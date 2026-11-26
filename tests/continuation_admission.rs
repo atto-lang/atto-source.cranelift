@@ -89,3 +89,34 @@ fn awaited_words_inside_comments_do_not_block_scalar_guest_execution() {
     );
     assert_eq!(out.stdout, b"42\n");
 }
+
+#[test]
+fn exact_mixed_counted_sources_and_contextual_headers_fail_closed() {
+    let sources = [
+        include_str!("fixtures/select-source-v2/counted-mixed-future-alias.atto"),
+        include_str!("fixtures/select-source-v2/counted-multi-channel-fair.atto"),
+        include_str!("fixtures/select-source-v2/counted-mixed-zero.atto"),
+    ];
+    for source in sources {
+        for mode in ["run", "ir"] {
+            let out = run(mode, source);
+            assert_eq!(out.status.code(), Some(1), "{mode}: unsupported counted source admitted");
+            assert!(out.stdout.is_empty(), "{mode}: emitted artifact");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("orescranelift:") && !err.contains("panicked at"), "{err}");
+        }
+    }
+    for prefix in ["select", "nb select", "await select", "await nb select"] {
+        for header in ["(0)", "<int>(3)", "(count)", "(true)"] {
+            let source = format!("fnc main():int{{return {prefix}{header} over when readch c: int n -> {{ return n; }} end;}}");
+            for mode in ["run", "ir"] {
+                let out = run(mode, &source);
+                assert_eq!(out.status.code(), Some(1), "{source}: {mode}");
+                assert!(out.stdout.is_empty(), "{source}: {mode}: artifact");
+                let err = String::from_utf8_lossy(&out.stderr);
+                assert!(err.contains("orescranelift:") && !err.contains("panicked at"), "{err}");
+            }
+        }
+    }
+    assert_eq!(run("run", "fnc main():int{return 42;}").stdout, b"42\n");
+}

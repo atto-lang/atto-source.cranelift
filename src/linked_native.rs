@@ -41,6 +41,27 @@ fn inspect_expression(
     use ScalarType::{Bool, Int};
     let mut child = |e: &Raw| inspect_expression(e, scope, functions, program, dependencies, nodes, depth + 1);
     match expr {
+        Raw::Tuple(_) => Err("E_LINK_UNSUPPORTED_TUPLE_VALUE".into()),
+        Raw::TuplePattern(values, bindings, body) => {
+            if values.len() != bindings.len() || values.len() > 8 {
+                return Err("E_LINK_PATTERN_ARITY".into());
+            }
+            // All root elements are typed in the outer scope, including discards.
+            for value in values {
+                if child(value)? != Int { return Err("E_LINK_PATTERN_ELEMENT_TYPE".into()); }
+            }
+            let mut nested = scope.clone();
+            let mut names = std::collections::HashSet::new();
+            for name in bindings.iter().flatten() {
+                if matches!(name.as_str(), "_" | "self" | "arguments") || !names.insert(name) {
+                    return Err("E_LINK_PATTERN_DUP_BINDING".into());
+                }
+                nested.insert(name.clone(), Int);
+            }
+            let ty = inspect_expression(body, &nested, functions, program, dependencies, nodes, depth + 1)?;
+            if ty != Int { return Err("E_LINK_PATTERN_RESULT_TYPE".into()); }
+            Ok(Int)
+        }
         Raw::Literal(_) => Ok(Int),
         Raw::Bool(_) => Ok(Bool),
         Raw::Name(name) => scope.get(name).copied().ok_or_else(|| "E_LINK_UNBOUND_IDENTIFIER".into()),
@@ -198,6 +219,20 @@ fn emit_expr(
         return Err("E_LINK_EXPR_DEPTH".into());
     }
     match expr {
+        Raw::Tuple(_) => Err("E_LINK_UNSUPPORTED_TUPLE_VALUE".into()),
+        Raw::TuplePattern(values, bindings, body) => {
+            // Evaluate each input once, in source order, before binding any
+            // names. Checked overflow/call failures branch out before body.
+            let mut slots = Vec::with_capacity(values.len());
+            for value in values {
+                slots.push(emit_expr(value, builder, scope, refs, failure, depth + 1)?);
+            }
+            let mut nested = scope.clone();
+            for (name, slot) in bindings.iter().zip(slots) {
+                if let Some(name) = name { nested.insert(name.clone(), slot); }
+            }
+            emit_expr(body, builder, &nested, refs, failure, depth + 1)
+        }
         Raw::Literal(value) => Ok(builder.ins().iconst(types::I64, *value)),
         // Boolean values have a canonical internal 0/1 representation in
         // the existing private i64 helper ABI, after full nominal typing.
