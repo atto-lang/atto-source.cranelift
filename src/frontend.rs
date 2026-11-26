@@ -1781,6 +1781,7 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
 
 /// Opt-in strict stage-0 profile, never falls back to ordinary scalar parsing.
 pub fn parse_verified_strict_i64(text: &str) -> Result<Program,String> {
+    validate_source_envelope(text)?;
     let parser=Parser::new(text)?;
     quantity_scalar::parse_mode(parser,true)
 }
