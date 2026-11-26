@@ -1891,15 +1891,19 @@ pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
     let builder = ObjectBuilder::new(isa, "atto_durable_counter", default_libcall_names())
         .map_err(|e| e.to_string())?;
     let mut module = ObjectModule::new(builder);
-    let id = module.declare_data("atto_durable_descriptor_v1", Linkage::Export, false, false)
+    let id = module
+        .declare_data("atto_durable_descriptor_v1", Linkage::Export, false, false)
         .map_err(|e| e.to_string())?;
     let mut data = DataDescription::new();
     data.define(descriptor.into_boxed_slice());
     module.define_data(id, &data).map_err(|e| e.to_string())?;
     let mut sig = module.make_signature();
-    for _ in 0..3 { sig.params.push(AbiParam::new(types::I64)); }
+    for _ in 0..3 {
+        sig.params.push(AbiParam::new(types::I64));
+    }
     sig.returns.push(AbiParam::new(types::I64));
-    let id = module.declare_function("atto_durable_transition_v1", Linkage::Export, &sig)
+    let id = module
+        .declare_function("atto_durable_transition_v1", Linkage::Export, &sig)
         .map_err(|e| e.to_string())?;
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -1918,7 +1922,9 @@ pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
     let args = b.block_params(entry).to_vec();
     let (s, op, d) = (args[0], args[1], args[2]);
     let low = b.ins().icmp_imm_s(IntCC::SignedLessThan, s, 0);
-    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, s, 1_000_000_000);
+    let high = b
+        .ins()
+        .icmp_imm_s(IntCC::SignedGreaterThan, s, 1_000_000_000);
     let bad = b.ins().bor(low, high);
     b.ins().brif(bad, reject, &[], dispatch, &[]);
     b.switch_to_block(dispatch);
@@ -1932,7 +1938,9 @@ pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
     b.switch_to_block(increment);
     let wrong = b.ins().icmp_imm_s(IntCC::NotEqual, op, 1);
     let low = b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, d, 0);
-    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 1_000_000_000);
+    let high = b
+        .ins()
+        .icmp_imm_s(IntCC::SignedGreaterThan, d, 1_000_000_000);
     let bad = b.ins().bor(low, high);
     let bad = b.ins().bor(bad, wrong);
     b.ins().brif(bad, reject, &[], bounds, &[]);
@@ -1950,7 +1958,9 @@ pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
     b.seal_all_blocks();
     b.finalize(module.target_config());
     validate_ir(&ctx.func, module.isa())?;
-    module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    module
+        .define_function(id, &mut ctx)
+        .map_err(|e| e.to_string())?;
     module.finish().emit().map_err(|e| e.to_string())
 }
 
@@ -1961,8 +1971,10 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
     let (initial, tags) = crate::frontend::durable_scalar_schema(source)?;
     let mut flags = settings::builder();
     flags.set("is_pic", "true").map_err(|e| e.to_string())?;
-    let isa = cranelift_native::builder().map_err(|e| e.to_string())?
-        .finish(settings::Flags::new(flags)).map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| e.to_string())?;
     let builder = ObjectBuilder::new(isa, "atto_durable_scalar", default_libcall_names())
         .map_err(|e| e.to_string())?;
     let mut module = ObjectModule::new(builder);
@@ -2013,9 +2025,13 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
         ("atto_scalar_decode_v1", 4, 4),
     ] {
         let mut sig = module.make_signature();
-        for _ in 0..arity { sig.params.push(AbiParam::new(types::I64)); }
+        for _ in 0..arity {
+            sig.params.push(AbiParam::new(types::I64));
+        }
         sig.returns.push(AbiParam::new(types::I64));
-        let id = module.declare_function(name, Linkage::Export, &sig).map_err(|e| e.to_string())?;
+        let id = module
+            .declare_function(name, Linkage::Export, &sig)
+            .map_err(|e| e.to_string())?;
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
         let mut fbctx = FunctionBuilderContext::new();
@@ -2025,7 +2041,9 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
         b.switch_to_block(entry);
         let args = b.block_params(entry).to_vec();
         if mode < 2 {
-            let v = b.ins().iconst(types::I64, if mode == 0 { size } else { count });
+            let v = b
+                .ins()
+                .iconst(types::I64, if mode == 0 { size } else { count });
             b.ins().return_(&[v]);
         } else {
             let reject = b.create_block();
@@ -2034,24 +2052,38 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
             let needed = if mode == 4 { count } else { size };
             let nonnull = b.ins().icmp_imm_s(IntCC::NotEqual, dst, 0);
             require(&mut b, nonnull, reject);
-            let enough = b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, cap, needed);
+            let enough = b
+                .ins()
+                .icmp_imm_s(IntCC::SignedGreaterThanOrEqual, cap, needed);
             require(&mut b, enough, reject);
             if mode == 2 {
-                let bytes: Vec<Value> = initial.iter().map(|&x| b.ins().iconst(types::I64, i64::from(x))).collect();
+                let bytes: Vec<Value> = initial
+                    .iter()
+                    .map(|&x| b.ins().iconst(types::I64, i64::from(x)))
+                    .collect();
                 output_bytes(&mut b, dst, &bytes);
             } else {
                 let src = args[0];
                 let nonnull = b.ins().icmp_imm_s(IntCC::NotEqual, src, 0);
                 require(&mut b, nonnull, reject);
-                let len = b.ins().icmp_imm_s(IntCC::Equal, args[1], if mode == 3 { count } else { size });
+                let len =
+                    b.ins()
+                        .icmp_imm_s(IntCC::Equal, args[1], if mode == 3 { count } else { size });
                 require(&mut b, len, reject);
                 if mode == 3 {
-                    let mut bytes: Vec<Value> = initial[..19].iter().map(|&x| b.ins().iconst(types::I64, i64::from(x))).collect();
+                    let mut bytes: Vec<Value> = initial[..19]
+                        .iter()
+                        .map(|&x| b.ins().iconst(types::I64, i64::from(x)))
+                        .collect();
                     for (i, &tag) in tags.iter().enumerate() {
-                        let value = b.ins().load(types::I64, MemFlagsData::new(), src, (i * 8) as i32);
+                        let value =
+                            b.ins()
+                                .load(types::I64, MemFlagsData::new(), src, (i * 8) as i32);
                         bytes.push(b.ins().iconst(types::I64, i64::from(tag)));
                         if tag == 1 {
-                            for j in 0..8 { bytes.push(byte_at(&mut b, value, j)); }
+                            for j in 0..8 {
+                                bytes.push(byte_at(&mut b, value, j));
+                            }
                         } else {
                             let ok = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, value, 1);
                             require(&mut b, ok, reject);
@@ -2059,7 +2091,9 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
                         }
                     }
                     let checksum = hash(&mut b, &bytes);
-                    for j in 0..8 { bytes.push(byte_at(&mut b, checksum, j)); }
+                    for j in 0..8 {
+                        bytes.push(byte_at(&mut b, checksum, j));
+                    }
                     output_bytes(&mut b, dst, &bytes);
                 } else {
                     let mut bytes = Vec::with_capacity(size as usize);
@@ -2094,7 +2128,8 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
                         }
                     }
                     for (i, value) in values.into_iter().enumerate() {
-                        b.ins().store(MemFlagsData::new(), value, dst, (i * 8) as i32);
+                        b.ins()
+                            .store(MemFlagsData::new(), value, dst, (i * 8) as i32);
                     }
                 }
             }
@@ -2107,7 +2142,9 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
         b.seal_all_blocks();
         b.finalize(module.target_config());
         validate_ir(&ctx.func, module.isa())?;
-        module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+        module
+            .define_function(id, &mut ctx)
+            .map_err(|e| e.to_string())?;
     }
     module.finish().emit().map_err(|e| e.to_string())
 }
