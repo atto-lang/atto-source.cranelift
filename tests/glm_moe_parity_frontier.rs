@@ -254,9 +254,19 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 }
 
 #[test]
-fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
+fn undocumented_power_operator_still_rejects() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
-    expect_unsupported("pub fnc main():int{return 3 / 2;}");
+}
+
+#[test]
+fn checked_integer_division_is_a_supported_scalar_intersection() {
+    expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
+    expect_native("pub fnc main():int{return -3 / 2;}", &[], "-1\n");
+    expect_unsupported("pub fnc main():int{return 3 / 0;}");
+    let output = run_guest("ir", "pub fnc main():int{return 3 / 2;}", &[]);
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("function"));
 }
 
 #[test]
