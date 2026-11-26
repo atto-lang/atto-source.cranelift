@@ -452,17 +452,18 @@ impl<'a> Quantities<'a> {
                 if mutable||want.is_some(){return Err("E_VERIFY_UNSUPPORTED: fixed array requires inferred val".into());}
                 self.p.expect(Token::Punct(b'.'))?;self.p.expect(Token::Word("of"))?;self.p.expect(Token::Punct(b'('))?;
                 let mut names=Vec::new();let serial=self.arrays.len();
+                let mut pending_cells=Vec::new();
                 loop{
                     if names.len()>=16{return Err("E_UNIT_LIMIT: fixed array cell budget".into());}
                     let v=self.expr(0,0)?;Self::scalar(&v)?;
                     let cell=if names.is_empty(){name.clone()}else{format!("$array{serial}:{}",names.len())};
                     let slot=self.push_local(v.expr)?;
-                    self.bindings.push((cell.clone(),Binding{dim:SCALAR,scale:Scale::ONE,range:v.range,slot,width:Width::I64}));
+                    pending_cells.push((cell.clone(),Binding{dim:SCALAR,scale:Scale::ONE,range:v.range,slot,width:Width::I64}));
                     names.push(cell);
                     if self.p.take(Token::Punct(b')'))?{break;}
                     self.p.expect(Token::Punct(b','))?;
                 }
-                self.p.expect(Token::Punct(b';'))?;self.arrays.push((name,names));continue;
+                self.p.expect(Token::Punct(b';'))?;self.bindings.extend(pending_cells);self.arrays.push((name,names));continue;
             }
             let mut value=self.expr(0,0)?;
             self.p.expect(Token::Punct(b';'))?;
