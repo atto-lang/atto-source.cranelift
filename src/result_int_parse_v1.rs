@@ -1,10 +1,34 @@
 //! HOST_ONLY typed Result<int,Error> parser and tenant-scoped identity contract.
 //! NOT source-compiled Cranelift guest support or a transferable Error ABI.
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT_PARSER_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
-    pub tenant_id: u64,
-    pub identity: u64,
-    pub message: &'static str,
+    tenant_id: u64,
+    generation: u64,
+    identity: u64,
+    message: &'static str,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnwrapKind { OptionNone, ResultErr }
+/// Host-only error envelope. The original Error is retained without formatting.
+/// Fields are private to prevent minting an authorized envelope from host data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedUnwrapError {
+    error: Error,
+    kind: UnwrapKind,
+    original: Option<Error>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnwrapFailure {
+    Ordinary(CheckedUnwrapError),
+    ForeignError,
+}
+impl CheckedUnwrapError {
+    pub fn kind(&self) -> &UnwrapKind { &self.kind }
+    pub fn original(&self) -> Option<&Error> { self.original.as_ref() }
+    pub fn error(&self) -> &Error { &self.error }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaggedResult {
@@ -13,6 +37,7 @@ pub enum TaggedResult {
 }
 pub struct TenantParser {
     tenant_id: u64,
+    generation: u64,
     next_error: u64,
 }
 impl TenantParser {
@@ -21,24 +46,48 @@ impl TenantParser {
         if tenant_id == 0 {
             return Err("E_TENANT_ID");
         }
+        let generation = NEXT_PARSER_GENERATION.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1)
+        ).map_err(|_| "E_PARSER_GENERATION_EXHAUSTED")?;
         Ok(Self {
-            tenant_id,
+            tenant_id, generation,
             next_error: 0,
         })
     }
     pub fn can_observe(&self, err: &Error) -> bool {
-        err.identity != 0 && err.tenant_id == self.tenant_id
+        err.identity != 0 && err.tenant_id == self.tenant_id && err.generation == self.generation
+    }
+    fn mint(&mut self, message: &'static str) -> Error {
+        self.next_error = self.next_error.checked_add(1)
+            .expect("E_ERROR_ID_EXHAUSTED: fatal trusted runtime quota");
+        Error {
+            tenant_id: self.tenant_id, generation: self.generation,
+            identity: self.next_error, message,
+        }
     }
     fn invalid(&mut self) -> TaggedResult {
-        self.next_error = self
-            .next_error
-            .checked_add(1)
-            .expect("E_ERROR_ID_EXHAUSTED: fatal trusted runtime quota");
-        TaggedResult::Err(Error {
-            tenant_id: self.tenant_id,
-            identity: self.next_error,
-            message: "invalid integer",
-        })
+        TaggedResult::Err(self.mint("invalid integer"))
+    }
+    pub fn unwrap_option(&mut self, value: Option<i64>) -> Result<i64, UnwrapFailure> {
+        match value {
+            Some(n) => Ok(n),
+            None => Err(UnwrapFailure::Ordinary(CheckedUnwrapError {
+                error: self.mint("called Option::unwrap() on a None value"),
+                kind: UnwrapKind::OptionNone, original: None,
+            })),
+        }
+    }
+    pub fn unwrap_result(&mut self, value: TaggedResult) -> Result<i64, UnwrapFailure> {
+        match value {
+            TaggedResult::Ok(n) => Ok(n),
+            TaggedResult::Err(original) => {
+                if !self.can_observe(&original) { return Err(UnwrapFailure::ForeignError); }
+                Err(UnwrapFailure::Ordinary(CheckedUnwrapError {
+                    error: self.mint("called Result::unwrap() on an Err value"),
+                    kind: UnwrapKind::ResultErr, original: Some(original),
+                }))
+            }
+        }
     }
     pub fn parse(&mut self, text: &str) -> TaggedResult {
         let bytes = text.as_bytes();
@@ -77,6 +126,43 @@ impl TenantParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checked_unwrap_retains_original_and_fences_parser_generations() {
+        let mut owner = TenantParser::new(101).unwrap();
+        let mut sibling = TenantParser::new(102).unwrap();
+        let mut reincarnated = TenantParser::new(101).unwrap();
+        for value in [i64::MIN, -1, 0, 42, i64::MAX] {
+            assert_eq!(owner.unwrap_option(Some(value)), Ok(value));
+            assert_eq!(owner.unwrap_result(TaggedResult::Ok(value)), Ok(value));
+        }
+        let Err(UnwrapFailure::Ordinary(none)) = owner.unwrap_option(None) else {
+            panic!("None must become an ordinary failure");
+        };
+        assert_eq!(none.kind(), &UnwrapKind::OptionNone);
+        assert_eq!(none.original(), None);
+        assert!(owner.can_observe(none.error()));
+        let TaggedResult::Err(original) = owner.parse("bad") else {
+            panic!("expected parse failure");
+        };
+        assert!(!sibling.can_observe(&original));
+        assert!(!reincarnated.can_observe(&original));
+        for foreign in [&mut sibling, &mut reincarnated] {
+            assert_eq!(foreign.unwrap_result(TaggedResult::Err(original.clone())),
+                Err(UnwrapFailure::ForeignError));
+        }
+        let Err(UnwrapFailure::Ordinary(wrapped)) =
+            owner.unwrap_result(TaggedResult::Err(original.clone())) else {
+            panic!("Err must become ordinary failure");
+        };
+        assert_eq!(wrapped.kind(), &UnwrapKind::ResultErr);
+        assert_eq!(wrapped.original(), Some(&original));
+        assert_ne!(wrapped.error(), &original);
+        assert!(owner.can_observe(wrapped.error()));
+        assert!(!reincarnated.can_observe(wrapped.error()));
+        assert_eq!(wrapped, wrapped.clone());
+        assert_ne!(owner.unwrap_result(TaggedResult::Err(original)),
+            Err(UnwrapFailure::Ordinary(wrapped)));
+    }
     #[test]
     fn checked_decimal_40k_boundary_and_owned_identity() {
         let mut a = TenantParser::new(101).unwrap();

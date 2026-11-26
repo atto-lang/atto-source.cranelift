@@ -17,3 +17,19 @@ native guest ABI, retain the original Err on ? and execute full
 conformance on exact source/tree/toolchain. Never promote source-only
 or host-only tests as guest pass. Follow spec #124, conformance #68,
 parity tracker #20.
+
+## Checked unwrap host contract (2026-11-26)
+
+The host-only carrier now distinguishes ordinary OptionNone and ResultErr
+unwrap failures from foreign Error rejection. A fresh private parser
+generation plus tenant and monotonic identity fences repeated tenant IDs;
+wrapping an owned Err retains its original Error value and identity and
+mints a separate envelope. This is not an authenticated guest-visible
+native handle, public subtype hierarchy or linked Cranelift lowering.
+
+Four unwrap source cases must reject in check, run, ir, emit-object and
+emit-object-strict modes with no emitted artifact. These are negative
+admission controls, not positive semantics. The new Rust host test and
+compiler tests are AUTHORED_NOT_EXECUTED: a local Rust toolchain is absent.
+Full typed ADT representation, ordinary error status transport, cleanup,
+JIT/object execution and independent review remain required.
