@@ -2676,7 +2676,11 @@ end"#;
             let source = format!("fnc main():int{{return {expr};}}");
             let err = parse(&source).expect_err("unimplemented effect must fail closed");
             assert!(
-                err.contains("EXCEPTION_BANG_BACKEND_UNSUPPORTED"),
+                err.contains(if expr.contains("! ") {
+                    "EXCEPTION_BANG_BACKEND_UNSUPPORTED"
+                } else {
+                    "E_BANG_KEYWORD_WHITESPACE"
+                }),
                 "wrong diagnostic for {expr:?}: {err}"
             );
         }
