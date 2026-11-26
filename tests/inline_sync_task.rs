@@ -183,3 +183,46 @@ fn do_inline_void_only_diagnostics_reject_before_clif_or_execution() {
         }
     }
 }
+
+#[test]
+fn immutable_task_locals_use_scoped_native_ssa_slots() {
+    for (source, args) in [
+        ("fnc main():int {return sync task<int> {val int n=40;return n+2;};}", &[][..]),
+        ("fnc main(v:int):int {val x=v+1;return sync task<int> {val y=x+1;return y;};}", &["40"][..]),
+        ("fnc main():int {return sync task<int> {val x=40;return sync task<int> {val y=x+2;return y;};};}", &[]),
+        ("fnc main():int {do sync task {val x=42;return;};return 42;}", &[]),
+    ] {
+        let fixture = Source::new(source);
+        let checked = call("check", &fixture, &[]);
+        assert!(checked.status.success(), "{source}: {}", String::from_utf8_lossy(&checked.stderr));
+        let ir = call("ir", &fixture, &[]);
+        assert!(ir.status.success(), "{source}: {}", String::from_utf8_lossy(&ir.stderr));
+        assert!(String::from_utf8_lossy(&ir.stdout).contains("function"));
+        let native = call("run", &fixture, args);
+        assert!(native.status.success(), "{source}: {}", String::from_utf8_lossy(&native.stderr));
+        assert_eq!(native.stdout, b"42\n", "{source}");
+    }
+    for source in [
+        "fnc main():int {do sync task {val x=42;};return x;}",
+        "fnc main():int {return sync task<int> {val x=x;return x;};}",
+        "fnc main():int {return sync task<int> {val x=1;val x=42;return x;};}",
+        "fnc main():int {return sync task<int> {val x=1;x=42;return x;};}",
+        "fnc main():int {do sync task {val x=1;return x;};return 42;}",
+    ] {
+        let fixture = Source::new(source);
+        for mode in ["check", "ir", "run"] {
+            let got = call(mode, &fixture, &[]);
+            assert_eq!(got.status.code(), Some(1), "{mode}: {source}");
+            assert!(got.stdout.is_empty(), "{mode}: {source}");
+        }
+    }
+}
+#[test]
+fn unused_task_initializer_is_still_evaluated_once() {
+    let fixture = Source::new("fnc main():int {return sync task<int> {val x=9223372036854775807+1;return 42;};}");
+    assert!(call("check", &fixture, &[]).status.success());
+    let got = call("run", &fixture, &[]);
+    assert_eq!(got.status.code(), Some(1));
+    assert!(got.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&got.stderr).contains("overflow"));
+}

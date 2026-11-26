@@ -753,6 +753,13 @@ impl<'a> Parser<'a> {
             return Err("E_TASK_RETURN_TYPE: do sync task requires void".into());
         }
         self.expect(Token::Punct(b'{'))?;
+        // Use the existing checked SSA frame for immutable task locals.
+        // Captures are scalar snapshots, not new scheduled tasks or owners.
+        // Only a leading val sequence is admitted; its initializers execute
+        // in the selected task body, not before the enclosing branch.
+        if self.current == Token::Word("val") {
+            return self.inline_local_frame(depth, discard, payload);
+        }
         let effects = self.inline_statements(depth + 1)?;
         let value = if self.take(Token::Word("return"))? {
             if self.take(Token::Punct(b';'))? {
@@ -788,6 +795,91 @@ impl<'a> Parser<'a> {
             self.node(Expr::Sequence(effects, Box::new(value)))?
         };
         self.node(Expr::InlineTask(Box::new(body)))
+    }
+
+    fn inline_local_frame(
+        &mut self,
+        depth: usize,
+        discard: bool,
+        payload: Option<bool>,
+    ) -> Result<Expr, String> {
+        let mut captures = Vec::new();
+        let mut bindings = Vec::new();
+        for (index, name) in self.parameters.clone().into_iter().enumerate() {
+            bindings.push((name, None, captures.len()));
+            captures.push(self.node(Expr::Param(index))?);
+        }
+        for (name, constant, slot) in self.bindings.clone() {
+            if constant.is_some() {
+                bindings.push((name, constant, 0));
+            } else {
+                bindings.push((name, None, captures.len()));
+                captures.push(self.node(Expr::Local(slot))?);
+            }
+        }
+        if captures.len() > 8 {
+            return Err("E_TASK_CAPTURE_LIMIT: inline scalar frame admits eight captures".into());
+        }
+        let old_params = std::mem::take(&mut self.parameters);
+        let old_bindings = std::mem::replace(&mut self.bindings, bindings);
+        let parsed = (|| {
+            let mut initializers = Vec::new();
+            while self.take(Token::Word("val"))? {
+                let typed = self.take(Token::Word("int"))?;
+                let name = self.name()?;
+                if is_java_v1_reserved_parameter_name(&name)
+                    || matches!(name.as_str(), "sync" | "task" | "yield" | "Integer" | "main" | "int" | "seq")
+                    || self.bindings.iter().any(|(known, _, _)| known == &name)
+                    || captures.len() + initializers.len() >= MAX_LOCALS
+                {
+                    return Err("E_TASK_LOCAL: invalid, duplicate or over-budget inline local".into());
+                }
+                if !typed && self.take(Token::Punct(b':'))? {
+                    self.expect(Token::Word("int"))?;
+                }
+                self.expect(Token::Punct(b'='))?;
+                let init = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b';'))?;
+                let slot = captures.len() + initializers.len();
+                initializers.push(init);
+                self.bindings.push((name, None, slot));
+            }
+            let effects = self.inline_statements(depth + 1)?;
+            let value = if self.take(Token::Word("return"))? {
+                if self.take(Token::Punct(b';'))? {
+                    None
+                } else {
+                    let v = self.expr(0, depth + 1)?;
+                    self.expect(Token::Punct(b';'))?;
+                    Some(v)
+                }
+            } else {
+                None
+            };
+            self.expect(Token::Punct(b'}'))?;
+            if (discard && value.is_some())
+                || (!discard && value.is_none())
+                || (payload == Some(true) && value.is_none())
+                || (payload == Some(false) && value.is_some())
+            {
+                return Err("E_TASK_RETURN_TYPE: inline task payload and return do not agree".into());
+            }
+            let value = match value {
+                Some(v) => v,
+                None => self.node(Expr::Literal(0))?,
+            };
+            let body = if effects.is_empty() {
+                value
+            } else {
+                self.node(Expr::Sequence(effects, Box::new(value)))?
+            };
+            Ok((initializers, body))
+        })();
+        self.parameters = old_params;
+        self.bindings = old_bindings;
+        let (initializers, body) = parsed?;
+        let frame = self.node(Expr::ScopedCall(captures, initializers, Box::new(body)))?;
+        self.node(Expr::InlineTask(Box::new(frame)))
     }
 
     fn inline_statements(&mut self, depth: usize) -> Result<Vec<Expr>, String> {
