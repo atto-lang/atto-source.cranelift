@@ -209,20 +209,48 @@ fn run() -> Result<(), String> {
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
     // Explicit trusted-host adapter. No file discovery, JIT or implicit imports.
     if mode == "emit-namespace-provider-object" {
-        let namespace=argv.next().ok_or("missing namespace")?.into_string().map_err(|_|"invalid namespace encoding")?;
-        let symbol=argv.next().ok_or("missing symbol")?.into_string().map_err(|_|"invalid symbol encoding")?;
-        let arity=match argv.next(){
-            None=>0,
-            Some(v)=>{let v=v.into_string().map_err(|_|"invalid arity encoding")?;
-                match v.as_str(){"0"=>0,"1"=>1,"2"=>2,"3"=>3,"4"=>4,_=>return Err("E_NAMESPACE_ARITY: invalid expected arity".into())}}
+        let namespace = argv
+            .next()
+            .ok_or("missing namespace")?
+            .into_string()
+            .map_err(|_| "invalid namespace encoding")?;
+        let symbol = argv
+            .next()
+            .ok_or("missing symbol")?
+            .into_string()
+            .map_err(|_| "invalid symbol encoding")?;
+        let arity = match argv.next() {
+            None => 0,
+            Some(v) => {
+                let v = v.into_string().map_err(|_| "invalid arity encoding")?;
+                match v.as_str() {
+                    "0" => 0,
+                    "1" => 1,
+                    "2" => 2,
+                    "3" => 3,
+                    "4" => 4,
+                    _ => return Err("E_NAMESPACE_ARITY: invalid expected arity".into()),
+                }
+            }
         };
-        if argv.next().is_some(){return Err("unexpected provider arguments".into());}
-        let mut bytes=Vec::new();
-        std::io::stdin().lock().take(4097).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
-        if bytes.len()>4096{return Err("E_NAMESPACE_PROFILE: source budget".into());}
-        let source=std::str::from_utf8(&bytes).map_err(|_|"invalid UTF-8")?;
-        let object=namespace_provider::compile_arity(source,&namespace,&symbol,arity)?;
-        return std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string());
+        if argv.next().is_some() {
+            return Err("unexpected provider arguments".into());
+        }
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .lock()
+            .take(4097)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 4096 {
+            return Err("E_NAMESPACE_PROFILE: source budget".into());
+        }
+        let source = std::str::from_utf8(&bytes).map_err(|_| "invalid UTF-8")?;
+        let object = namespace_provider::compile_arity(source, &namespace, &symbol, arity)?;
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
     }
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
@@ -240,7 +268,15 @@ fn run() -> Result<(), String> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+        "run"
+            | "run-traced"
+            | "ir"
+            | "isolate"
+            | "check"
+            | "emit-object"
+            | "emit-object-strict"
+            | "emit-durable-counter-object"
+            | "emit-durable-scalar-object"
     ) {
         return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
@@ -252,7 +288,11 @@ fn run() -> Result<(), String> {
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
     if matches!(
         mode.as_str(),
-        "ir" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+        "ir" | "check"
+            | "emit-object"
+            | "emit-object-strict"
+            | "emit-durable-counter-object"
+            | "emit-durable-scalar-object"
     ) && !supplied.is_empty()
     {
         return Err("ir/check mode does not accept runtime arguments".into());
@@ -298,8 +338,15 @@ fn run() -> Result<(), String> {
         if path.extension().and_then(|ext| ext.to_str()) != Some("atto") {
             return Err("E_DURABLE_COUNTER_ACTOR_ABI: expected .atto".into());
         }
-        let object = if mode == "emit-durable-scalar-object" { backend::emit_durable_scalar_object(source)? } else { backend::emit_durable_counter_object(source)? };
-        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+        let object = if mode == "emit-durable-scalar-object" {
+            backend::emit_durable_scalar_object(source)?
+        } else {
+            backend::emit_durable_counter_object(source)?
+        };
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
     }
     let linked_source = has_real_import_header(source);
     if linked_source {
@@ -448,45 +495,92 @@ fn run() -> Result<(), String> {
 // Explicit internal one-entry host-native object session. No persistent
 // cache, external package linkage, or JIT fallback.
 #[derive(Default)]
-struct IncrementalObjectSession { prior:Option<(String,Vec<u8>)> }
+struct IncrementalObjectSession {
+    prior: Option<(String, Vec<u8>)>,
+}
 impl IncrementalObjectSession {
-    fn build(&mut self,source:&str,cold:bool)->Result<(Vec<u8>,bool),String>{
-        if !cold {if let Some((old,bytes))=&self.prior {if old==source{return Ok((bytes.clone(),true));}}}
-        let parsed=frontend::parse(source)?;let bytes=backend::emit_object(&parsed)?;
-        self.prior=Some((source.to_owned(),bytes.clone()));Ok((bytes,false))
+    fn build(&mut self, source: &str, cold: bool) -> Result<(Vec<u8>, bool), String> {
+        if !cold {
+            if let Some((old, bytes)) = &self.prior {
+                if old == source {
+                    return Ok((bytes.clone(), true));
+                }
+            }
+        }
+        let parsed = frontend::parse(source)?;
+        let bytes = backend::emit_object(&parsed)?;
+        self.prior = Some((source.to_owned(), bytes.clone()));
+        Ok((bytes, false))
     }
 }
 #[cfg(test)]
-mod incremental_object_tests{
+mod incremental_object_tests {
     use super::*;
     #[test]
-    fn exact_native_object_reuse(){
-        let a="pub fnc main(): int { return 41+1; }";let b="pub fnc main(): int { return 41+2; }";
-        let mut s=IncrementalObjectSession::default();let (cold,hit)=s.build(a,true).unwrap();assert!(!hit);
-        assert_eq!(cold,backend::emit_object(&frontend::parse(a).unwrap()).unwrap());
-        let (warm,hit)=s.build(a,false).unwrap();assert!(hit);assert_eq!(warm,cold);
-        let (edit,hit)=s.build(b,false).unwrap();assert!(!hit);assert_eq!(edit,backend::emit_object(&frontend::parse(b).unwrap()).unwrap());assert_ne!(cold,edit);
-        let bad="pub fnc main(): int { return missing; }";assert_eq!(s.build(bad,false).unwrap_err(),frontend::parse(bad).unwrap_err());assert_eq!(s.build(b,false).unwrap(),(edit.clone(),true));
-        let dir=std::env::temp_dir().join(format!("atto-clif-incremental-{}",std::process::id()));std::fs::create_dir(&dir).unwrap();
-        let host=dir.join("host.c");std::fs::write(&host,"#include <stdint.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=-1;int32_t rc=oreslang_scalar_entry(0,0,0,0,&out);return rc==0?(int)out:255;}\n").unwrap();
-        for (bytes,expected) in [(cold,42),(warm,42),(edit,43)]{
-            let obj=dir.join("guest.o");let exe=dir.join("guest");std::fs::write(&obj,bytes).unwrap();
-            assert!(std::process::Command::new("cc").arg(&host).arg(&obj).arg("-o").arg(&exe).status().unwrap().success());
-            assert_eq!(std::process::Command::new(&exe).status().unwrap().code(),Some(expected));
+    fn exact_native_object_reuse() {
+        let a = "pub fnc main(): int { return 41+1; }";
+        let b = "pub fnc main(): int { return 41+2; }";
+        let mut s = IncrementalObjectSession::default();
+        let (cold, hit) = s.build(a, true).unwrap();
+        assert!(!hit);
+        assert_eq!(
+            cold,
+            backend::emit_object(&frontend::parse(a).unwrap()).unwrap()
+        );
+        let (warm, hit) = s.build(a, false).unwrap();
+        assert!(hit);
+        assert_eq!(warm, cold);
+        let (edit, hit) = s.build(b, false).unwrap();
+        assert!(!hit);
+        assert_eq!(
+            edit,
+            backend::emit_object(&frontend::parse(b).unwrap()).unwrap()
+        );
+        assert_ne!(cold, edit);
+        let bad = "pub fnc main(): int { return missing; }";
+        assert_eq!(
+            s.build(bad, false).unwrap_err(),
+            frontend::parse(bad).unwrap_err()
+        );
+        assert_eq!(s.build(b, false).unwrap(), (edit.clone(), true));
+        let dir =
+            std::env::temp_dir().join(format!("atto-clif-incremental-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let host = dir.join("host.c");
+        std::fs::write(&host,"#include <stdint.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=-1;int32_t rc=oreslang_scalar_entry(0,0,0,0,&out);return rc==0?(int)out:255;}\n").unwrap();
+        for (bytes, expected) in [(cold, 42), (warm, 42), (edit, 43)] {
+            let obj = dir.join("guest.o");
+            let exe = dir.join("guest");
+            std::fs::write(&obj, bytes).unwrap();
+            assert!(
+                std::process::Command::new("cc")
+                    .arg(&host)
+                    .arg(&obj)
+                    .arg("-o")
+                    .arg(&exe)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert_eq!(
+                std::process::Command::new(&exe).status().unwrap().code(),
+                Some(expected)
+            );
         }
-        std::fs::remove_dir_all(dir).unwrap();println!("INCREMENTAL_CRANELIFT|actual-aot-guest=42/43|rollback");
+        std::fs::remove_dir_all(dir).unwrap();
+        println!("INCREMENTAL_CRANELIFT|actual-aot-guest=42/43|rollback");
     }
 }
 // Canonical compiler-cache host substrate, exact shared Rust source vectors.
-mod sha256;
-mod compiler_cache_key;
 mod compiler_artifact_receipt;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod compiler_artifact_store;
+mod compiler_cache_key;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod compiler_cache_key_policy;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod compiler_cache_ledger;
+mod sha256;
 fn main() {
     if let Err(e) = run() {
         eprintln!("orescranelift: {e}");
