@@ -61,7 +61,9 @@ pub struct Ticket {
 
 impl Ticket {
     pub fn close(&self) -> bool {
-        let Some(owner) = self.owner.upgrade() else { return false };
+        let Some(owner) = self.owner.upgrade() else {
+            return false;
+        };
         let mut state = owner.lock().expect("continuation fence poisoned");
         if !state.matches(self) {
             return false;
@@ -87,7 +89,10 @@ impl Execution {
 impl Drop for Execution {
     fn drop(&mut self) {
         let mut state = self.owner.lock().expect("continuation fence poisoned");
-        state.executing = state.executing.checked_sub(1).expect("execution credit underflow");
+        state.executing = state
+            .executing
+            .checked_sub(1)
+            .expect("execution credit underflow");
     }
 }
 
@@ -134,8 +139,17 @@ impl Fence {
         let next = id.checked_add(1).ok_or(AdmissionError::IdentityExhausted)?;
         let index = state.free.pop().ok_or(AdmissionError::Capacity)?;
         state.next_id = next;
-        state.slots[index] = Slot { id, generation, active: true };
-        Ok(Ticket { owner: Arc::downgrade(&self.state), index, id, generation })
+        state.slots[index] = Slot {
+            id,
+            generation,
+            active: true,
+        };
+        Ok(Ticket {
+            owner: Arc::downgrade(&self.state),
+            index,
+            id,
+            generation,
+        })
     }
 
     pub fn claim(&self, ticket: &Ticket) -> Option<Execution> {
@@ -149,7 +163,10 @@ impl Fence {
         }
         state.clear(ticket.index);
         state.executing += 1;
-        Some(Execution { owner: Arc::clone(&self.state), generation: ticket.generation })
+        Some(Execution {
+            owner: Arc::clone(&self.state),
+            generation: ticket.generation,
+        })
     }
 
     pub fn advance(&self, expected: u64) -> Result<bool, AdmissionError> {
@@ -157,7 +174,9 @@ impl Fence {
         if state.closed || state.generation != expected || state.executing != 0 {
             return Ok(false);
         }
-        state.generation = expected.checked_add(1).ok_or(AdmissionError::IdentityExhausted)?;
+        state.generation = expected
+            .checked_add(1)
+            .ok_or(AdmissionError::IdentityExhausted)?;
         state.clear_pending();
         Ok(true)
     }
@@ -270,9 +289,14 @@ mod tests {
         for generation in 1..=1_000_000 {
             let ticket = fence.register(generation).unwrap();
             let execution = fence.claim(&ticket).unwrap();
-            let pending: Vec<_> = (0..3).map(|_| fence.register(generation).unwrap()).collect();
+            let pending: Vec<_> = (0..3)
+                .map(|_| fence.register(generation).unwrap())
+                .collect();
             assert_eq!(fence.counts(), (3, 1));
-            assert!(matches!(fence.register(generation), Err(AdmissionError::Capacity)));
+            assert!(matches!(
+                fence.register(generation),
+                Err(AdmissionError::Capacity)
+            ));
             assert_eq!(fence.advance(generation), Ok(false));
             if let Some(previous) = stale.as_ref() {
                 assert!(!previous.close());

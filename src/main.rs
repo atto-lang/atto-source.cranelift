@@ -3,9 +3,6 @@
 mod actor_isolation_access_v1;
 mod backend;
 mod counted_static_ready;
-// Host-only continuation lease; compiler guest lowering remains gated.
-#[allow(dead_code)]
-mod select_continuation_fence;
 pub mod critical_gate;
 mod frontend;
 mod functional_pipelines;
@@ -17,6 +14,9 @@ mod module_link;
 mod owned_region;
 #[allow(dead_code)]
 mod result_int_parse_v1;
+// Host-only continuation lease; compiler guest lowering remains gated.
+#[allow(dead_code)]
+mod select_continuation_fence;
 // Backend-local trusted host primitive; guest lowering pending.
 mod owned_bytes_v1;
 mod state_region;
