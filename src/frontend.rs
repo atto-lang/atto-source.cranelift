@@ -3361,3 +3361,72 @@ end"#;
         }
     }
 }
+
+ 
+// Opt-in restricted durable Counter source admission. Use the existing
+// lexer, not the scalar program parser, and consume the complete source.
+// Reject comments/directives in this initial profile to avoid divergence.
+pub fn durable_counter_descriptor(source: &str) -> Result<Vec<u8>, String> {
+    let deny = || "E_DURABLE_COUNTER_ACTOR_ABI".to_owned();
+    if source.len() > 16384
+        || source.bytes().any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b)))
+        || source.contains('/')
+    {
+        return Err(deny());
+    }
+    validate_source_envelope(source)?;
+    let mut p = Parser::new(source)?;
+    fn expect<'a>(p: &mut Parser<'a>, tokens: &[Token<'a>]) -> Result<(), String> {
+        for &token in tokens {
+            if !p.take(token)? {
+                return Err("E_DURABLE_COUNTER_ACTOR_ABI".into());
+            }
+        }
+        Ok(())
+    }
+    use Token::{End, Number, Punct, Word};
+    expect(&mut p, &[Word("define"), Word("durable"), Word("actor"), Word("Counter"), Word("as"), Word("state")])?;
+    let field = match p.current {
+        Word(v @ ("count" | "balance")) => v,
+        _ => return Err(deny()),
+    };
+    expect(&mut p, &[Word(field), Punct(b':'), Word("int"), Punct(b'='), Number("0"), Punct(b';'), Word("receive"), Punct(b'('), Word("ActorMail"), Punct(b'<'), Word("int"), Punct(b'>')])?;
+    let mail = match p.current {
+        Word(v @ ("mail" | "event")) => v,
+        _ => return Err(deny()),
+    };
+    expect(&mut p, &[Word(mail), Punct(b')')])?;
+    // The existing lexer represents the arrow as two punctuators. Require
+    // contiguity before consuming them, not subtraction followed by >.
+    if p.current != Punct(b'-') || source.as_bytes().get(p.pos) != Some(&b'>') {
+        return Err(deny());
+    }
+    expect(&mut p, &[Punct(b'-'), Punct(b'>'), Word("void"), Punct(b'{'), Word("self"), Punct(b'.'), Word(field), Punct(b'='), Word("self"), Punct(b'.'), Word(field), Punct(b'+'), Word(mail), Punct(b'.'), Word("value"), Punct(b';'), Punct(b'}'), Word("end")])?;
+    if p.current != End {
+        return Err(deny());
+    }
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+        })
+    }
+    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
+    for name in ["Counter", field] {
+        sig.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        sig.extend_from_slice(name.as_bytes());
+    }
+    sig.push(1);
+    let mut snapshot = b"ATTOST01\x01".to_vec();
+    snapshot.extend_from_slice(&fnv(&sig).to_le_bytes());
+    snapshot.extend_from_slice(&1u16.to_le_bytes());
+    snapshot.push(1);
+    snapshot.extend_from_slice(&0u64.to_le_bytes());
+    snapshot.extend_from_slice(&fnv(&snapshot).to_le_bytes());
+    let mut descriptor = vec![1, 7];
+    descriptor.extend_from_slice(b"Counter");
+    descriptor.push(field.len() as u8);
+    descriptor.extend_from_slice(field.as_bytes());
+    descriptor.extend_from_slice(&[1, 36]);
+    descriptor.extend_from_slice(&snapshot);
+    Ok(descriptor)
+}
