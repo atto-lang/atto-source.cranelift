@@ -1,6 +1,8 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
 #[path = "quoted_source.rs"]
 mod quoted_source;
+#[path = "quantity_scalar.rs"]
+mod quantity_scalar;
 // Use the same line boundaries as the Java/Rust source lexer and the
 // quoted-template scanner. Keep byte offsets stable for all diagnostics.
 fn line_break_width(bytes: &[u8], at: usize) -> usize {
@@ -160,6 +162,7 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    QuantityDiv(Box<Expr>, Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -568,7 +571,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*{}[];:,><=.".contains(&first) {
+        } else if b"()+-*/{}[];:,><=.".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -1627,6 +1630,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             Expr::Add(left, right)
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
+            | Expr::QuantityDiv(left, right)
             | Expr::BitXor(left, right)
             | Expr::BitAnd(left, right)
             | Expr::BitOr(left, right)
@@ -1663,7 +1667,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
-        Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        Expr::QuantityDiv(_, _) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
             "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
@@ -1772,7 +1776,11 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
 
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
-    let original = Parser::new(text)?.program();
+    let parser = Parser::new(text)?;
+    if parser.current == Token::Word("define") && (parser.next_significant_word_is("dimension") || parser.next_significant_word_is("unit")) {
+        return quantity_scalar::parse(parser);
+    }
+    let original = parser.program();
     // Preserve authoritative declaration/effect/export diagnostics. Refine
     // only generic grammar denials (or the specific unsupported Struct case).
     if !original.as_ref().is_err_and(|err| {
@@ -2267,6 +2275,7 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::QuantityDiv(a, b) => { let left=eval(a,args)?; let right=eval(b,args)?; if right==0 { Err("division by zero") } else { left.checked_div(right).ok_or("overflow") } },
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
             Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
             Expr::BitOr(a, b) => Ok(eval(a, args)? | eval(b, args)?),

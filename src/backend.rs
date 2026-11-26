@@ -221,6 +221,7 @@ fn validate_guest_expr(
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
+            | Expr::QuantityDiv(a, b)
             | Expr::BitXor(a, b)
             | Expr::BitAnd(a, b)
             | Expr::BitOr(a, b)
@@ -351,6 +352,23 @@ fn emit(
                 BitOr(_, _) => b.ins().bor(lhs, rhs),
                 _ => unreachable!(),
             }
+        }
+        QuantityDiv(x, y) => {
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+            let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
+            let nonzero = b.create_block();
+            b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
+            b.switch_to_block(nonzero);
+            b.seal_block(nonzero);
+            let min = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
+            let neg_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
+            let overflow = b.ins().band(min, neg_one);
+            let admitted = b.create_block();
+            b.ins().brif(overflow, error, &[], admitted, &[]);
+            b.switch_to_block(admitted);
+            b.seal_block(admitted);
+            b.ins().sdiv(left, right)
         }
         NamedRem(x, y) | NamedMod(x, y) => {
             let left = emit(
