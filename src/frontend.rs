@@ -357,6 +357,7 @@ struct Parser<'a> {
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
     entry_scope_checked: bool,
+    unsigned_scalar: bool,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -424,6 +425,7 @@ impl<'a> Parser<'a> {
             local_initializers: Vec::new(),
             pair_scope_checked: false,
             entry_scope_checked: false,
+            unsigned_scalar: false,
         };
         p.next()?;
         Ok(p)
@@ -982,6 +984,28 @@ impl<'a> Parser<'a> {
     }
 
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
+        if self.unsigned_scalar {
+            if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+            if self.take(Token::Punct(b'+'))? { return self.atom(depth + 1); }
+            if self.take(Token::Punct(b'('))? {
+                let value = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b')'))?;
+                return Ok(value);
+            }
+            return match self.current {
+                Token::Number(n) => {
+                    let value = integer_digits(n)?.parse::<u64>().map_err(|_| "u64 literal out of range")?;
+                    self.next()?;
+                    self.node(Expr::Literal(value as i64))
+                }
+                Token::Word(name) => {
+                    let index = self.parameters.iter().position(|p| p == name).ok_or("unsupported unsigned operand")?;
+                    self.next()?;
+                    self.node(Expr::Param(index))
+                }
+                _ => Err("unsigned scalar requires a literal, parameter or parenthesized expression".into()),
+            };
+        }
         let value = self.atom_base(depth)?;
         while self.current == Token::Punct(b':')
             && self.input.as_bytes().get(self.pos) == Some(&b':')
@@ -1310,7 +1334,7 @@ impl<'a> Parser<'a> {
             // continue to reject before executable code is generated.
             // Bind more tightly than multiplication, without changing the
             // underlying i64 value or using an unchecked reinterpretation.
-            if self.current == Token::Word("as") && min_bp <= 5 {
+            if !self.unsigned_scalar && self.current == Token::Word("as") && min_bp <= 5 {
                 self.next()?;
                 self.checked_i64_cast_target()?;
                 continue;
@@ -1320,7 +1344,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
                 Token::Punct(b'/') => (3, 4, b'/'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                Token::Punct(b'>') if !self.unsigned_scalar => (0, 1, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -2275,6 +2299,62 @@ pub fn parse_verified_strict_i64(text: &str) -> Result<Program, String> {
     let mut p = Parser::new(text)?;
     p.strict_fixed_arrays = true;
     quantity_scalar::parse_mode(p, true)
+}
+
+// Closed uniform unsigned scalar program. Its raw i64 literal storage is a
+// bit pattern only; this wrapper cannot enter the signed frontend API.
+pub(crate) struct UnsignedProgram(Program);
+impl UnsignedProgram {
+    pub(crate) fn inner(&self) -> &Program { &self.0 }
+}
+pub(crate) fn parse_unsigned(text: &str) -> Result<UnsignedProgram, String> {
+    validate_source_envelope(text)?;
+    let mut p = Parser::new(text)?;
+    p.unsigned_scalar = true;
+    p.expect(Token::Word("pub"))?;
+    p.expect(Token::Word("fnc"))?;
+    p.expect(Token::Word("main"))?;
+    p.expect(Token::Punct(b'('))?;
+    fn ty(p: &mut Parser<'_>) -> Result<(), String> {
+        if matches!(p.current, Token::Word("u64" | "uint")) { p.next() }
+        else { Err("explicit u64 or uint required".into()) }
+    }
+    if !p.take(Token::Punct(b')'))? {
+        loop {
+            let name = if matches!(p.current, Token::Word("u64" | "uint")) {
+                ty(&mut p)?;
+                p.name()?
+            } else {
+                let name = p.name()?;
+                p.expect(Token::Punct(b':'))?;
+                ty(&mut p)?;
+                name
+            };
+            if p.parameters.len() >= MAX_PARAMS || p.parameters.contains(&name) ||
+                is_java_v1_reserved_parameter_name(&name) ||
+                matches!(name.as_str(), "u64" | "uint" | "int" | "main" | "Integer") {
+                return Err("invalid unsigned parameter".into());
+            }
+            p.parameters.push(name);
+            if !p.take(Token::Punct(b','))? { break; }
+        }
+        p.expect(Token::Punct(b')'))?;
+    }
+    if !p.take(Token::Punct(b':'))? {
+        p.expect(Token::Punct(b'-'))?;
+        p.expect(Token::Punct(b'>'))?;
+    }
+    ty(&mut p)?;
+    p.expect(Token::Punct(b'{'))?;
+    p.expect(Token::Word("return"))?;
+    let result = p.expr(0, 0)?;
+    p.expect(Token::Punct(b';'))?;
+    p.expect(Token::Punct(b'}'))?;
+    p.expect(Token::End)?;
+    validate_ast_depth(&result)?;
+    Ok(UnsignedProgram(Program {
+        parameters: p.parameters, locals: vec![], result, trace_steps: vec![],
+    }))
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {
