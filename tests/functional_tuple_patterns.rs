@@ -27,16 +27,14 @@ fn run_cases(compiler: &str, dir: &Temp, mode: &str, name: &str, source: &str) -
 #[test]
 fn shared_tuple_native_and_boundaries() {
     let compiler = env!("CARGO_BIN_EXE_orescranelift");
-    let dir = Temp(
-        std::env::temp_dir().join(format!(
+    let dir = Temp(std::env::temp_dir().join(format!(
             "atto-cranelift-tuples-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        )),
-    );
+        )));
     fs::create_dir(&dir.0).unwrap();
     let positive = [
         (
