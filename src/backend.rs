@@ -234,6 +234,12 @@ fn validate_guest_expr(
             Expr::I32Checked(x)=>work.push((x, depth + 1, admitted_locals, admitted_params)),
             Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x, depth + 1, admitted_locals, admitted_params));}
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::LoopValue(i,c,u) => {
+                if admitted_locals>=64{return Err("loop state exceeds local budget".into());}
+                work.push((i,depth+1,admitted_locals,admitted_params));
+                work.push((c,depth+1,admitted_locals+1,admitted_params));
+                work.push((u,depth+1,admitted_locals+1,admitted_params));
+            }
             Expr::Choose(c,y,n) => {work.push((c, depth + 1, admitted_locals, admitted_params));work.push((y, depth + 1, admitted_locals, admitted_params));work.push((n, depth + 1, admitted_locals, admitted_params));}
             Expr::Compare(op,a,b) => {
                 if *op>5{return Err("invalid comparison opcode before native codegen".into());}
@@ -278,6 +284,21 @@ fn emit(
             let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             let cc=match op{0=>IntCC::Equal,1=>IntCC::NotEqual,2=>IntCC::SignedLessThan,3=>IntCC::SignedLessThanOrEqual,4=>IntCC::SignedGreaterThan,5=>IntCC::SignedGreaterThanOrEqual,_=>unreachable!()};
             let cmp=b.ins().icmp(cc,a,z);b.ins().uextend(types::I64,cmp)
+        }
+        LoopValue(init,cond,update)=>{
+            let start=emit(init,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let header=b.create_block();let body=b.create_block();let done=b.create_block();
+            b.append_block_param(header,types::I64);b.append_block_param(done,types::I64);
+            b.ins().jump(header,&[BlockArg::Value(start)]);
+            b.switch_to_block(header);
+            let current=b.block_params(header)[0];let mut frame=locals.to_vec();frame.push(current);
+            let test=emit(cond,b,params,&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
+            b.ins().brif(truth,body,&[],done,&[BlockArg::Value(current)]);
+            b.switch_to_block(body);b.seal_block(body);
+            let next=emit(update,b,params,&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            b.ins().jump(header,&[BlockArg::Value(next)]);b.seal_block(header);
+            b.switch_to_block(done);b.seal_block(done);b.block_params(done)[0]
         }
         Choose(c,y,n) => {
             let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
