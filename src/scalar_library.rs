@@ -59,9 +59,7 @@ fn ty(p: &mut Parser<'_>) -> Result<Ty, String> {
     }
 }
 
-fn atom(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
-    -> Result<ValueExpr, String>
-{
+fn atom(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize) -> Result<ValueExpr, String> {
     if depth > 32 {
         return Err("E_LIBRARY_DEPTH".into());
     }
@@ -92,15 +90,15 @@ fn atom(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
         return Ok(ValueExpr::Bool(false));
     }
     let name = p.name()?;
-    let (index, (_, kind)) = params.iter().enumerate()
+    let (index, (_, kind)) = params
+        .iter()
+        .enumerate()
         .find(|(_, (n, _))| *n == name)
         .ok_or("E_LIBRARY_UNBOUND")?;
     Ok(ValueExpr::Param(index, *kind))
 }
 
-fn integer(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
-    -> Result<ValueExpr, String>
-{
+fn integer(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize) -> Result<ValueExpr, String> {
     let mut lhs = atom(p, params, depth)?;
     let mut count = 0;
     while matches!(p.current, Token::Punct(b'+' | b'-')) {
@@ -116,22 +114,30 @@ fn integer(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
         let (ValueExpr::Int(a), ValueExpr::Int(b)) = (lhs, rhs) else {
             return Err("E_LIBRARY_DYNAMIC_ARITHMETIC_UNSUPPORTED".into());
         };
-        let v = if plus { a.checked_add(b) } else { a.checked_sub(b) };
+        let v = if plus {
+            a.checked_add(b)
+        } else {
+            a.checked_sub(b)
+        };
         lhs = ValueExpr::Int(v.ok_or("E_LIBRARY_INT_RANGE")?);
     }
     Ok(lhs)
 }
 
-fn comparison(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
-    -> Result<ValueExpr, String>
-{
+fn comparison(
+    p: &mut Parser<'_>,
+    params: &[(String, Ty)],
+    depth: usize,
+) -> Result<ValueExpr, String> {
     let lhs = integer(p, params, depth)?;
     let op = match p.current {
         Token::Punct(b'<') => Some(false),
         Token::Punct(b'>') => Some(true),
         _ => None,
     };
-    let Some(greater) = op else { return Ok(lhs); };
+    let Some(greater) = op else {
+        return Ok(lhs);
+    };
     p.next()?;
     let equal = p.take(Token::Punct(b'='))?;
     let rhs = integer(p, params, depth)?;
@@ -147,9 +153,11 @@ fn comparison(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
     Ok(ValueExpr::Compare(cc, Box::new(lhs), Box::new(rhs)))
 }
 
-fn expression(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
-    -> Result<ValueExpr, String>
-{
+fn expression(
+    p: &mut Parser<'_>,
+    params: &[(String, Ty)],
+    depth: usize,
+) -> Result<ValueExpr, String> {
     let mut lhs = comparison(p, params, depth)?;
     let mut count = 0;
     while p.take(Token::Punct(b'&'))? {
@@ -236,7 +244,12 @@ pub fn parse_if_library(source: &str) -> Result<Option<Library>, String> {
         }
         p.expect(Token::Punct(b';'))?;
         p.expect(Token::Punct(b'}'))?;
-        functions.push(Leaf { name, params, ret, body });
+        functions.push(Leaf {
+            name,
+            params,
+            ret,
+            body,
+        });
         if p.current == Token::End {
             break;
         }
@@ -284,7 +297,8 @@ impl Library {
                 ctx.func.signature.params.push(AbiParam::new(ty.ir()));
             }
             ctx.func.signature.returns.push(AbiParam::new(f.ret.ir()));
-            let id = module.declare_function(&f.name, Linkage::Export, &ctx.func.signature)
+            let id = module
+                .declare_function(&f.name, Linkage::Export, &ctx.func.signature)
                 .map_err(|e| e.to_string())?;
             let mut fb = FunctionBuilderContext::new();
             {
@@ -296,13 +310,15 @@ impl Library {
                 let params = b.block_params(entry).to_vec();
                 let result = emit(&f.body, &mut b, &params);
                 b.ins().return_(&[result]);
-                b.finalize();
+                b.finalize(module.target_config());
             }
             cranelift_codegen::verify_function(&ctx.func, module.isa())
                 .map_err(|e| e.to_string())?;
             ir.push_str(&format!("; {}\n{}\n", f.name, ctx.func.display()));
             if object {
-                module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+                module
+                    .define_function(id, &mut ctx)
+                    .map_err(|e| e.to_string())?;
             }
         }
         let bytes = if object {

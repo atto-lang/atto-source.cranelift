@@ -1,6 +1,10 @@
 //! Actual source-owned core library object and fail-closed boundary.
 #![cfg(target_os = "linux")]
-use std::{fs, process::Command, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[test]
 fn real_core_library_compiles_and_links_all_symbols() {
@@ -8,28 +12,47 @@ fn real_core_library_compiles_and_links_all_symbols() {
     let source = root.join("core/types.atto");
     let cli = env!("CARGO_BIN_EXE_orescranelift");
     let ir = Command::new(cli).arg("ir").arg(&source).output().unwrap();
-    assert!(ir.status.success(), "{}", String::from_utf8_lossy(&ir.stderr));
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
     let text = String::from_utf8(ir.stdout).unwrap();
     assert_eq!(text.matches("function ").count(), 13);
     for symbol in ["int_value_bits", "int_min_value", "fits_i8", "fits_u32"] {
         assert!(text.contains(&format!("; {symbol}\n")));
     }
-    let obj = Command::new(cli).arg("emit-object").arg(&source).output().unwrap();
-    assert!(obj.status.success(), "{}", String::from_utf8_lossy(&obj.stderr));
+    let obj = Command::new(cli)
+        .arg("emit-object")
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        obj.status.success(),
+        "{}",
+        String::from_utf8_lossy(&obj.stderr)
+    );
     assert!(obj.stdout.starts_with(b"\x7fELF"));
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let dir = std::env::temp_dir().join(format!("atto-library-{}-{nonce}", std::process::id()));
     fs::create_dir(&dir).unwrap();
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
     let _cleanup = Cleanup(dir.clone());
     let object = dir.join("core.o");
     let driver = dir.join("probe.c");
     let bin = dir.join("probe");
     fs::write(&object, obj.stdout).unwrap();
-    fs::write(&driver, r#"#include <stdint.h>
+    fs::write(
+        &driver,
+        r#"#include <stdint.h>
 #include <limits.h>
 extern int64_t int_value_bits(void), bool_value_bits(void), byte_value_bits(void);
 extern int64_t int_min_value(void), int_max_value(void);
@@ -46,10 +69,22 @@ int main(void) {
   if (!fits_u64(INT64_MAX)||fits_u64(-1)) return 8;
   return 0;
 }
-"#).unwrap();
-    let link = Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror"])
-        .arg(&driver).arg(&object).arg("-o").arg(&bin).output().unwrap();
-    assert!(link.status.success(), "{}", String::from_utf8_lossy(&link.stderr));
+"#,
+    )
+    .unwrap();
+    let link = Command::new("cc")
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
+        .arg(&driver)
+        .arg(&object)
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .unwrap();
+    assert!(
+        link.status.success(),
+        "{}",
+        String::from_utf8_lossy(&link.stderr)
+    );
     assert_eq!(Command::new(&bin).status().unwrap().code(), Some(0));
     // A library is not a synthetic runnable main.
     let run = Command::new(cli).arg("run").arg(&source).output().unwrap();
@@ -59,8 +94,14 @@ int main(void) {
 
 #[test]
 fn malformed_or_unproved_library_never_publishes_ir_or_object() {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!("atto-library-negative-{}-{nonce}", std::process::id()));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "atto-library-negative-{}-{nonce}",
+        std::process::id()
+    ));
     fs::create_dir(&dir).unwrap();
     let path = dir.join("bad.atto");
     for body in [
@@ -75,9 +116,12 @@ fn malformed_or_unproved_library_never_publishes_ir_or_object() {
         "pub fnc f()->int{return 1;} trailing",
     ] {
         fs::write(&path, format!("use namespace testlib; {body}")).unwrap();
-        for mode in ["check","ir","emit-object"] {
+        for mode in ["check", "ir", "emit-object"] {
             let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-                .arg(mode).arg(&path).output().unwrap();
+                .arg(mode)
+                .arg(&path)
+                .output()
+                .unwrap();
             assert!(!out.status.success(), "{mode}: {body}");
             assert!(out.stdout.is_empty(), "{mode}: {body}");
         }

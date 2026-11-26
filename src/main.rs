@@ -315,7 +315,10 @@ fn run() -> Result<(), String> {
             }
             "emit-object" => {
                 let (_, bytes) = library.compile(true)?;
-                std::io::stdout().lock().write_all(&bytes).map_err(|e| e.to_string())
+                std::io::stdout()
+                    .lock()
+                    .write_all(&bytes)
+                    .map_err(|e| e.to_string())
             }
             _ => Err("E_LIBRARY_NO_ENTRY: named library requires native object linking".into()),
         };
