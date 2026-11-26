@@ -215,7 +215,7 @@ impl Parser {
             return Ok("channel");
         }
         if self.eat("Future") {
-            self.need("<")?;
+            if !self.eat("<") { return Ok("inferFuture"); }
             if self.eat("Array") {
                 self.need("<")?;
                 self.need("int")?;
@@ -342,6 +342,9 @@ impl Parser {
             if !terminal || self.pending.is_some() {
                 return Err(err("await only in terminal return or array initializer"));
             }
+            let legacy = self.eat("nb");
+            if self.eat("select") { return Ok(Value::Int(self.default_scalar()?)); }
+            if legacy { return Err(err("nb requires select")); }
             let n = self.name()?;
             return match self.slots.get_mut(&n) {
                 Some(Slot::Future { value, retired }) if !*retired => {
@@ -499,6 +502,21 @@ impl Parser {
         }
         Ok(out)
     }
+    fn default_scalar(&mut self) -> R<Expr> {
+        if self.eat("<") { self.need("int")?; self.need(">")?; }
+        let over = self.eat("over");
+        if !over { self.need("{")?; }
+        self.need("default")?;
+        self.need(":")?;
+        self.need("->")?;
+        self.need("{")?;
+        self.need("return")?;
+        let value = self.expr(0, Some("$no_binder"), false)?.int()?;
+        self.need(";")?;
+        self.need("}")?;
+        self.need(if over { "end" } else { "}" })?;
+        Ok(value)
+    }
     fn bind(&mut self, mutable: bool) -> R<()> {
         let t = self.ty()?;
         let n = self.name()?;
@@ -531,38 +549,27 @@ impl Parser {
                     queue: VecDeque::new(),
                 }
             }
-            "future" => {
+            "future" | "pending" | "inferFuture" => {
                 if self.pending.is_some() {
                     return Err(err("await batch first"));
                 }
-                self.need("select")?;
-                self.need("<")?;
-                self.need("int")?;
-                self.need(">")?;
-                let over = self.eat("over");
-                if !over {
-                    self.need("{")?
-                }
-                self.need("default")?;
-                self.need(":")?;
-                self.need("->")?;
-                self.need("{")?;
-                self.need("return")?;
-                let value = self.expr(0, Some("$no_binder"), false)?.int()?;
-                self.need(";")?;
-                self.need("}")?;
-                self.need(if over { "end" } else { "}" })?;
-                Slot::Future {
-                    value,
-                    retired: false,
-                }
-            }
-            "pending" => {
                 self.eat("nb");
                 self.need("select")?;
-                let p = self.plan()?;
-                self.pending = Some(n.clone());
-                Slot::Pending(p)
+                // Inspect optional scalar annotation without consuming the
+                // counted parser's existing type witness.
+                let mut look = self.pos;
+                if self.tokens.get(look).is_some_and(|s| s == "<") {
+                    look += 3;
+                }
+                if self.tokens.get(look).is_some_and(|s| s == "(") {
+                    if t == "future" { return Err(err("expected scalar Future")); }
+                    let p = self.plan()?;
+                    self.pending = Some(n.clone());
+                    Slot::Pending(p)
+                } else {
+                    if t == "pending" { return Err(err("expected counted Future")); }
+                    Slot::Future { value: self.default_scalar()?, retired: false }
+                }
             }
             "array" => {
                 self.need("await")?;
@@ -613,7 +620,7 @@ impl Parser {
             if statements > 128 {
                 return Err(err("statement quota"));
             }
-            if self.eat("val") {
+            if self.eat("val") || self.eat("const") {
                 if !conditions.is_empty() {
                     return Err(err("only terminal condition chain supported"));
                 }
