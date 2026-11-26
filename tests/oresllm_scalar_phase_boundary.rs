@@ -89,7 +89,7 @@ fn runtime_overflows(expression: &str) {
 }
 #[test]
 fn shared_scalar_compile_rejections_are_not_jit_overflow() {
-    for expression in ["unknown_value", "7 / 2", "5 ^ 3", "5 ^^ 3", "1__0"] {
+    for expression in ["unknown_value", "7.0 / 2.0", "5 ^ 3", "5 ^^ 3", "1__0"] {
         compiler_rejects(expression);
     }
 }
@@ -105,4 +105,21 @@ fn shared_scalar_checked_i64_overflows_are_not_compiler_refusals() {
     ] {
         runtime_overflows(expression);
     }
+}
+
+#[test]
+fn checked_quotient_has_runtime_guard_and_distinct_compilation_phase() {
+    let ir = invoke("ir", "7 / 2");
+    assert!(ir.status.success());
+    assert!(!ir.stdout.is_empty());
+    let guest = invoke("run", "7 / 2");
+    assert!(guest.status.success());
+    assert_eq!(guest.stdout, b"3\n");
+    let ir = invoke("ir", "7 / 0");
+    assert!(ir.status.success());
+    assert!(!ir.stdout.is_empty());
+    let guest = invoke("run", "7 / 0");
+    assert_eq!(guest.status.code(), Some(1));
+    assert!(guest.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&guest.stderr).starts_with("orescranelift: "));
 }
