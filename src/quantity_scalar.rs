@@ -1,8 +1,9 @@
 //! Bounded rational-scale quantity admission on the existing stage-0 lexer and native Expr IR.
 //! Dimensions are erased only after the entire closed expression is type checked.
-use super::{Expr, Parser, Program, Token, MAX_DEPTH, integer_digits, validate_ast_depth, QuantityScale as Scale, ScaleUInt};
+use super::{Expr, Parser, Program, Token, MAX_DEPTH, integer_digits, validate_ast_depth};
 type Dim = [i8; 8];
 const SCALAR: Dim = [0; 8];
+use super::{QuantityScale as Scale, ScaleUInt};
 #[derive(Clone,Copy)]
 struct Range {lo:i64,hi:i64}
 impl Range {
@@ -51,10 +52,8 @@ struct Quantities<'a> {
 impl<'a> Quantities<'a> {
     fn declaration_name(&mut self) -> Result<String,String> {
         let name=self.p.name()?;
-        if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
-            || self.dimensions.contains(&name) || self.units.iter().any(|(n,_,_)|n==&name) || self.refinements.iter().any(|(n,_)|n==&name) {
-            return Err("E_UNIT_DECLARATION: invalid or duplicate nominal name".into());
-        }
+        if self.dimensions.contains(&name)||self.units.iter().any(|(n,_,_)|n==&name)||self.refinements.iter().any(|(n,_)|n==&name){return Err("E_UNIT_DUPLICATE: duplicate nominal name".into());}
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase){return Err("E_UNIT_NAME: invalid nominal name".into());}
         Ok(name)
     }
     fn factor(&mut self)->Result<i64,String>{
@@ -65,8 +64,7 @@ impl<'a> Quantities<'a> {
         Err("E_UNIT_SCALE: expected positive i64 factor".into())
     }
     fn declarations(&mut self) -> Result<(),String> {
-        while self.p.current==Token::Word("define") && (self.p.next_significant_word_is("dimension") || self.p.next_significant_word_is("unit")) {
-            self.p.next()?;
+        while self.p.take(Token::Word("define"))? {
             let dimension=self.p.take(Token::Word("dimension"))?;
             if !dimension { self.p.expect(Token::Word("unit"))?; }
             let name=self.declaration_name()?;
@@ -78,7 +76,7 @@ impl<'a> Quantities<'a> {
                 self.p.expect(Token::Punct(b':'))?;
                 let target=self.p.name()?;
                 let index=self.dimensions.iter().position(|n|n==&target)
-                    .ok_or("E_UNIT_DECLARATION: unknown dimension")?;
+                    .ok_or("E_UNIT_NAME: unknown dimension")?;
                 let scale=if self.p.take(Token::Punct(b'='))?{
                     let (base,factor)=if matches!(self.p.current,Token::Number(_)){
                         let n=self.factor()?;self.p.expect(Token::Punct(b'*'))?;(self.p.name()?,Scale(ScaleUInt::from_u64(n as u64),ScaleUInt::ONE))
@@ -88,11 +86,11 @@ impl<'a> Quantities<'a> {
                         else if self.p.take(Token::Punct(b'/'))?{Scale(ScaleUInt::ONE,ScaleUInt::from_u64(self.factor()? as u64))}else{Scale::ONE};
                         (base,factor)
                     };
-                    let (_,_,scale)=self.units.iter().find(|(n,i,_)|n==&base&&*i==index)
-                        .ok_or("E_UNIT_DECLARATION: unknown or incompatible alias")?;
+                    let (_,base_dim,scale)=self.units.iter().find(|(n,_,_)|n==&base).ok_or("E_UNIT_NAME: unknown alias")?;
+                    if *base_dim!=index{return Err("E_UNIT_DIMENSION: incompatible alias".into());}
                     scale.mul(factor)?
                 }else{
-                    if self.units.iter().any(|(_,i,_)|*i==index){return Err("E_UNIT_DECLARATION: duplicate base unit".into());}
+                    if self.units.iter().any(|(_,i,_)|*i==index){return Err("E_UNIT_DUPLICATE: duplicate base unit".into());}
                     Scale::ONE
                 };
                 self.units.push((name,index,scale));
@@ -119,6 +117,7 @@ impl<'a> Quantities<'a> {
             let mut count=0;
             let mut has_units=false;
             loop{
+                if self.p.take(Token::Word("units"))?{has_units=true;break;}
                 self.p.expect(Token::Word("self"))?;
                 let end=self.p.pos;
                 let lower=if self.p.take(Token::Punct(b'>'))?{true}else{self.p.expect(Token::Punct(b'<'))?;false};
@@ -146,7 +145,7 @@ impl<'a> Quantities<'a> {
         if value.dim!=SCALAR||value.scale!=Scale::ONE {return Err("E_UNIT_ATTACHMENT: already dimensioned".into());}
         let name=self.p.name()?;
         let (_,index,scale)=self.units.iter().find(|(n,_,_)|n==&name)
-            .ok_or("E_UNIT_ATTACHMENT: unknown or unsupported unit")?;
+            .ok_or("E_UNIT_NAME: unknown or unsupported unit")?;
         value.dim[*index]=1;value.scale=*scale;
         Ok(())
     }
@@ -251,7 +250,7 @@ impl<'a> Quantities<'a> {
         self.refinements.iter().find(|(n,_)|n==name).map(|(_,r)|*r).ok_or_else(||"E_UNIT_NAME: unknown annotation".into())
     }
     fn binding_name(&self,name:&str)->Result<(),String>{
-        if matches!(name,"val"|"let"|"int"|"i64"|"i32"|"bool"|"float"|"string"|"void"|"return"|"self"|"main"|"fnc"|"pub"|"define"|"type"|"where"|"as"|"and"|"units"|"in"|"true"|"false"|"if"|"else"|"end"|"begin"|"while"|"loop"|"task"|"await"|"suspends"|"infer"|"new"|"match"|"const"|"mut"|"_" ) ||
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase) || matches!(name,"using"|"dimension"|"unit"|"val"|"let"|"int"|"i64"|"i32"|"bool"|"float"|"string"|"void"|"return"|"self"|"main"|"fnc"|"pub"|"define"|"type"|"where"|"as"|"and"|"units"|"in"|"true"|"false"|"if"|"else"|"end"|"begin"|"while"|"loop"|"task"|"await"|"suspends"|"infer"|"new"|"match"|"const"|"mut"|"_" ) ||
            self.dimensions.iter().any(|n|n==name)||self.units.iter().any(|(n,_,_)|n==name)||self.refinements.iter().any(|(n,_)|n==name)||self.bindings.iter().any(|(n,_)|n==name){
             return Err("E_UNIT_BINDING: reserved or duplicate binding".into());
         }
@@ -302,6 +301,8 @@ impl<'a> Quantities<'a> {
                 if dim!=rhs.dim {return Err("E_UNIT_DIMENSION: incompatible addition/subtraction".into());}
                 if scale!=rhs.scale{return Err("E_UNIT_SCALE: mixed scales".into());}
             }else{
+                // Do not silently change ordinary scalar division typing.
+                // Scalar checked division already supported by the main IR.
                 scale=scale.mul(if op==b'/'{rhs.scale.inv()}else{rhs.scale})?;
                 for (i,d) in dim.iter_mut().enumerate(){
                     let n=if op==b'*'{*d+rhs.dim[i]}else{*d-rhs.dim[i]};
@@ -317,13 +318,12 @@ impl<'a> Quantities<'a> {
         }
         // Quantity casts/ascriptions have lower precedence than arithmetic.
         // Parenthesize attachment when used as a subsequent operand.
-        if min_bp==0 && self.p.take(Token::Word("as"))? {
+        while min_bp==0 && self.p.take(Token::Word("as"))? {
             lhs=self.target(lhs,true)?;
         }
         Ok(lhs)
     }
 }
-pub(super) fn parse(p:Parser<'_>)->Result<Program,String>{parse_mode(p,false)}
 pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
     let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict};
     q.declarations()?;q.refinement_declarations()?;

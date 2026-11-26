@@ -217,10 +217,7 @@ fn validate_guest_expr(
                     work.push((part, depth + 1));
                 }
             }
-            Expr::RefinementCast(x,lo,hi) => {
-                if lo>hi {return Err("E_REFINEMENT_INTERVAL: forged interval".into());}
-                work.push((x,depth+1));
-            }
+            Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x,depth+1));}
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
             Expr::Add(a, b)
             | Expr::Sub(a, b)
@@ -366,16 +363,13 @@ fn emit(
                 _ => unreachable!(),
             }
         }
-        RefinementCast(x,lo,hi) => {
-            // Evaluate exactly once, retaining prior arithmetic errors.
+        RefinementCast(x,lo,hi)=>{
             let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
             let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,*lo);
             let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,*hi);
             let invalid=b.ins().bor(below,above);
-            let valid=b.create_block();
-            b.ins().brif(invalid,refinement_error,&[],valid,&[]);
-            b.switch_to_block(valid);b.seal_block(valid);
-            value
+            let valid=b.create_block();b.ins().brif(invalid,refinement_error,&[],valid,&[]);
+            b.switch_to_block(valid);b.seal_block(valid);value
         }
         Div(x, y) => {
             let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
@@ -385,13 +379,13 @@ fn emit(
             b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
             b.switch_to_block(nonzero);
             b.seal_block(nonzero);
-            let min = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
-            let neg_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
-            let overflow = b.ins().band(min, neg_one);
-            let admitted = b.create_block();
-            b.ins().brif(overflow, error, &[], admitted, &[]);
-            b.switch_to_block(admitted);
-            b.seal_block(admitted);
+            let minimum = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
+            let minus_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
+            let overflow = b.ins().band(minimum, minus_one);
+            let safe = b.create_block();
+            b.ins().brif(overflow, error, &[], safe, &[]);
+            b.switch_to_block(safe);
+            b.seal_block(safe);
             b.ins().sdiv(left, right)
         }
         NamedRem(x, y) | NamedMod(x, y) => {
@@ -599,7 +593,7 @@ fn prepare_ir(
     validate_trace_steps(source)?;
     let mut sig = module.make_signature();
     // Stable internal entry ABI: four i64 values + output pointer -> i32 status.
-    // 0 succeeds; 1 overflow, 2 divisor zero, 3 negative exponent, 7 refinement.
+    // 0 succeeds; 1 is checked overflow, 2 divisor zero, 3 negative exponent.
     // All failures leave output unchanged.
     for _ in 0..4 {
         sig.params.push(AbiParam::new(types::I64));
@@ -660,7 +654,7 @@ fn prepare_ir(
     let failure = b.create_block();
     let divisor_error = b.create_block();
     let negative_exponent_error = b.create_block();
-    let refinement_error = b.create_block();
+    let refinement_error=b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
@@ -699,7 +693,7 @@ fn prepare_ir(
             failure,
             divisor_error,
             negative_exponent_error,
-            refinement_error,
+        refinement_error,
         );
         locals.push(value);
     }
@@ -719,7 +713,7 @@ fn prepare_ir(
         (failure, 1),
         (divisor_error, 2),
         (negative_exponent_error, 3),
-        (refinement_error, 7),
+        (refinement_error,7),
     ] {
         b.switch_to_block(block);
         return_status(&mut b, status, cleanup);
