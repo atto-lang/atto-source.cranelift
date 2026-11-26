@@ -104,6 +104,56 @@ fn scalar(p: &mut Parser<'_>, min: u8, depth: usize) -> Result<Expr, String> {
     Ok(lhs)
 }
 
+// A single unused, declared scalar refinement is admitted structurally.
+// It has no runtime representation or authority in this closed profile.
+fn signed_bound(p: &mut Parser<'_>) -> Result<i64, String> {
+    let negative = p.take(Token::Punct(b'-'))?;
+    let Token::Number(n) = p.current else { return Err("E_CLOSED_REFINEMENT_BOUND".into()); };
+    let digits = integer_digits(n)?;
+    let bound = if negative && digits == "9223372036854775808" {
+        i64::MIN
+    } else {
+        let value = digits.parse::<i64>().map_err(|_| "E_CLOSED_REFINEMENT_BOUND")?;
+        if negative { -value } else { value }
+    };
+    p.next()?;
+    Ok(bound)
+}
+
+fn refinement(p: &mut Parser<'_>) -> Result<Option<String>, String> {
+    if !p.take(Token::Word("declare"))? { return Ok(None); }
+    p.expect(Token::Word("type"))?;
+    let name = identifier(p)?;
+    if matches!(name.as_str(), "i32" | "i64" | "bool" | "string" | "void" |
+        "Integer" | "Array" | "Map" | "Tuple" | "Record" | "Entry" | "Pair" |
+        "Future" | "Error" | "self" | "where" | "declare" | "type") {
+        return Err("E_CLOSED_REFINEMENT_NAME".into());
+    }
+    p.expect(Token::Punct(b'='))?;
+    p.expect(Token::Word("int"))?;
+    p.expect(Token::Word("where"))?;
+    p.expect(Token::Word("self"))?;
+    // The shared lexer records the end of the current token. Require
+    // adjacent >= and <= rather than accepting two unrelated operators.
+    if p.current != Token::Punct(b'>') || p.input.as_bytes().get(p.pos) != Some(&b'=') {
+        return Err("E_CLOSED_REFINEMENT_LOWER".into());
+    }
+    p.next()?;
+    p.expect(Token::Punct(b'='))?;
+    let lo = signed_bound(p)?;
+    p.expect(Token::Word("and"))?;
+    p.expect(Token::Word("self"))?;
+    if p.current != Token::Punct(b'<') || p.input.as_bytes().get(p.pos) != Some(&b'=') {
+        return Err("E_CLOSED_REFINEMENT_UPPER".into());
+    }
+    p.next()?;
+    p.expect(Token::Punct(b'='))?;
+    let hi = signed_bound(p)?;
+    if lo > hi { return Err("E_CLOSED_REFINEMENT_EMPTY".into()); }
+    p.expect(Token::Punct(b';'))?;
+    Ok(Some(name))
+}
+
 fn variant(p: &mut Parser<'_>) -> Result<Option<Expr>, String> {
     if p.take(Token::Word("None"))? {
         return Ok(None);
@@ -126,6 +176,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     // Mode switch happens only after the first token; no other parser uses it.
     let mut p = Parser::new(text)?;
     p.closed_option_profile = true;
+    let declared = refinement(&mut p)?;
     p.take(Token::Word("pub"))?;
     p.expect(Token::Word("fnc"))?;
     p.expect(Token::Word("main"))?;
@@ -133,6 +184,9 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     if !p.take(Token::Punct(b')'))? {
         let type_first = p.take(Token::Word("int"))?;
         let name = identifier(&mut p)?;
+        if declared.as_ref() == Some(&name) {
+            return Err("E_CLOSED_REFINEMENT_SHADOW".into());
+        }
         if !type_first {
             p.expect(Token::Punct(b':'))?;
             p.expect(Token::Word("int"))?;
@@ -152,7 +206,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("int"))?;
     p.expect(Token::Punct(b'>'))?;
     let binding = identifier(&mut p)?;
-    if p.parameters.contains(&binding) {
+    if p.parameters.contains(&binding) || declared.as_ref() == Some(&binding) {
         return Err("E_CLOSED_OPTION_SHADOW".into());
     }
     p.expect(Token::Punct(b'='))?;
@@ -194,7 +248,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("Ok"))?;
     p.expect(Token::Punct(b'('))?;
     let payload = identifier(&mut p)?;
-    if payload == binding || p.parameters.contains(&payload) {
+    if payload == binding || p.parameters.contains(&payload) || declared.as_ref() == Some(&payload) {
         return Err("E_CLOSED_OPTION_PATTERN_SHADOW".into());
     }
     p.expect(Token::Punct(b')'))?;

@@ -189,3 +189,38 @@ int main(void) {
         assert!(Command::new(&binary).status().unwrap().success());
     }
 }
+
+#[test]
+fn bounded_declaration_is_checked_not_stripped() {
+    let ws = Workspace::new();
+    let file = ws.0.join("guest.atto");
+    let good = source("Some(n)", "42");
+    for header in [
+        "declare type Bounded = int where self >= 1 and self <= 42;",
+        "declare type Bounded = int where self >= -9223372036854775808 and self <= 9223372036854775807;",
+        "declare type Bounded = int where self >= 7 and self <= 7;",
+    ] {
+        fs::write(&file, format!("{header}\n{good}")).unwrap();
+        success(invoke("run", &file, &["42"]), b"42\n");
+    }
+    for header in [
+        "declare type Bounded = int where self >= 42 and self <= 1;",
+        "declare type Bounded = int where self >= -9223372036854775809 and self <= 42;",
+        "declare type Bounded = int where self >= 1 and self <= 9223372036854775808;",
+        "declare type Bounded = int where self > = 1 and self <= 42;",
+        "declare type Bounded = int where self >= 1 and self < = 42;",
+        "declare type Bounded = bool where self >= 1 and self <= 42;",
+        "declare type n = int where self >= 1 and self <= 42;",
+        "declare type x = int where self >= 1 and self <= 42;",
+        "declare type v = int where self >= 1 and self <= 42;",
+        "declare type int = int where self >= 1 and self <= 42;",
+        "declare type Bounded = int where self >= 1 and self <= 42; declare type Bounded = int where self >= 1 and self <= 42;",
+    ] {
+        fs::write(&file, format!("{header}\n{good}")).unwrap();
+        for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
+            let out = invoke(mode, &file, if mode=="run" { &["42"] } else { &[] });
+            assert_eq!(out.status.code(), Some(1), "{mode}: {header}");
+            assert!(out.stdout.is_empty(), "{mode}: emitted artifact");
+        }
+    }
+}
