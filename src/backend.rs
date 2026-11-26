@@ -225,7 +225,7 @@ fn validate_guest_expr(
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
-            | Expr::QuantityDiv(a, b)
+            | Expr::Div(a, b)
             | Expr::BitXor(a, b)
             | Expr::BitAnd(a, b)
             | Expr::BitOr(a, b)
@@ -377,7 +377,7 @@ fn emit(
             b.switch_to_block(valid);b.seal_block(valid);
             value
         }
-        QuantityDiv(x, y) => {
+        Div(x, y) => {
             let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
             let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error);
             let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);

@@ -1,25 +1,8 @@
 //! Bounded rational-scale quantity admission on the existing stage-0 lexer and native Expr IR.
 //! Dimensions are erased only after the entire closed expression is type checked.
-use super::{Expr, Parser, Program, Token, MAX_DEPTH, integer_digits, validate_ast_depth};
+use super::{Expr, Parser, Program, Token, MAX_DEPTH, integer_digits, validate_ast_depth, QuantityScale as Scale, ScaleUInt};
 type Dim = [i8; 8];
 const SCALAR: Dim = [0; 8];
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Scale { n:i64, d:i64 }
-fn gcd(mut a:i64,mut b:i64)->i64 {while b!=0{let r=a%b;a=b;b=r;}a}
-impl Scale {
-    const ONE:Self=Self{n:1,d:1};
-    fn inv(self)->Self{Self{n:self.d,d:self.n}}
-    fn mul(self,rhs:Self)->Result<Self,String>{
-        let a=gcd(self.n,rhs.d);let b=gcd(rhs.n,self.d);
-        Ok(Self{n:(self.n/a).checked_mul(rhs.n/b).ok_or("E_UNIT_LIMIT: numerator")?,
-                d:(self.d/b).checked_mul(rhs.d/a).ok_or("E_UNIT_LIMIT: denominator")?})
-    }
-    fn convert(self,value:i64,target:Self)->Result<i64,String>{
-        let ratio=self.mul(target.inv())?;
-        if value%ratio.d!=0{return Err("E_UNIT_INEXACT: nonintegral conversion".into());}
-        (value/ratio.d).checked_mul(ratio.n).ok_or_else(||"E_UNIT_RANGE: conversion exceeds i64".into())
-    }
-}
 #[derive(Clone,Copy)]
 struct Range {lo:i64,hi:i64}
 impl Range {
@@ -82,7 +65,8 @@ impl<'a> Quantities<'a> {
         Err("E_UNIT_SCALE: expected positive i64 factor".into())
     }
     fn declarations(&mut self) -> Result<(),String> {
-        while self.p.take(Token::Word("define"))? {
+        while self.p.current==Token::Word("define") && (self.p.next_significant_word_is("dimension") || self.p.next_significant_word_is("unit")) {
+            self.p.next()?;
             let dimension=self.p.take(Token::Word("dimension"))?;
             if !dimension { self.p.expect(Token::Word("unit"))?; }
             let name=self.declaration_name()?;
@@ -97,11 +81,11 @@ impl<'a> Quantities<'a> {
                     .ok_or("E_UNIT_DECLARATION: unknown dimension")?;
                 let scale=if self.p.take(Token::Punct(b'='))?{
                     let (base,factor)=if matches!(self.p.current,Token::Number(_)){
-                        let n=self.factor()?;self.p.expect(Token::Punct(b'*'))?;(self.p.name()?,Scale{n,d:1})
+                        let n=self.factor()?;self.p.expect(Token::Punct(b'*'))?;(self.p.name()?,Scale(ScaleUInt::from_u64(n as u64),ScaleUInt::ONE))
                     }else{
                         let base=self.p.name()?;
-                        let factor=if self.p.take(Token::Punct(b'*'))?{Scale{n:self.factor()?,d:1}}
-                        else if self.p.take(Token::Punct(b'/'))?{Scale{n:1,d:self.factor()?}}else{Scale::ONE};
+                        let factor=if self.p.take(Token::Punct(b'*'))?{Scale(ScaleUInt::from_u64(self.factor()? as u64),ScaleUInt::ONE)}
+                        else if self.p.take(Token::Punct(b'/'))?{Scale(ScaleUInt::ONE,ScaleUInt::from_u64(self.factor()? as u64))}else{Scale::ONE};
                         (base,factor)
                     };
                     let (_,_,scale)=self.units.iter().find(|(n,i,_)|n==&base&&*i==index)
@@ -233,7 +217,7 @@ impl<'a> Quantities<'a> {
                     self.p.next()?;
                     let compact=self.p.pos==end+1;
                     let expr=self.p.node(Expr::Literal(i64::MIN))?;
-                    return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(i64::MIN)},compact,false);
+                    return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(i64::MIN)},compact,true);
                 }
             }
             let value=self.atom(depth+1)?;
@@ -318,8 +302,6 @@ impl<'a> Quantities<'a> {
                 if dim!=rhs.dim {return Err("E_UNIT_DIMENSION: incompatible addition/subtraction".into());}
                 if scale!=rhs.scale{return Err("E_UNIT_SCALE: mixed scales".into());}
             }else{
-                // Do not silently change ordinary scalar division typing.
-                if !self.strict&&op==b'/'&&dim==SCALAR&&rhs.dim==SCALAR&&scale==Scale::ONE&&rhs.scale==Scale::ONE {return Err("E_UNIT_PROFILE: ordinary scalar division not admitted".into());}
                 scale=scale.mul(if op==b'/'{rhs.scale.inv()}else{rhs.scale})?;
                 for (i,d) in dim.iter_mut().enumerate(){
                     let n=if op==b'*'{*d+rhs.dim[i]}else{*d-rhs.dim[i]};
@@ -330,7 +312,7 @@ impl<'a> Quantities<'a> {
             if self.strict&&!lhs.range.proves(rhs.range,op){return Err("E_VERIFY_UNPROVEN: signed arithmetic may overflow or divide by zero".into());}
             let range=lhs.range.binary(rhs.range,op);
             let left=Box::new(lhs.expr);let right=Box::new(rhs.expr);
-            let expr=self.p.node(match op{b'+'=>Expr::Add(left,right),b'-'=>Expr::Sub(left,right),b'*'=>Expr::Mul(left,right),b'/'=>Expr::QuantityDiv(left,right),_=>unreachable!()})?;
+            let expr=self.p.node(match op{b'+'=>Expr::Add(left,right),b'-'=>Expr::Sub(left,right),b'*'=>Expr::Mul(left,right),b'/'=>Expr::Div(left,right),_=>unreachable!()})?;
             lhs=Typed{expr,dim,scale,range};
         }
         // Quantity casts/ascriptions have lower precedence than arithmetic.
