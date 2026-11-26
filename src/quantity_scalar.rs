@@ -621,8 +621,12 @@ impl<'a> Quantities<'a> {
                 Token::Punct(b'{')=>nesting+=1,
                 Token::Punct(b'}')=>nesting-=1,
                 Token::Word(n)=>{
-                    let suffix=self.p.input.as_bytes().get(self.p.pos..).unwrap_or_default();
-                    if suffix.iter().copied().find(|c|!c.is_ascii_whitespace())==Some(b'=')&&mutable.iter().any(|(key,_)|key==n){writes.insert(n.to_owned());}
+                    // Use the real lexer so comments cannot conceal a write
+                    // from the invariant header pre-scan.
+                    let cursor=self.cursor();self.p.next()?;
+                    let assignment=self.p.current==Token::Punct(b'=');
+                    self.seek(cursor);
+                    if assignment&&mutable.iter().any(|(key,_)|key==n){writes.insert(n.to_owned());}
                 }
                 _=>{}
             }
