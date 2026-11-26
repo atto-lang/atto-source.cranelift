@@ -1264,10 +1264,8 @@ impl<'a> Parser<'a> {
             }
             Token::Word(s) => {
                 self.next()?;
-                let value = if let Some(index) = self.parameters.iter().position(|p| p == s) {
-                    Expr::Param(index)
-                } else if let Some((_, constant, runtime_slot)) =
-                    self.bindings.iter().find(|(name, _, _)| name == s)
+                let value = if let Some((_, constant, runtime_slot)) =
+                    self.bindings.iter().rev().find(|(name, _, _)| name == s)
                 {
                     // Const references are already typed/folded, while val
                     // references retain a runtime SSA slot.
@@ -1275,6 +1273,8 @@ impl<'a> Parser<'a> {
                         Some(value) => Expr::Literal(*value),
                         None => Expr::Local(*runtime_slot),
                     }
+                } else if let Some(index) = self.parameters.iter().position(|p| p == s) {
+                    Expr::Param(index)
                 } else {
                     return Err(format!("unbound or unsupported identifier: {s}"));
                 };
@@ -1512,8 +1512,16 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::Word("main"))?;
         self.expect(Token::Punct(b'('))?;
+        let mut rebindable = Vec::new();
         if !self.take(Token::Punct(b')'))? {
             loop {
+                let rebind = self.current == Token::Word("rebind") && !self.next_significant_is(b':');
+                if rebind {
+                    self.next()?;
+                    if self.current == Token::Word("rebind") && !self.next_significant_is(b':') {
+                        return Err("E_SYNTAX: duplicate rebind marker".into());
+                    }
+                }
                 let type_first = self.take(Token::Word("int"))?;
                 let name = self.name()?;
                 if name == "sync" {
@@ -1572,6 +1580,9 @@ impl<'a> Parser<'a> {
                 }
                 if self.parameters.len() == MAX_PARAMS {
                     return Err("parameter count exceeds four".into());
+                }
+                if rebind {
+                    rebindable.push(name.clone());
                 }
                 self.parameters.push(name);
                 if !self.take(Token::Punct(b','))? {
@@ -1660,6 +1671,28 @@ impl<'a> Parser<'a> {
             // Bind only after the initializer passes admission, preventing
             // self and forward references and any hidden shadowing.
             self.bindings.push((name, constant, runtime_slot));
+        }
+        // Straight-line scalar rebind only. Each RHS observes the previous
+        // SSA version; commit a fresh local initializer after parsing it.
+        while let Token::Word(name) = self.current {
+            if !self.parameters.iter().any(|p| p == name) || !self.next_significant_is(b'=') {
+                break;
+            }
+            if !rebindable.iter().any(|p| p == name) {
+                return Err("E_IMMUTABLE_REBIND: fixed parameter".into());
+            }
+            if self.local_initializers.len() >= MAX_LOCALS || self.bindings.len() >= MAX_LOCALS {
+                return Err("local binding count exceeds 64".into());
+            }
+            let name = name.to_owned();
+            self.next()?;
+            self.expect(Token::Punct(b'='))?;
+            let initializer = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            validate_ast_depth(&initializer)?;
+            let slot = self.local_initializers.len();
+            self.local_initializers.push(initializer);
+            self.bindings.push((name, None, slot));
         }
         if self.current == Token::Word("let") {
             // A denied 'let' may still conceal a reserved actor operation,
