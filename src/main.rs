@@ -328,7 +328,8 @@ fn run() -> Result<(), String> {
             || (!source.contains("|>")
                 && !source.contains("<|")
                 && !source.contains(": int ->")
-                && functions.len() > 1))
+                && (functions.len() > 1
+                    || functional_pipelines::requires_named_boolean_lowering(&functions))))
     {
         // Tuple patterns require native SSA temporaries, including discards.
         return run_linked_native(&mode, &values, &functions);
