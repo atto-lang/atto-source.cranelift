@@ -72,7 +72,9 @@ fn checked_division_native_object_fault_order_and_atomic_output() {
     // sequencing and discarded locals, with independent widened expectations.
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
     let dir = std::env::temp_dir().join(format!("atto-div-order-aot-{}", std::process::id()));
     fs::create_dir(&dir).expect("exclusive test workspace");
@@ -82,30 +84,71 @@ fn checked_division_native_object_fault_order_and_atomic_output() {
     for (mode, guest) in [
         (0, "pub fnc main(a:int,b:int):int{return a/b;}"),
         (1, "pub fnc main(a:int,b:int):int{return (a+1)/b;}"),
-        (2, "pub fnc main(a:int,b:int):int{return seq(a/b,9223372036854775807+1);}"),
-        (3, "pub fnc main(a:int,b:int):int{val unused=a/b;return 42;}"),
+        (
+            2,
+            "pub fnc main(a:int,b:int):int{return seq(a/b,9223372036854775807+1);}",
+        ),
+        (
+            3,
+            "pub fnc main(a:int,b:int):int{val unused=a/b;return 42;}",
+        ),
         (4, "pub fnc main(a:int,b:int):int{return a/(b+1);}"),
         (5, "pub fnc main(a:int,b:int):int{return seq(a+1,a/b);}"),
         (6, "pub fnc main(a:int,b:int):int{return (a+1)/(b+1);}"),
     ] {
-        let source=dir.join(format!("guest-{mode}.atto"));
-        let object=dir.join(format!("guest-{mode}.o"));
+        let source = dir.join(format!("guest-{mode}.atto"));
+        let object = dir.join(format!("guest-{mode}.o"));
         fs::write(&source, guest).unwrap();
-        let artifact=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-            .arg("emit-object").arg(&source).output().unwrap();
-        assert!(artifact.status.success(), "mode {mode}: {}", String::from_utf8_lossy(&artifact.stderr));
-        assert!(artifact.stderr.is_empty(), "unexpected object-emission diagnostic");
+        let artifact = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object")
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            artifact.status.success(),
+            "mode {mode}: {}",
+            String::from_utf8_lossy(&artifact.stderr)
+        );
+        assert!(
+            artifact.stderr.is_empty(),
+            "unexpected object-emission diagnostic"
+        );
         assert!(!artifact.stdout.is_empty(), "empty native object");
         fs::write(&object, artifact.stdout).unwrap();
         for opt in ["-O0", "-O2"] {
-            let binary=dir.join(format!("guest-{mode}-{opt}"));
-            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",
-                "-fsanitize=undefined","-fno-sanitize-recover=all",opt])
-                .arg(&harness).arg(&object).arg("-o").arg(&binary).output().unwrap();
-            assert!(link.status.success(), "mode {mode}/{opt}: {}",String::from_utf8_lossy(&link.stderr));
-            let run=Command::new(&binary).arg(mode.to_string()).output().unwrap();
-            assert_eq!(run.status.code(),Some(0),"mode {mode}/{opt}: {}",String::from_utf8_lossy(&run.stderr));
-            assert_eq!(run.stdout,b"CHECKED_DIVISION_AOT_ORDER_OK\n");
+            let binary = dir.join(format!("guest-{mode}-{opt}"));
+            let link = Command::new("cc")
+                .args([
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsanitize=undefined",
+                    "-fno-sanitize-recover=all",
+                    opt,
+                ])
+                .arg(&harness)
+                .arg(&object)
+                .arg("-o")
+                .arg(&binary)
+                .output()
+                .unwrap();
+            assert!(
+                link.status.success(),
+                "mode {mode}/{opt}: {}",
+                String::from_utf8_lossy(&link.stderr)
+            );
+            let run = Command::new(&binary)
+                .arg(mode.to_string())
+                .output()
+                .unwrap();
+            assert_eq!(
+                run.status.code(),
+                Some(0),
+                "mode {mode}/{opt}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert_eq!(run.stdout, b"CHECKED_DIVISION_AOT_ORDER_OK\n");
             assert!(run.stderr.is_empty());
         }
     }

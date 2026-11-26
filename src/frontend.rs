@@ -958,13 +958,17 @@ impl<'a> Parser<'a> {
     // Restricted pure literal projection. No owned Pair ABI is constructed.
     // Scan source tokens once per compilation, not once per projection.
     fn check_pair_scope(&mut self) -> Result<(), String> {
-        if self.pair_scope_checked { return Ok(()); }
+        if self.pair_scope_checked {
+            return Ok(());
+        }
         let mut scan = Parser::new(self.input)?;
         let mut previous = Token::End;
         while scan.current != Token::End {
             if scan.current == Token::Word("Pair") {
-                if previous == Token::Punct(b'.') || previous == Token::Punct(b':')
-                    || !scan.next_significant_is(b'.') {
+                if previous == Token::Punct(b'.')
+                    || previous == Token::Punct(b':')
+                    || !scan.next_significant_is(b'.')
+                {
                     return Err("E_PAIR_SCOPE_UNSUPPORTED: competing Pair name".into());
                 }
                 scan.next()?;
@@ -992,7 +996,9 @@ impl<'a> Parser<'a> {
             } else {
                 self.expect(Token::Word("int"))?;
                 if self.current == Token::Punct(b',') {
-                    return Err("E_PAIR_KEY_TYPE: Pair first generic argument must be string".into());
+                    return Err(
+                        "E_PAIR_KEY_TYPE: Pair first generic argument must be string".into(),
+                    );
                 }
             }
             self.expect(Token::Punct(b'>'))?;
@@ -1007,7 +1013,10 @@ impl<'a> Parser<'a> {
         if bytes.len() < 2 || !matches!(bytes[0], b'\'' | b'"') {
             return Err("E_PAIR_KEY_TYPE: Pair requires a string key".into());
         }
-        if !bytes[1..bytes.len()-1].iter().all(|c| (32..=126).contains(c) && *c != 92 && *c != 36) {
+        if !bytes[1..bytes.len() - 1]
+            .iter()
+            .all(|c| (32..=126).contains(c) && *c != 92 && *c != 36)
+        {
             return Err("E_PAIR_KEY_UNSUPPORTED: plain literal string required".into());
         }
         self.next()?;
@@ -1017,15 +1026,23 @@ impl<'a> Parser<'a> {
             return Err("E_PAIR_VALUE_UNSUPPORTED: pure int literal required".into());
         };
         let digits = integer_digits(raw)?;
-        let signed = if negative { format!("-{digits}") } else { digits };
-        let value = signed.parse::<i64>().map_err(|_| "i64 literal out of range")?;
+        let signed = if negative {
+            format!("-{digits}")
+        } else {
+            digits
+        };
+        let value = signed
+            .parse::<i64>()
+            .map_err(|_| "i64 literal out of range")?;
         self.next()?;
         self.expect(Token::Punct(b')'))?;
         if !self.take(Token::Punct(b'.'))? {
             return Err("E_PAIR_ESCAPE_UNSUPPORTED: native owned Pair ABI unavailable".into());
         }
         if !self.take(Token::Word("second"))? {
-            return Err("E_PAIR_PROJECTION_UNSUPPORTED: only i64 second projection admitted".into());
+            return Err(
+                "E_PAIR_PROJECTION_UNSUPPORTED: only i64 second projection admitted".into(),
+            );
         }
         self.node(Expr::Literal(value))
     }
