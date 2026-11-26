@@ -1,8 +1,8 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
-#[path = "quoted_source.rs"]
-mod quoted_source;
 #[path = "quantity_scalar.rs"]
 mod quantity_scalar;
+#[path = "quoted_source.rs"]
+mod quoted_source;
 // Use the same line boundaries as the Java/Rust source lexer and the
 // quoted-template scanner. Keep byte offsets stable for all diagnostics.
 fn line_break_width(bytes: &[u8], at: usize) -> usize {
@@ -165,7 +165,7 @@ pub enum Expr {
     Div(Box<Expr>, Box<Expr>),
     Compare(u8, Box<Expr>, Box<Expr>),
     Choose(Box<Expr>, Box<Expr>, Box<Expr>),
-    RefinementCast(Box<Expr>,i64,i64),
+    RefinementCast(Box<Expr>, i64, i64),
     I32Checked(Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
@@ -180,6 +180,22 @@ pub enum Expr {
     Sequence(Vec<Expr>, Box<Expr>),
     /// Eager arguments in the caller; callee locals and result in an isolated lexical slot frame.
     ScopedCall(Vec<Expr>, Vec<Expr>, Box<Expr>),
+    ScalarLoop(
+        Vec<Expr>,
+        Vec<usize>,
+        Box<Expr>,
+        Vec<LoopStep>,
+        Vec<Expr>,
+        Box<Expr>,
+    ),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopStep {
+    Bind(Expr, bool),
+    Set(usize, Expr),
+    Loop(Expr, Vec<LoopStep>),
+    Exit(Expr, bool),
 }
 
 #[derive(Debug)]
@@ -208,55 +224,121 @@ enum Token<'a> {
 // Bounded scale arithmetic: 256-bit normalized components, 512-bit
 // intermediates. No new dependency and no host integer overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ScaleUInt([u32;16]);
+struct ScaleUInt([u32; 16]);
 impl ScaleUInt {
-    const ZERO: Self=Self([0;16]);
-    const ONE: Self=Self([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
-    fn from_u64(n:u64)->Self {let mut x=Self::ZERO;x.0[0]=n as u32;x.0[1]=(n>>32) as u32;x}
-    fn low64(self)->u64{u64::from(self.0[0])|(u64::from(self.0[1])<<32)}
-    fn fits256(self)->bool{self.0[8..].iter().all(|v|*v==0)}
-    fn cmp(self,b:Self)->std::cmp::Ordering{self.0.iter().rev().cmp(b.0.iter().rev())}
-    fn sub(&mut self,b:Self){let mut borrow=0u64;for i in 0..16{let a=u64::from(self.0[i]);let v=u64::from(b.0[i])+borrow;self.0[i]=a.wrapping_sub(v) as u32;borrow=u64::from(a<v);}}
-    fn shift(&mut self){let mut carry=0;for word in &mut self.0{let next=*word>>31;*word=(*word<<1)|carry;carry=next;}}
-    fn mul256(self,b:Self)->Self{
-        let mut out=Self::ZERO;
-        for i in 0..8{let mut carry=0u64;for j in 0..8{
-            let v=u64::from(self.0[i])*u64::from(b.0[j])+u64::from(out.0[i+j])+carry;
-            out.0[i+j]=v as u32;carry=v>>32;
-        }out.0[i+8]=carry as u32;}
+    const ZERO: Self = Self([0; 16]);
+    const ONE: Self = Self([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    fn from_u64(n: u64) -> Self {
+        let mut x = Self::ZERO;
+        x.0[0] = n as u32;
+        x.0[1] = (n >> 32) as u32;
+        x
+    }
+    fn low64(self) -> u64 {
+        u64::from(self.0[0]) | (u64::from(self.0[1]) << 32)
+    }
+    fn fits256(self) -> bool {
+        self.0[8..].iter().all(|v| *v == 0)
+    }
+    fn cmp(self, b: Self) -> std::cmp::Ordering {
+        self.0.iter().rev().cmp(b.0.iter().rev())
+    }
+    fn sub(&mut self, b: Self) {
+        let mut borrow = 0u64;
+        for i in 0..16 {
+            let a = u64::from(self.0[i]);
+            let v = u64::from(b.0[i]) + borrow;
+            self.0[i] = a.wrapping_sub(v) as u32;
+            borrow = u64::from(a < v);
+        }
+    }
+    fn shift(&mut self) {
+        let mut carry = 0;
+        for word in &mut self.0 {
+            let next = *word >> 31;
+            *word = (*word << 1) | carry;
+            carry = next;
+        }
+    }
+    fn mul256(self, b: Self) -> Self {
+        let mut out = Self::ZERO;
+        for i in 0..8 {
+            let mut carry = 0u64;
+            for j in 0..8 {
+                let v = u64::from(self.0[i]) * u64::from(b.0[j]) + u64::from(out.0[i + j]) + carry;
+                out.0[i + j] = v as u32;
+                carry = v >> 32;
+            }
+            out.0[i + 8] = carry as u32;
+        }
         out
     }
-    fn divmod(self,b:Self)->(Self,Self){
-        debug_assert!(b!=Self::ZERO);
-        let mut q=Self::ZERO;let mut r=Self::ZERO;
-        for i in (0..512).rev(){let carry=r.0[15]>>31!=0;r.shift();r.0[0]|=(self.0[i/32]>>(i%32))&1;
-            if carry||!r.cmp(b).is_lt(){r.sub(b);q.0[i/32]|=1u32<<(i%32);}
-        }(q,r)
+    fn divmod(self, b: Self) -> (Self, Self) {
+        debug_assert!(b != Self::ZERO);
+        let mut q = Self::ZERO;
+        let mut r = Self::ZERO;
+        for i in (0..512).rev() {
+            let carry = r.0[15] >> 31 != 0;
+            r.shift();
+            r.0[0] |= (self.0[i / 32] >> (i % 32)) & 1;
+            if carry || !r.cmp(b).is_lt() {
+                r.sub(b);
+                q.0[i / 32] |= 1u32 << (i % 32);
+            }
+        }
+        (q, r)
     }
-    fn gcd(mut a:Self,mut b:Self)->Self{while b!=Self::ZERO{let r=a.divmod(b).1;a=b;b=r;}a}
+    fn gcd(mut a: Self, mut b: Self) -> Self {
+        while b != Self::ZERO {
+            let r = a.divmod(b).1;
+            a = b;
+            b = r;
+        }
+        a
+    }
 }
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-struct QuantityScale(ScaleUInt,ScaleUInt);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QuantityScale(ScaleUInt, ScaleUInt);
 impl QuantityScale {
-    const ONE:Self=Self(ScaleUInt::ONE,ScaleUInt::ONE);
-    fn inv(self)->Self{Self(self.1,self.0)}
-    fn mul(self,rhs:Self)->Result<Self,String>{
-        let n=self.0.mul256(rhs.0);let d=self.1.mul256(rhs.1);
-        let g=ScaleUInt::gcd(n,d);let n=n.divmod(g).0;let d=d.divmod(g).0;
-        if !n.fits256()||!d.fits256(){return Err("E_UNIT_LIMIT: scale components exceed 256 bits".into());}
-        Ok(Self(n,d))
+    const ONE: Self = Self(ScaleUInt::ONE, ScaleUInt::ONE);
+    fn inv(self) -> Self {
+        Self(self.1, self.0)
     }
-    fn convert(self,v:i64,target:Self)->Result<i64,String>{
-        if v==0{return Ok(0);}
-        let n=self.0.mul256(target.1);let d=self.1.mul256(target.0);
-        let g=ScaleUInt::gcd(n,d);let n=n.divmod(g).0;let d=d.divmod(g).0;
-        let (q,r)=ScaleUInt::from_u64(v.unsigned_abs()).divmod(d);
-        if r!=ScaleUInt::ZERO{return Err("E_UNIT_INEXACT: integer conversion".into());}
-        let limit=if v<0{1u64<<63}else{i64::MAX as u64};
-        if n.cmp(ScaleUInt::from_u64(limit)).is_gt()||q.cmp(ScaleUInt::from_u64(limit/n.low64())).is_gt(){return Err("E_UNIT_RANGE: integer conversion".into());}
-        let m=q.low64()*n.low64();
-        if v<0&&m==1u64<<63{return Ok(i64::MIN);}
-        Ok(if v<0{-(m as i64)}else{m as i64})
+    fn mul(self, rhs: Self) -> Result<Self, String> {
+        let n = self.0.mul256(rhs.0);
+        let d = self.1.mul256(rhs.1);
+        let g = ScaleUInt::gcd(n, d);
+        let n = n.divmod(g).0;
+        let d = d.divmod(g).0;
+        if !n.fits256() || !d.fits256() {
+            return Err("E_UNIT_LIMIT: scale components exceed 256 bits".into());
+        }
+        Ok(Self(n, d))
+    }
+    fn convert(self, v: i64, target: Self) -> Result<i64, String> {
+        if v == 0 {
+            return Ok(0);
+        }
+        let n = self.0.mul256(target.1);
+        let d = self.1.mul256(target.0);
+        let g = ScaleUInt::gcd(n, d);
+        let n = n.divmod(g).0;
+        let d = d.divmod(g).0;
+        let (q, r) = ScaleUInt::from_u64(v.unsigned_abs()).divmod(d);
+        if r != ScaleUInt::ZERO {
+            return Err("E_UNIT_INEXACT: integer conversion".into());
+        }
+        let limit = if v < 0 { 1u64 << 63 } else { i64::MAX as u64 };
+        if n.cmp(ScaleUInt::from_u64(limit)).is_gt()
+            || q.cmp(ScaleUInt::from_u64(limit / n.low64())).is_gt()
+        {
+            return Err("E_UNIT_RANGE: integer conversion".into());
+        }
+        let m = q.low64() * n.low64();
+        if v < 0 && m == 1u64 << 63 {
+            return Ok(i64::MIN);
+        }
+        Ok(if v < 0 { -(m as i64) } else { m as i64 })
     }
 }
 struct Parser<'a> {
@@ -266,6 +348,7 @@ struct Parser<'a> {
     nodes: usize,
     parameters: Vec<String>,
     mutex_scan: bool,
+    strict_fixed_arrays: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
@@ -329,6 +412,7 @@ impl<'a> Parser<'a> {
             nodes: 0,
             parameters: Vec::new(),
             mutex_scan,
+            strict_fixed_arrays: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             pair_scope_checked: false,
@@ -472,15 +556,43 @@ impl<'a> Parser<'a> {
             let suffix = &self.input[self.pos..];
             let comparison = is_comparison_bang(suffix);
             // Enforce the complete contextual suffix before semantic denial.
-            if matches!(self.current, Token::Word("trap" | "throw" | "raise" | "panic"
-                | "copy" | "take" | "move" | "borrow" | "share" | "pin" | "drop"
-                | "pipe" | "rpipe" | "stop" | "expand" | "freeze" | "weak" | "ref" | "deref" | "unref"))
-                && b.get(self.pos) == Some(&b'!') && !comparison
+            if matches!(
+                self.current,
+                Token::Word(
+                    "trap"
+                        | "throw"
+                        | "raise"
+                        | "panic"
+                        | "copy"
+                        | "take"
+                        | "move"
+                        | "borrow"
+                        | "share"
+                        | "pin"
+                        | "drop"
+                        | "pipe"
+                        | "rpipe"
+                        | "stop"
+                        | "expand"
+                        | "freeze"
+                        | "weak"
+                        | "ref"
+                        | "deref"
+                        | "unref"
+                )
+            ) && b.get(self.pos) == Some(&b'!')
+                && !comparison
             {
-                let after = self.pos + if self.current == Token::Word("copy")
-                    && b.get(self.pos+1) == Some(&b'!') { 2 } else { 1 };
+                let after = self.pos
+                    + if self.current == Token::Word("copy") && b.get(self.pos + 1) == Some(&b'!') {
+                        2
+                    } else {
+                        1
+                    };
                 if !b.get(after).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
-                    return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
+                    return Err(
+                        "E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into(),
+                    );
                 }
             }
             if matches!(
@@ -520,8 +632,14 @@ impl<'a> Parser<'a> {
                 if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..])
                     && !is_comparison_bang(&self.input[at + 6..])
                 {
-                    if !b.get(at+7).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
-                        return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
+                    if !b
+                        .get(at + 7)
+                        .is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c))
+                    {
+                        return Err(
+                            "E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword"
+                                .into(),
+                        );
                     }
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
@@ -597,7 +715,8 @@ impl<'a> Parser<'a> {
                         | "ReadLoan"
                         | "WriteLoan"
                 )
-            ) {
+            ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
+            {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
             // cpu/gpu/quantum are execution-domain words reserved by every
@@ -648,7 +767,9 @@ impl<'a> Parser<'a> {
         } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
             return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
         } else if first == b'?' && preceded_by_as {
-            return Err("E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into());
+            return Err(
+                "E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into(),
+            );
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
@@ -822,7 +943,9 @@ impl<'a> Parser<'a> {
 
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
         let value = self.atom_base(depth)?;
-        while self.current == Token::Punct(b':') && self.input.as_bytes().get(self.pos) == Some(&b':') {
+        while self.current == Token::Punct(b':')
+            && self.input.as_bytes().get(self.pos) == Some(&b':')
+        {
             self.expect(Token::Punct(b':'))?;
             self.expect(Token::Punct(b':'))?;
             self.expect(Token::Punct(b'<'))?;
@@ -1111,8 +1234,12 @@ impl<'a> Parser<'a> {
     // Separate bounded quantity profile; every admitted quantity is typed
     // before erasure into the existing checked scalar IR.
     fn program(mut self) -> Result<Program, String> {
-        if self.current==Token::Word("type") || (self.current==Token::Word("define") && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit"))) {
-            return quantity_scalar::parse_mode(self,false);
+        if self.current == Token::Word("type")
+            || (self.current == Token::Word("define")
+                && (self.next_significant_word_is("dimension")
+                    || self.next_significant_word_is("unit")))
+        {
+            return quantity_scalar::parse_mode(self, false);
         }
         // File-scoped namespace is metadata only. Stage-0 still requires one
         // scalar main, and no implicit cross-file or nominal type resolution.
@@ -1779,12 +1906,45 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((item, level + 1));
                 }
             }
+            Expr::ScalarLoop(args, writable, condition, steps, locals, body) => {
+                if args.len() > 8 || args.len() + locals.len() > 64 || writable.len() > args.len() {
+                    return Err("E_UNIT_LIMIT: loop frame".into());
+                }
+                pending.push((condition, level + 1));
+                pending.push((body, level + 1));
+                for x in args.iter().chain(locals) {
+                    pending.push((x, level + 1));
+                }
+                let mut blocks = vec![(steps.as_slice(), level + 1)];
+                while let Some((items, d)) = blocks.pop() {
+                    if d > MAX_DEPTH || items.len() > 64 {
+                        return Err("E_UNIT_LIMIT: loop statements".into());
+                    }
+                    for step in items {
+                        counted_nodes += 1;
+                        if counted_nodes > MAX_NODES {
+                            return Err("AST node budget exceeded".into());
+                        }
+                        match step {
+                            LoopStep::Bind(x, _) | LoopStep::Set(_, x) | LoopStep::Exit(x, _) => {
+                                pending.push((x, d + 1))
+                            }
+                            LoopStep::Loop(c, ss) => {
+                                pending.push((c, d + 1));
+                                blocks.push((ss, d + 1));
+                            }
+                        }
+                    }
+                }
+            }
             Expr::ScopedCall(args, locals, body) => {
-                if args.len()>8 || args.len()+locals.len()>64 {
+                if args.len() > 8 || args.len() + locals.len() > 64 {
                     return Err("E_UNIT_LIMIT: scoped helper frame".into());
                 }
-                pending.push((body.as_ref(),level+1));
-                for part in args.iter().chain(locals.iter()) { pending.push((part,level+1)); }
+                pending.push((body.as_ref(), level + 1));
+                for part in args.iter().chain(locals.iter()) {
+                    pending.push((part, level + 1));
+                }
             }
             Expr::Sequence(prefix, last) => {
                 if prefix.len() > MAX_NODES {
@@ -1795,20 +1955,27 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((part, level + 1));
                 }
             }
-            Expr::I32Checked(inner) => pending.push((inner.as_ref(),level+1)),
-            Expr::RefinementCast(inner,lo,hi) => {
-                if lo>hi{return Err("E_REFINEMENT_INTERVAL: invalid bounds".into());}
-                pending.push((inner.as_ref(),level+1));
+            Expr::I32Checked(inner) => pending.push((inner.as_ref(), level + 1)),
+            Expr::RefinementCast(inner, lo, hi) => {
+                if lo > hi {
+                    return Err("E_REFINEMENT_INTERVAL: invalid bounds".into());
+                }
+                pending.push((inner.as_ref(), level + 1));
             }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
-            Expr::Choose(c,y,n) => {
-                pending.push((c,level+1));pending.push((y,level+1));pending.push((n,level+1));
+            Expr::Choose(c, y, n) => {
+                pending.push((c, level + 1));
+                pending.push((y, level + 1));
+                pending.push((n, level + 1));
             }
-            Expr::Compare(op,a,b) => {
-                if *op>5{return Err("invalid comparison opcode".into());}
-                pending.push((a,level+1));pending.push((b,level+1));
+            Expr::Compare(op, a, b) => {
+                if *op > 5 {
+                    return Err("invalid comparison opcode".into());
+                }
+                pending.push((a, level + 1));
+                pending.push((b, level + 1));
             }
             Expr::Add(left, right)
             | Expr::Sub(left, right)
@@ -1847,7 +2014,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
             }
             Ok(last)
         }
-        Expr::ScopedCall(_,_,_) | Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
+        Expr::ScalarLoop(..) | Expr::ScopedCall(_,_,_) | Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
@@ -1961,7 +2128,12 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
 }
 
 #[allow(dead_code)]
-pub fn parse_verified_strict_i64(text:&str)->Result<Program,String>{validate_source_envelope(text)?;quantity_scalar::parse_mode(Parser::new(text)?,true)}
+pub fn parse_verified_strict_i64(text: &str) -> Result<Program, String> {
+    validate_source_envelope(text)?;
+    let mut p = Parser::new(text)?;
+    p.strict_fixed_arrays = true;
+    quantity_scalar::parse_mode(p, true)
+}
 
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
@@ -2004,10 +2176,33 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn strict_refinement_admission(){
-      let pre="type Bounded = int where self >= 1 and self <= 42;";
-      for expr in ["40+2","84/2","42 as Bounded"] {assert!(super::parse_verified_strict_i64(&format!("{pre} pub fnc main()->int {{return {expr};}}")).is_ok(),"{expr}");}
-      for expr in ["42/0","-9223372036854775808 / -1","9223372036854775807+1","(9223372036854775807+1)*0","43 as Bounded"]{assert!(super::parse_verified_strict_i64(&format!("{pre} pub fnc main()->int {{return {expr};}}")).unwrap_err().contains("E_VERIFY_UNPROVEN"),"{expr}");}
+    fn strict_refinement_admission() {
+        let pre = "type Bounded = int where self >= 1 and self <= 42;";
+        for expr in ["40+2", "84/2", "42 as Bounded"] {
+            assert!(
+                super::parse_verified_strict_i64(&format!(
+                    "{pre} pub fnc main()->int {{return {expr};}}"
+                ))
+                .is_ok(),
+                "{expr}"
+            );
+        }
+        for expr in [
+            "42/0",
+            "-9223372036854775808 / -1",
+            "9223372036854775807+1",
+            "(9223372036854775807+1)*0",
+            "43 as Bounded",
+        ] {
+            assert!(
+                super::parse_verified_strict_i64(&format!(
+                    "{pre} pub fnc main()->int {{return {expr};}}"
+                ))
+                .unwrap_err()
+                .contains("E_VERIFY_UNPROVEN"),
+                "{expr}"
+            );
+        }
     }
     use super::*;
     #[test]
@@ -2110,7 +2305,11 @@ end"#;
                 let error =
                     parse(&source).expect_err("unsupported owner instruction entered scalar IR");
                 assert!(
-                    error.contains(if expression.starts_with(&format!("{operation} ")) { "OWNERSHIP_BANG_BACKEND_UNSUPPORTED" } else { "E_BANG_KEYWORD_WHITESPACE" }),
+                    error.contains(if expression.starts_with(&format!("{operation} ")) {
+                        "OWNERSHIP_BANG_BACKEND_UNSUPPORTED"
+                    } else {
+                        "E_BANG_KEYWORD_WHITESPACE"
+                    }),
                     "wrong error for {source}: {error}"
                 );
             }
@@ -2453,9 +2652,29 @@ end"#;
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
-            Expr::Local(_) | Expr::ScopedCall(_,_,_) => Err("test evaluator does not execute runtime local sequences"),
-            Expr::Choose(c,y,n) => if eval(c,args)?!=0{eval(y,args)}else{eval(n,args)},
-            Expr::Compare(op,a,b) => {let a=eval(a,args)?;let b=eval(b,args)?;Ok(match op{0=>a==b,1=>a!=b,2=>a<b,3=>a<=b,4=>a>b,5=>a>=b,_=>return Err("invalid comparison")} as i64)},
+            Expr::Local(_) | Expr::ScalarLoop(..) | Expr::ScopedCall(_, _, _) => {
+                Err("test evaluator does not execute runtime local sequences")
+            }
+            Expr::Choose(c, y, n) => {
+                if eval(c, args)? != 0 {
+                    eval(y, args)
+                } else {
+                    eval(n, args)
+                }
+            }
+            Expr::Compare(op, a, b) => {
+                let a = eval(a, args)?;
+                let b = eval(b, args)?;
+                Ok(match op {
+                    0 => a == b,
+                    1 => a != b,
+                    2 => a < b,
+                    3 => a <= b,
+                    4 => a > b,
+                    5 => a >= b,
+                    _ => return Err("invalid comparison"),
+                } as i64)
+            }
             Expr::InlineTask(body) => eval(body, args),
             Expr::Sequence(prefix, last) => {
                 for part in prefix {
@@ -2468,14 +2687,26 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
-            Expr::I32Checked(x)=>{let v=eval(x,args)?;i32::try_from(v).map(i64::from).map_err(|_|"i32 overflow")},
-            Expr::RefinementCast(x,lo,hi)=>{let v=eval(x,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
+            Expr::I32Checked(x) => {
+                let v = eval(x, args)?;
+                i32::try_from(v).map(i64::from).map_err(|_| "i32 overflow")
+            }
+            Expr::RefinementCast(x, lo, hi) => {
+                let v = eval(x, args)?;
+                if v < *lo || v > *hi {
+                    Err("refinement violation")
+                } else {
+                    Ok(v)
+                }
+            }
             Expr::Div(a, b) => {
                 let left = eval(a, args)?;
                 let right = eval(b, args)?;
-                if right == 0 { return Err("divisor_zero"); }
+                if right == 0 {
+                    return Err("divisor_zero");
+                }
                 left.checked_div(right).ok_or("overflow")
-            },
+            }
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
             Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
             Expr::BitOr(a, b) => Ok(eval(a, args)? | eval(b, args)?),
@@ -2629,7 +2860,11 @@ end"#;
             let source = format!("fnc main():int{{return {expr};}}");
             let err = parse(&source).expect_err("unimplemented effect must fail closed");
             assert!(
-                err.contains(if expr.contains("! ") { "EXCEPTION_BANG_BACKEND_UNSUPPORTED" } else { "E_BANG_KEYWORD_WHITESPACE" }),
+                err.contains(if expr.contains("! ") {
+                    "EXCEPTION_BANG_BACKEND_UNSUPPORTED"
+                } else {
+                    "E_BANG_KEYWORD_WHITESPACE"
+                }),
                 "wrong diagnostic for {expr:?}: {err}"
             );
         }

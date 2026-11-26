@@ -254,16 +254,22 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 }
 
 #[test]
-fn undocumented_caret_does_not_gain_fake_glm_feature_support() {
+fn undocumented_power_operator_still_rejects() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
 }
 
 #[test]
-fn documented_checked_i64_division_executes_without_claiming_glm_support() {
-    // The scalar compiler now documents checked signed division; admitting
-    // that operation is not evidence of tensor or GLM feature support.
+fn checked_integer_division_is_a_supported_scalar_intersection() {
     expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
     expect_native("pub fnc main():int{return -3 / 2;}", &[], "-1\n");
+    let fault = run_guest("run", "pub fnc main():int{return 3 / 0;}", &[]);
+    assert_eq!(fault.status.code(), Some(1));
+    assert!(fault.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&fault.stderr).starts_with("orescranelift: "));
+    let output = run_guest("ir", "pub fnc main():int{return 3 / 2;}", &[]);
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("function"));
 }
 
 #[test]
