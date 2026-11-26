@@ -31,6 +31,16 @@ impl Range {
         if lo>hi{Self::FULL}else{Self{lo:lo as i64,hi:hi as i64}}
     }
     fn neg(self)->Self{Self::bounds(-(self.hi as i128),-(self.lo as i128))}
+    fn proves(self,rhs:Self,op:u8)->bool{
+        let(a,b,c,d)=(self.lo as i128,self.hi as i128,rhs.lo as i128,rhs.hi as i128);
+        let fits=|lo:i128,hi:i128|lo>=i64::MIN as i128&&hi<=i64::MAX as i128;
+        match op{
+            b'+'=>fits(a+c,b+d),b'-'=>fits(a-d,b-c),
+            b'*'=>{let v=[a*c,a*d,b*c,b*d];fits(*v.iter().min().unwrap(),*v.iter().max().unwrap())},
+            b'/'=> (c>0||d<0)&&!(a==i64::MIN as i128&&c<=-1&&d>=-1),
+            _=>false
+        }
+    }
     fn binary(self,rhs:Self,op:u8)->Self{
         let(a,b,c,d)=(self.lo as i128,self.hi as i128,rhs.lo as i128,rhs.hi as i128);
         match op{
@@ -53,6 +63,7 @@ struct Quantities<'a> {
     units: Vec<(String, usize, Scale)>,
     refinements: Vec<(String,Refinement)>,
     bindings: Vec<(String,Binding)>,
+    strict: bool,
 }
 impl<'a> Quantities<'a> {
     fn declaration_name(&mut self) -> Result<String,String> {
@@ -162,6 +173,7 @@ impl<'a> Quantities<'a> {
     fn checked_refinement(&mut self,value:Typed,target:Refinement)->Result<Typed,String>{
         if value.dim!=target.dim{return Err("E_UNIT_DIMENSION: refinement dimension mismatch".into());}
         if value.scale!=target.scale{return Err("E_UNIT_SCALE: refinement scale mismatch".into());}
+        if self.strict&&!value.range.contained(target.lo,target.hi){return Err("E_VERIFY_UNPROVEN: refinement cast may fail".into());}
         let expr=self.p.node(Expr::RefinementCast(Box::new(value.expr),target.lo,target.hi))?;
         Ok(Typed{expr,dim:value.dim,scale:value.scale,range:Range{lo:target.lo,hi:target.hi}})
     }
@@ -225,6 +237,7 @@ impl<'a> Quantities<'a> {
                 }
             }
             let value=self.atom(depth+1)?;
+            if self.strict&&value.range.lo==i64::MIN{return Err("E_VERIFY_UNPROVEN: signed negation may overflow".into());}
             return Ok(Typed{expr:self.p.node(Expr::Neg(Box::new(value.expr)))?,dim:value.dim,scale:value.scale,range:value.range.neg()});
         }
         if self.p.take(Token::Punct(b'('))? {
@@ -306,7 +319,7 @@ impl<'a> Quantities<'a> {
                 if scale!=rhs.scale{return Err("E_UNIT_SCALE: mixed scales".into());}
             }else{
                 // Do not silently change ordinary scalar division typing.
-                if op==b'/'&&dim==SCALAR&&rhs.dim==SCALAR&&scale==Scale::ONE&&rhs.scale==Scale::ONE {return Err("E_UNIT_PROFILE: ordinary scalar division not admitted".into());}
+                if !self.strict&&op==b'/'&&dim==SCALAR&&rhs.dim==SCALAR&&scale==Scale::ONE&&rhs.scale==Scale::ONE {return Err("E_UNIT_PROFILE: ordinary scalar division not admitted".into());}
                 scale=scale.mul(if op==b'/'{rhs.scale.inv()}else{rhs.scale})?;
                 for (i,d) in dim.iter_mut().enumerate(){
                     let n=if op==b'*'{*d+rhs.dim[i]}else{*d-rhs.dim[i]};
@@ -314,6 +327,7 @@ impl<'a> Quantities<'a> {
                     *d=n;
                 }
             }
+            if self.strict&&!lhs.range.proves(rhs.range,op){return Err("E_VERIFY_UNPROVEN: signed arithmetic may overflow or divide by zero".into());}
             let range=lhs.range.binary(rhs.range,op);
             let left=Box::new(lhs.expr);let right=Box::new(rhs.expr);
             let expr=self.p.node(match op{b'+'=>Expr::Add(left,right),b'-'=>Expr::Sub(left,right),b'*'=>Expr::Mul(left,right),b'/'=>Expr::QuantityDiv(left,right),_=>unreachable!()})?;
@@ -327,9 +341,11 @@ impl<'a> Quantities<'a> {
         Ok(lhs)
     }
 }
-pub(super) fn parse(p:Parser<'_>)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new()};
+pub(super) fn parse(p:Parser<'_>)->Result<Program,String>{parse_mode(p,false)}
+pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict};
     q.declarations()?;q.refinement_declarations()?;
+    if strict&&q.refinements.is_empty(){return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());}
     q.p.take(Token::Word("pub"))?;
     q.p.expect(Token::Word("fnc"))?;
     q.p.expect(Token::Word("main"))?;
