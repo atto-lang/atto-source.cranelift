@@ -278,6 +278,8 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
+    // Closed ordinary helpers, in declaration order; charge expansion before cloning.
+    ordinary_helpers: Vec<(String, Expr, usize)>,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -341,6 +343,7 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays:false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
+            ordinary_helpers: Vec::new(),
         };
         p.next()?;
         Ok(p)
@@ -931,6 +934,17 @@ impl<'a> Parser<'a> {
             }
             Token::Word(s) => {
                 self.next()?;
+                if self.current == Token::Punct(b'(') {
+                    if let Some(index) = self.ordinary_helpers.iter().position(|(name, _, _)| name == s) {
+                        self.next()?;
+                        self.expect(Token::Punct(b')'))?;
+                        let cost = self.ordinary_helpers[index].2;
+                        self.nodes = self.nodes.checked_add(cost).ok_or("AST node budget exceeded")?;
+                        if self.nodes >= MAX_NODES { return Err("AST node budget exceeded".into()); }
+                        let body = self.ordinary_helpers[index].1.clone();
+                        return self.node(Expr::ScopedCall(Vec::new(), Vec::new(), Box::new(body)));
+                    }
+                }
                 let value = if let Some(index) = self.parameters.iter().position(|p| p == s) {
                     Expr::Param(index)
                 } else if let Some((_, constant, runtime_slot)) =
@@ -1073,6 +1087,41 @@ impl<'a> Parser<'a> {
             }
             self.file_export()?;
             seen_export = true;
+        }
+        // Admit only public zero-argument int helpers before main, using the
+        // same lexer, checked expressions and native scoped-call lowering.
+        // Publish only after a complete body: self/forward cycles fail closed.
+        while self.current == Token::Word("pub") {
+            let mut scan = Parser::new(&self.input[self.pos..])?;
+            if !scan.take(Token::Word("fnc"))? { break; }
+            let Token::Word(candidate) = scan.current else { break; };
+            if candidate == "main" { break; }
+            if self.ordinary_helpers.len() >= 16 { return Err("E_HELPER_LIMIT: too many helpers".into()); }
+            self.next()?;
+            self.expect(Token::Word("fnc"))?;
+            let name = self.name()?;
+            if !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                || is_java_v1_reserved_parameter_name(&name)
+                || matches!(name.as_str(), "main" | "int" | "infer" | "seq" | "sync" | "task" | "rt" | "io" | "stdio" | "print")
+                || self.ordinary_helpers.iter().any(|(known, _, _)| known == &name) {
+                return Err("E_HELPER_NAME: invalid or duplicate helper".into());
+            }
+            self.expect(Token::Punct(b'('))?;
+            self.expect(Token::Punct(b')'))?;
+            if !self.take(Token::Punct(b':'))? {
+                self.expect(Token::Punct(b'-'))?;
+                self.expect(Token::Punct(b'>'))?;
+            }
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'{'))?;
+            self.expect(Token::Word("return"))?;
+            let before = self.nodes;
+            let body = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            self.expect(Token::Punct(b'}'))?;
+            validate_ast_depth(&body)?;
+            let cost = self.nodes - before;
+            self.ordinary_helpers.push((name, body, cost));
         }
         let mut seen_define = false;
         let mut seen_pub = false;
@@ -1334,6 +1383,7 @@ impl<'a> Parser<'a> {
                 || matches!(name.as_str(), "Integer" | "main" | "int" | "seq")
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
+                || self.ordinary_helpers.iter().any(|(known, _, _)| known == &name)
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
