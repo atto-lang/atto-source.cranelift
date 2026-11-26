@@ -77,7 +77,13 @@ fn emit(schema:u64,mut tags:Vec<u8>)->Result<Vec<u8>,String>{
 }
 fn main(){
     let result=(||->Result<(),String>{
-        let args:Vec<String>=std::env::args().skip(1).take(258).collect();
+        // Invalid OS argument encoding is a controlled rejection, not a panic.
+        // Bound each trusted-manifest token and the number of tokens before emission.
+        let args:Vec<String>=std::env::args_os().skip(1).take(258).map(|arg| {
+            let s=arg.into_string().map_err(|_| "E_DURABLE_BOUNDED_SCHEMA_V2".to_owned())?;
+            if s.len()>135{return Err("E_DURABLE_BOUNDED_SCHEMA_V2".to_owned());}
+            Ok(s)
+        }).collect::<Result<_,String>>()?;
         let (schema,tags)=manifest(&args)?;
         let object=emit(schema,tags)?;
         std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string())
