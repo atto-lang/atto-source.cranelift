@@ -240,3 +240,103 @@ fn checked_pair_projection_preserves_parameter_arithmetic_and_traps() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
 }
+
+#[test]
+fn dynamic_entry_native_projection_evaluates_both_operands() {
+    admitted(
+        "fnc main(a:int):int{return Entry.of<int,int>(a+1,a*2).value;}",
+        &["21"],
+        b"42\n",
+    );
+    admitted(
+        "fnc main(a:int):int{return Entry.of(a+1,a*2).key;}",
+        &["41"],
+        b"42\n",
+    );
+    for source in [
+        "fnc main(a:int):int{return Entry.of(42,a+1).key;}",
+        "fnc main(a:int):int{return Entry.of(a+1,42).value;}",
+    ] {
+        let output = execute("run", source, &["9223372036854775807"]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
+    }
+}
+
+#[test]
+fn entry_projection_rejects_unproved_operands_escape_and_shadowing() {
+    for (source, diagnostic) in [
+        (
+            "fnc main():int{return Entry.of(1,2);}",
+            "E_ENTRY_ESCAPE_UNSUPPORTED",
+        ),
+        (
+            "fnc main():int{return Entry.of(1,2).second;}",
+            "E_ENTRY_PROJECTION_UNSUPPORTED",
+        ),
+        (
+            "fnc main(Entry:int):int{return Entry.of(1,2).key;}",
+            "E_SAFE_COLLECTION_ACCESS_UNSUPPORTED",
+        ),
+        (
+            "fnc main(a:int):int{val n=a;return Entry.of(42,n).key;}",
+            "E_ENTRY_VALUE_UNSUPPORTED",
+        ),
+        (
+            "fnc main():int{return Entry.of(42,missing).key;}",
+            "unbound or unsupported identifier",
+        ),
+    ] {
+        rejected(source, diagnostic);
+        let output = execute("emit-object", source, &[]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn entry_projection_preserves_first_fault_for_both_fields() {
+    // Both operands trap with different native error statuses. Selecting an
+    // earlier slot must not erase the second evaluation; selecting the later
+    // slot must not move its evaluation ahead of the first.
+    for (source, diagnostic) in [
+        (
+            "fnc main(a:int):int{return Entry.of(a/0,9223372036854775807+a).key;}",
+            "integer divisor zero",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(a/0,9223372036854775807+a).value;}",
+            "integer divisor zero",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(9223372036854775807+a,a/0).key;}",
+            "i64 arithmetic overflow",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(9223372036854775807+a,a/0).value;}",
+            "i64 arithmetic overflow",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(42,a/0).key;}",
+            "integer divisor zero",
+        ),
+        (
+            "fnc main(a:int):int{return Entry.of(a/0,42).value;}",
+            "integer divisor zero",
+        ),
+    ] {
+        let output = execute("run", source, &["1"]);
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        assert!(
+            output.stdout.is_empty(),
+            "{source}: output published after fault"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.trim(),
+            format!("orescranelift: {diagnostic}"),
+            "{source}"
+        );
+    }
+}
