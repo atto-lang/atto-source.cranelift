@@ -114,4 +114,27 @@ for body in \
  test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
  echo CRANELIFT_RAW_FUTURE_REJECT_PASS
 done
+# The same explicit scalar initializer spelling as the other backends.
+prefix='suspends fnc main(): int { const Channel<int> a = Channel.new<int>(1); writech a, 20; '
+body='const Future f = select { default: -> { return 20; } }; const Future batch = select(1) { when readch a: int n -> { return n; } }; const Array[int] values = await batch; const int extra = await select<int> { default: -> { return 2; } }; const int scalar = await f; return scalar + values[0] + extra; }'
+printf '%s%s\n' "$prefix" "$body" > "$work/scalar-await.atto"
+"$compiler" emit-counted-static-ready-object "$work/scalar-await.atto" > "$work/guest.o"
+file "$work/guest.o" | grep -F relocatable
+cc "$work/main.c" "$work/guest.o" -o "$work/guest"
+test "$("$work/guest")" = 42
+echo CRANELIFT_SCALAR_AWAIT_BINDING_PASS
+# The local initializer cannot consume a batch, reuse a scalar Future,
+# admit a borrowed/unknown value, or bypass the existing effect fence.
+for body in \
+ 'const Future f = select { default: -> { return 20; } }; const int v = await f; const int w = await f; return w; }' \
+ 'const Future batch = select(1) { when readch a: int n -> { return n; } }; const int v = await batch; return v; }' \
+ 'const Future f = select { default: -> { return 20; } }; const Future batch = select(1) { when readch a: int n -> { return n; } }; const int v = await f; return v; }' \
+ 'const int v = await a; return v; }' \
+ 'const int v = await select { default: -> { return a; } }; return v; }' \
+ 'const Future f = select { default: -> { return 20; } }; const int v = await f + 1; return v; }'; do
+ printf '%s%s\n' "$prefix" "$body" > "$work/bad.atto"
+ if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
+ test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+ echo CRANELIFT_SCALAR_AWAIT_BINDING_REJECT_PASS
+done
 echo CRANELIFT_COUNTED_STATIC_NATIVE_PASS
