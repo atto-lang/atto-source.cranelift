@@ -1,10 +1,10 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
+#[path = "closed_option.rs"]
+mod closed_option;
 #[path = "quantity_scalar.rs"]
 mod quantity_scalar;
 #[path = "quoted_source.rs"]
 mod quoted_source;
-#[path = "closed_option.rs"]
-mod closed_option;
 // Use the same line boundaries as the Java/Rust source lexer and the
 // quoted-template scanner. Keep byte offsets stable for all diagnostics.
 fn line_break_width(bytes: &[u8], at: usize) -> usize {
@@ -631,8 +631,10 @@ impl<'a> Parser<'a> {
             {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
-            if self.closed_option_profile && self.current == Token::Word("trap")
-                && b.get(self.pos) == Some(&b'!') && !comparison
+            if self.closed_option_profile
+                && self.current == Token::Word("trap")
+                && b.get(self.pos) == Some(&b'!')
+                && !comparison
             {
                 self.pos += 1;
                 self.current = Token::Word("trap!");
@@ -703,16 +705,18 @@ impl<'a> Parser<'a> {
             // the scalar-only Cranelift backend cannot represent tagged
             // Option/Result payloads or classify guest trap control effects.
             // Refuse these reserved constructs before AST/native codegen.
-            if !self.closed_option_profile && matches!(
-                self.current,
-                Token::Word("Option")
-                    | Token::Word("Result")
-                    | Token::Word("Some")
-                    | Token::Word("None")
-                    | Token::Word("Ok")
-                    | Token::Word("Err")
-                    | Token::Word("trap")
-            ) {
+            if !self.closed_option_profile
+                && matches!(
+                    self.current,
+                    Token::Word("Option")
+                        | Token::Word("Result")
+                        | Token::Word("Some")
+                        | Token::Word("None")
+                        | Token::Word("Ok")
+                        | Token::Word("Err")
+                        | Token::Word("trap")
+                )
+            {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
             }
             // Collection and borrow syntax are not represented by scalar

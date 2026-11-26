@@ -1,15 +1,35 @@
 //! Restricted nonescaping Option<int> + trap! + exhaustive scalar match.
 //! No nominal Error allocation, general ADT ABI, or host evaluation.
 //! The unobservable tag/error envelope is erased only after full typed admission.
-use super::{Expr, Parser, Program, Token, MAX_DEPTH, integer_digits,
-    is_java_v1_reserved_parameter_name, validate_ast_depth};
+use super::{
+    Expr, MAX_DEPTH, Parser, Program, Token, integer_digits, is_java_v1_reserved_parameter_name,
+    validate_ast_depth,
+};
 
 fn identifier(p: &mut Parser<'_>) -> Result<String, String> {
     let name = p.name()?;
-    if is_java_v1_reserved_parameter_name(&name) ||
-        matches!(name.as_str(), "int" | "main" | "Option" | "Result" | "Some" |
-            "None" | "Ok" | "Err" | "Error" | "on" | "over" | "unwrap" |
-            "Integer" | "seq" | "sync" | "task" | "infer" | "trap!")
+    if is_java_v1_reserved_parameter_name(&name)
+        || matches!(
+            name.as_str(),
+            "int"
+                | "main"
+                | "Option"
+                | "Result"
+                | "Some"
+                | "None"
+                | "Ok"
+                | "Err"
+                | "Error"
+                | "on"
+                | "over"
+                | "unwrap"
+                | "Integer"
+                | "seq"
+                | "sync"
+                | "task"
+                | "infer"
+                | "trap!"
+        )
     {
         return Err("E_CLOSED_OPTION_NAME".into());
     }
@@ -20,7 +40,9 @@ fn identifier(p: &mut Parser<'_>) -> Result<String, String> {
 // immutable entry parameters, and checked arithmetic. No implicit coercion,
 // locals, calls, effects, casts, ownership operators, or aggregate escape.
 fn scalar(p: &mut Parser<'_>, min: u8, depth: usize) -> Result<Expr, String> {
-    if depth > MAX_DEPTH { return Err("E_CLOSED_OPTION_DEPTH".into()); }
+    if depth > MAX_DEPTH {
+        return Err("E_CLOSED_OPTION_DEPTH".into());
+    }
     let mut lhs = if p.take(Token::Punct(b'-'))? {
         if let Token::Number(n) = p.current {
             if integer_digits(n)? == "9223372036854775808" {
@@ -41,12 +63,17 @@ fn scalar(p: &mut Parser<'_>, min: u8, depth: usize) -> Result<Expr, String> {
     } else {
         match p.current {
             Token::Number(n) => {
-                let value = integer_digits(n)?.parse::<i64>().map_err(|_| "E_CLOSED_OPTION_LITERAL")?;
+                let value = integer_digits(n)?
+                    .parse::<i64>()
+                    .map_err(|_| "E_CLOSED_OPTION_LITERAL")?;
                 p.next()?;
                 p.node(Expr::Literal(value))?
             }
             Token::Word(name) => {
-                let index = p.parameters.iter().position(|n| n == name)
+                let index = p
+                    .parameters
+                    .iter()
+                    .position(|n| n == name)
                     .ok_or("E_CLOSED_OPTION_SCALAR_NAME")?;
                 p.next()?;
                 p.node(Expr::Param(index))?
@@ -60,15 +87,17 @@ fn scalar(p: &mut Parser<'_>, min: u8, depth: usize) -> Result<Expr, String> {
             Token::Punct(op @ (b'*' | b'/')) => (3, op),
             _ => break,
         };
-        if bp < min { break; }
+        if bp < min {
+            break;
+        }
         p.next()?;
         let rhs = scalar(p, bp + 1, depth + 1)?;
-        let (a,b) = (Box::new(lhs),Box::new(rhs));
+        let (a, b) = (Box::new(lhs), Box::new(rhs));
         lhs = p.node(match op {
-            b'+' => Expr::Add(a,b),
-            b'-' => Expr::Sub(a,b),
-            b'*' => Expr::Mul(a,b),
-            b'/' => Expr::Div(a,b),
+            b'+' => Expr::Add(a, b),
+            b'-' => Expr::Sub(a, b),
+            b'*' => Expr::Mul(a, b),
+            b'/' => Expr::Div(a, b),
             _ => unreachable!(),
         })?;
     }
@@ -76,7 +105,9 @@ fn scalar(p: &mut Parser<'_>, min: u8, depth: usize) -> Result<Expr, String> {
 }
 
 fn variant(p: &mut Parser<'_>) -> Result<Option<Expr>, String> {
-    if p.take(Token::Word("None"))? { return Ok(None); }
+    if p.take(Token::Word("None"))? {
+        return Ok(None);
+    }
     p.expect(Token::Word("Some"))?;
     p.expect(Token::Punct(b'('))?;
     let value = scalar(p, 0, 0)?;
@@ -121,7 +152,9 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("int"))?;
     p.expect(Token::Punct(b'>'))?;
     let binding = identifier(&mut p)?;
-    if p.parameters.contains(&binding) { return Err("E_CLOSED_OPTION_SHADOW".into()); }
+    if p.parameters.contains(&binding) {
+        return Err("E_CLOSED_OPTION_SHADOW".into());
+    }
     p.expect(Token::Punct(b'='))?;
     let option = if matches!(p.current, Token::Word("Some" | "None")) {
         OptionValue::Closed(variant(&mut p)?)
@@ -129,19 +162,23 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
         let left = scalar(&mut p, 0, 0)?;
         p.expect(Token::Word("eq"))?;
         let right = scalar(&mut p, 0, 0)?;
-        let condition = p.node(Expr::Compare(0,Box::new(left),Box::new(right)))?;
+        let condition = p.node(Expr::Compare(0, Box::new(left), Box::new(right)))?;
         validate_ast_depth(&condition)?;
         p.expect(Token::Punct(b'?'))?;
         let yes = variant(&mut p)?;
         p.expect(Token::Punct(b':'))?;
         let no = variant(&mut p)?;
-        if yes.is_some() == no.is_some() { return Err("E_CLOSED_OPTION_TAGS".into()); }
+        if yes.is_some() == no.is_some() {
+            return Err("E_CLOSED_OPTION_TAGS".into());
+        }
         OptionValue::Conditional(condition, yes, no)
     };
     p.expect(Token::Punct(b';'))?;
     p.expect(Token::Word("return"))?;
     p.expect(Token::Word("trap!"))?;
-    if p.name()? != binding { return Err("E_CLOSED_OPTION_SUBJECT".into()); }
+    if p.name()? != binding {
+        return Err("E_CLOSED_OPTION_SUBJECT".into());
+    }
     p.expect(Token::Punct(b'.'))?;
     p.expect(Token::Word("unwrap"))?;
     p.expect(Token::Punct(b'('))?;
@@ -165,7 +202,9 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("int"))?;
     p.expect(Token::Punct(b'-'))?;
     p.expect(Token::Punct(b'>'))?;
-    if p.name()? != payload { return Err("E_CLOSED_OPTION_PAYLOAD".into()); }
+    if p.name()? != payload {
+        return Err("E_CLOSED_OPTION_PAYLOAD".into());
+    }
     p.expect(Token::Punct(b','))?;
     p.expect(Token::Word("on"))?;
     p.expect(Token::Word("Err"))?;
@@ -188,12 +227,23 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     let result = match option {
         OptionValue::Closed(Some(value)) => value,
         OptionValue::Closed(None) => fallback,
-        OptionValue::Conditional(cond, Some(value), None) =>
-            p.node(Expr::Choose(Box::new(cond),Box::new(value),Box::new(fallback)))?,
-        OptionValue::Conditional(cond, None, Some(value)) =>
-            p.node(Expr::Choose(Box::new(cond),Box::new(fallback),Box::new(value)))?,
+        OptionValue::Conditional(cond, Some(value), None) => p.node(Expr::Choose(
+            Box::new(cond),
+            Box::new(value),
+            Box::new(fallback),
+        ))?,
+        OptionValue::Conditional(cond, None, Some(value)) => p.node(Expr::Choose(
+            Box::new(cond),
+            Box::new(fallback),
+            Box::new(value),
+        ))?,
         _ => return Err("E_CLOSED_OPTION_TAGS".into()),
     };
     validate_ast_depth(&result)?;
-    Ok(Program {parameters:p.parameters,locals:vec![],result,trace_steps:vec![]})
+    Ok(Program {
+        parameters: p.parameters,
+        locals: vec![],
+        result,
+        trace_steps: vec![],
+    })
 }
