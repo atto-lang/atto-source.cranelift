@@ -409,7 +409,7 @@ mod incremental_object_tests{
         let (edit,hit)=s.build(b,false).unwrap();assert!(!hit);assert_eq!(edit,backend::emit_object(&frontend::parse(b).unwrap()).unwrap());assert_ne!(cold,edit);
         let bad="pub fnc main(): int { return missing; }";assert_eq!(s.build(bad,false).unwrap_err(),frontend::parse(bad).unwrap_err());assert_eq!(s.build(b,false).unwrap(),(edit.clone(),true));
         let dir=std::env::temp_dir().join(format!("atto-clif-incremental-{}",std::process::id()));std::fs::create_dir(&dir).unwrap();
-        let host=dir.join("host.c");std::fs::write(&host,"#include <stdint.h>\nextern int64_t oreslang_scalar_entry(void);\nint main(void){return (int)oreslang_scalar_entry();}\n").unwrap();
+        let host=dir.join("host.c");std::fs::write(&host,"#include <stdint.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=-1;int32_t rc=oreslang_scalar_entry(0,0,0,0,&out);return rc==0?(int)out:255;}\n").unwrap();
         for (bytes,expected) in [(cold,42),(warm,42),(edit,43)]{
             let obj=dir.join("guest.o");let exe=dir.join("guest");std::fs::write(&obj,bytes).unwrap();
             assert!(std::process::Command::new("cc").arg(&host).arg(&obj).arg("-o").arg(&exe).status().unwrap().success());
