@@ -156,6 +156,8 @@ fn integer_digits(token: &str) -> Result<String, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(i64),
+    /// Literal-backed immutable byte spans; only this operation observes them.
+    StaticStringEqual(Vec<u8>, Vec<u8>, bool),
     Param(usize),
     Local(usize),
     Neg(Box<Expr>),
@@ -281,6 +283,9 @@ struct Parser<'a> {
     // Closed ordinary helpers, in declaration order; charge expansion before cloning.
     ordinary_helpers: Vec<(String, Expr, usize)>,
     ordinary_bools: Vec<String>,
+    // Views reference immutable literal bytes; rebinding never mutates backing storage.
+    ordinary_strings: Vec<(String, std::sync::Arc<[u8]>, bool)>,
+    string_versions: usize,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -346,6 +351,8 @@ impl<'a> Parser<'a> {
             local_initializers: Vec::new(),
             ordinary_helpers: Vec::new(),
             ordinary_bools: Vec::new(),
+            ordinary_strings: Vec::new(),
+            string_versions: 0,
         };
         p.next()?;
         Ok(p)
@@ -935,6 +942,9 @@ impl<'a> Parser<'a> {
                 Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
+                if self.ordinary_strings.iter().any(|(name, _, _)| name == s) {
+                    return Err("E_STRING_TYPE: string is not an int".into());
+                }
                 if self.ordinary_bools.iter().any(|name| name == s) {
                     return Err("E_BOOL_TYPE: bool is not an int".into());
                 }
@@ -1046,6 +1056,67 @@ impl<'a> Parser<'a> {
     }
     // Separate bounded quantity profile; every admitted quantity is typed
     // before erasure into the existing checked scalar IR.
+    // The lexer already verifies quote boundaries and Unicode surrogate pairs.
+    // This bounded decoder supports ordinary single/double quotes, not templates.
+    fn ordinary_string_value(&mut self) -> Result<std::sync::Arc<[u8]>, String> {
+        let value = match self.current {
+            Token::Quoted(raw) if raw.starts_with('"') || raw.starts_with('\'') => {
+                let mut decoded = String::new();
+                let mut chars = raw[1..raw.len()-1].chars();
+                while let Some(ch) = chars.next() {
+                    if ch != '\\' { decoded.push(ch); }
+                    else {
+                        match chars.next().ok_or("E_STRING_ESCAPE")? {
+                            'n' => decoded.push('\n'),
+                            'r' => decoded.push('\r'),
+                            't' => decoded.push('\t'),
+                            'u' => {
+                                let unit = |iter: &mut std::str::Chars<'_>| -> Result<u32, String> {
+                                    let mut n = 0;
+                                    for _ in 0..4 { n = n*16 + iter.next().and_then(|c|c.to_digit(16)).ok_or("E_STRING_ESCAPE")?; }
+                                    Ok(n)
+                                };
+                                let first = unit(&mut chars)?;
+                                let scalar = if (0xd800..=0xdbff).contains(&first) {
+                                    if chars.next()!=Some('\\') || chars.next()!=Some('u') { return Err("E_STRING_ESCAPE".into()); }
+                                    let low = unit(&mut chars)?;
+                                    if !(0xdc00..=0xdfff).contains(&low) { return Err("E_STRING_ESCAPE".into()); }
+                                    0x10000 + ((first-0xd800)<<10) + (low-0xdc00)
+                                } else { first };
+                                decoded.push(char::from_u32(scalar).ok_or("E_STRING_ESCAPE")?);
+                            }
+                            // Multiline escapes need the full lexical profile.
+                            '\r' | '\n' | '\u{85}' | '\u{2028}' | '\u{2029}' => return Err("E_STRING_CONTINUATION_UNSUPPORTED".into()),
+                            other => decoded.push(other),
+                        }
+                    }
+                    if decoded.len()>256 { return Err("E_STRING_VIEW_LIMIT: literal exceeds 256 UTF-8 bytes".into()); }
+                }
+                std::sync::Arc::from(decoded.into_bytes())
+            }
+            Token::Word(name) => self.ordinary_strings.iter().find(|(known,_,_)|known==name)
+                .map(|(_,bytes,_)|bytes.clone()).ok_or("E_STRING_TYPE: expected literal or typed string view")?,
+            _ => return Err("E_STRING_TYPE: expected literal or typed string view".into()),
+        };
+        self.next()?;
+        Ok(value)
+    }
+
+    fn ordinary_condition(&mut self) -> Result<Expr, String> {
+        if matches!(self.current, Token::Quoted(_)) ||
+            matches!(self.current, Token::Word(name) if self.ordinary_strings.iter().any(|(known,_,_)|known==name)) {
+            let left = self.ordinary_string_value()?;
+            let unequal = if self.take(Token::Word("eq"))? { false }
+                else if self.take(Token::Word("neq"))? { true }
+                else { return Err("E_STRING_TYPE: expected eq or neq".into()); };
+            let right = self.ordinary_string_value()?;
+            // Charge byte-wise code generation, including repeated comparisons.
+            self.nodes = self.nodes.checked_add(left.len()+right.len()).ok_or("AST node budget exceeded")?;
+            return self.node(Expr::StaticStringEqual(left.to_vec(),right.to_vec(),unequal));
+        }
+        self.ordinary_bool_value()
+    }
+
     fn ordinary_bool_value(&mut self) -> Result<Expr, String> {
         let value = match self.current {
             Token::Word("true") => Expr::Literal(1),
@@ -1063,7 +1134,7 @@ impl<'a> Parser<'a> {
     fn ordinary_bool_return(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
         if self.take(Token::Word("if"))? {
-            let condition = self.ordinary_bool_value()?;
+            let condition = self.ordinary_condition()?;
             self.expect(Token::Punct(b'{'))?;
             let yes = self.ordinary_bool_return(depth + 1)?;
             self.expect(Token::Punct(b'}'))?;
@@ -1383,6 +1454,17 @@ impl<'a> Parser<'a> {
         loop {
             if self.missing_primitive_initializer(){return Err("E_MISSING_INITIALIZER: explicit initializer required".into());}
             if let Token::Word(name) = self.current {
+                if let Some(index)=self.ordinary_strings.iter().position(|(known,_,_)|known==name) {
+                    if !self.ordinary_strings[index].2 { return Err("E_IMMUTABLE_REBIND: string val is not rebindable".into()); }
+                    self.next()?;
+                    self.expect(Token::Punct(b'='))?;
+                    let value=self.ordinary_string_value()?;
+                    self.expect(Token::Punct(b';'))?;
+                    self.string_versions+=1;
+                    if self.string_versions>64 { return Err("E_STRING_VIEW_LIMIT: too many versions".into()); }
+                    self.ordinary_strings[index].1=value;
+                    continue;
+                }
                 if mutable_locals.iter().any(|known| known == name) {
                     let binding = self.bindings.iter().position(|(known, _, _)| known == name).ok_or("missing mutable binding")?;
                     self.next()?;
@@ -1399,7 +1481,7 @@ impl<'a> Parser<'a> {
                 }
             }
             let kind = match self.current {
-                Token::Word("let") if self.next_significant_word_is("int") || self.next_significant_word_is("bool") => "let",
+                Token::Word("let") if self.next_significant_word_is("int") || self.next_significant_word_is("bool") || self.next_significant_word_is("string") => "let",
                 Token::Word("const") => "const",
                 Token::Word("int") => "int",
                 Token::Word("val") => "val",
@@ -1415,8 +1497,9 @@ impl<'a> Parser<'a> {
                     Err("E_CONST_MUT_UNSUPPORTED: scalar const mut requires a non-scalar owned referent".into())
                 };
             }
-            let mut boolean = kind != "int" && self.take(Token::Word("bool"))?;
-            let typed = boolean || kind == "int" || self.take(Token::Word("int"))?;
+            let mut string = kind != "int" && self.take(Token::Word("string"))?;
+            let mut boolean = !string && kind != "int" && self.take(Token::Word("bool"))?;
+            let typed = string || boolean || kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if matches!(name.as_str(), "sync" | "task" | "yield") {
                 return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
@@ -1426,17 +1509,28 @@ impl<'a> Parser<'a> {
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
                 || self.ordinary_helpers.iter().any(|(known, _, _)| known == &name)
+                || self.ordinary_strings.iter().any(|(known, _, _)| known == &name)
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
             if !typed && self.take(Token::Punct(b':'))? {
-                boolean = self.take(Token::Word("bool"))?;
-                if !boolean { self.expect(Token::Word("int"))?; }
+                string = self.take(Token::Word("string"))?;
+                boolean = !string && self.take(Token::Word("bool"))?;
+                if !boolean && !string { self.expect(Token::Word("int"))?; }
             }
-            if self.bindings.len() >= MAX_LOCALS || self.local_initializers.len() >= MAX_LOCALS {
+            if self.bindings.len()+self.ordinary_strings.len() >= MAX_LOCALS || self.local_initializers.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
+            if string {
+                if !matches!(kind,"let"|"val") { return Err("E_STRING_VIEW_UNSUPPORTED: const string not lowered".into()); }
+                let value=self.ordinary_string_value()?;
+                self.expect(Token::Punct(b';'))?;
+                self.string_versions+=1;
+                if self.string_versions>64 { return Err("E_STRING_VIEW_LIMIT: too many versions".into()); }
+                self.ordinary_strings.push((name,value,kind=="let"));
+                continue;
+            }
             let initializer = if boolean { self.ordinary_bool_value()? } else { self.expr(0, 0)? };
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
@@ -1490,14 +1584,14 @@ impl<'a> Parser<'a> {
         }
         let mut trace_steps = Vec::new();
         let result = if self.current == Token::Word("using") {
-            if !self.local_initializers.is_empty() {
+            if !self.local_initializers.is_empty() || !self.ordinary_strings.is_empty() {
                 return Err("E_TELEMETRY_SCOPE: scoped telemetry with runtime local initializers is not lowered".into());
             }
             self.scalar_body(&mut trace_steps, &mut Vec::new())?
                 .ok_or("scalar main requires a return")?
         } else {
             let inline_effects = self.inline_statements(0)?;
-            let boolean_terminal = !self.ordinary_bools.is_empty() && self.current == Token::Word("if");
+            let boolean_terminal = (!self.ordinary_bools.is_empty() || !self.ordinary_strings.is_empty()) && self.current == Token::Word("if");
             let value = if boolean_terminal { self.ordinary_bool_return(0)? } else {
                 self.expect(Token::Word("return"))?;
                 self.expr(0, 0)?
@@ -1820,6 +1914,11 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
         }
         match expr {
             Expr::Literal(_) | Expr::Local(_) => {}
+            Expr::StaticStringEqual(a,b,_) => {
+                if a.len()>256 || b.len()>256 || std::str::from_utf8(a).is_err() || std::str::from_utf8(b).is_err() { return Err("E_STRING_VIEW_LIMIT: invalid literal span".into()); }
+                counted_nodes+=a.len()+b.len();
+                if counted_nodes>MAX_NODES { return Err("AST node budget exceeded".into()); }
+            }
             Expr::Param(i) if *i < MAX_PARAMS => {}
             Expr::Param(_) => return Err("invalid scalar parameter index".into()),
             Expr::Seq(items) => {
@@ -1900,7 +1999,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
 // This evaluator deliberately refuses function calls, including Integer.*.
 fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
-        Expr::Choose(_,_,_) | Expr::Compare(_,_,_) => Err("E_NON_CONST_INITIALIZER: strict guard is not constexpr".into()),
+        Expr::StaticStringEqual(..) | Expr::Choose(_,_,_) | Expr::Compare(_,_,_) => Err("E_NON_CONST_INITIALIZER: strict guard is not constexpr".into()),
         Expr::Literal(value) => Ok(*value),
         Expr::Seq(parts) => {
             // A constexpr sequence is permitted only when EVERY member is
@@ -2519,6 +2618,7 @@ end"#;
     fn eval(e: &Expr, args: &[i64]) -> Result<i64, &'static str> {
         match e {
             Expr::Literal(x) => Ok(*x),
+            Expr::StaticStringEqual(..) => Err("test evaluator does not execute native string comparisons"),
             Expr::Param(i) => Ok(args[*i]),
             Expr::Local(_) | Expr::ScalarLoop(..) | Expr::ScopedCall(_,_,_) => Err("test evaluator does not execute runtime local sequences"),
             Expr::Choose(c,y,n) => if eval(c,args)?!=0{eval(y,args)}else{eval(n,args)},

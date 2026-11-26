@@ -154,7 +154,7 @@ fn checked_pow_values(
     b.block_params(finished)[0]
 }
 
-fn validate_guest_program(source: &Program) -> Result<(), String> {
+fn validate_guest_program(source: &Program) -> Result<std::collections::BTreeSet<Vec<u8>>, String> {
     if source.parameters.len() > 4 {
         return Err("parameter count exceeds four before native codegen".into());
     }
@@ -162,15 +162,18 @@ fn validate_guest_program(source: &Program) -> Result<(), String> {
         return Err("runtime local count exceeds 64 before native codegen".into());
     }
     let mut nodes = 0_usize;
+    let mut strings = std::collections::BTreeSet::new();
     for (index, initializer) in source.locals.iter().enumerate() {
-        validate_guest_expr(initializer, index, source.parameters.len(), &mut nodes)?;
+        validate_guest_expr(initializer, index, source.parameters.len(), &mut nodes, &mut strings)?;
     }
     validate_guest_expr(
         &source.result,
         source.locals.len(),
         source.parameters.len(),
         &mut nodes,
-    )
+        &mut strings,
+    )?;
+    Ok(strings)
 }
 
 // Revalidate every reference and budget even if a host constructs Program
@@ -180,6 +183,7 @@ fn validate_guest_expr(
     admitted_locals: usize,
     admitted_params: usize,
     nodes: &mut usize,
+    strings: &mut std::collections::BTreeSet<Vec<u8>>,
 ) -> Result<(), String> {
     let mut work = vec![(root, 1_usize, admitted_locals, admitted_params)];
     while let Some((expr, depth, admitted_locals, admitted_params)) = work.pop() {
@@ -192,6 +196,12 @@ fn validate_guest_expr(
         }
         match expr {
             Expr::Literal(_) => {}
+            Expr::StaticStringEqual(a,b,_) => {
+                if a.len()>256 || b.len()>256 || std::str::from_utf8(a).is_err() || std::str::from_utf8(b).is_err() { return Err("E_STRING_VIEW_LIMIT: invalid literal span".into()); }
+                *nodes+=a.len()+b.len();
+                if *nodes>4096 { return Err("AST node budget exceeded before native codegen".into()); }
+                strings.insert(a.clone());strings.insert(b.clone());
+            }
             Expr::Param(index) if *index < admitted_params => {}
             Expr::Local(index) if *index < admitted_locals => {}
             Expr::Seq(items) => {
@@ -289,7 +299,7 @@ fn validate_guest_expr(
 }
 
 fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut FunctionBuilder<'_>,frame:&mut Vec<Value>,
-    error:Block,divisor_error:Block,negative_exponent_error:Block,refinement_error:Block,i32_error:Block){
+    error:Block,divisor_error:Block,negative_exponent_error:Block,refinement_error:Block,i32_error:Block,strings:&StringGlobals){
     use crate::frontend::LoopStep;
     let count=frame.len();
     let header=b.create_block();let body=b.create_block();let exit=b.create_block();
@@ -298,7 +308,7 @@ fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut Fu
     b.ins().jump(header,&entry);
     b.switch_to_block(header);
     let header_values=b.block_params(header).to_vec();
-    let test=emit(condition,b,&[],&header_values,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+    let test=emit(condition,b,&[],&header_values,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
     let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
     let false_args=header_values.iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
     b.ins().brif(truth,body,&[],exit,&false_args);
@@ -306,11 +316,11 @@ fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut Fu
     let mut current=header_values.clone();
     for step in steps{
         match step{
-            LoopStep::Bind(x,_)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);current.push(value);}
-            LoopStep::Set(i,x)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);current[*i]=value;}
-            LoopStep::Loop(c,ss)=>emit_scalar_loop(c,ss,b,&mut current,error,divisor_error,negative_exponent_error,refinement_error,i32_error),
+            LoopStep::Bind(x,_)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);current.push(value);}
+            LoopStep::Set(i,x)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);current[*i]=value;}
+            LoopStep::Loop(c,ss)=>emit_scalar_loop(c,ss,b,&mut current,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings),
             LoopStep::Exit(c,breaking)=>{
-                let test=emit(c,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+                let test=emit(c,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
                 let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
                 let next=b.create_block();
                 let values=current[..count].iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
@@ -324,6 +334,8 @@ fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut Fu
     b.switch_to_block(exit);b.seal_block(exit);*frame=b.block_params(exit).to_vec();
 }
 
+type StringGlobals = std::collections::BTreeMap<Vec<u8>, (GlobalValue, cranelift_codegen::ir::Type)>;
+
 fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
@@ -334,40 +346,58 @@ fn emit(
     negative_exponent_error: Block,
     refinement_error: Block,
     i32_error: Block,
+    strings: &StringGlobals,
 ) -> Value {
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
+        StaticStringEqual(a,z,unequal) => {
+            // Distinct private immutable data spans, no guest pointer/handle or
+            // sentinel scan. Constant lengths bound every generated byte load.
+            let (left,ptr)=strings[a];let (right,_)=strings[z];
+            let l=b.ins().symbol_value(ptr,left);let r=b.ins().symbol_value(ptr,right);
+            let mut equal=b.ins().iconst(types::I8, i64::from(a.len()==z.len()));
+            if a.len()==z.len() {
+                for offset in 0..a.len() {
+                    let x=b.ins().load(types::I8,MemFlagsData::new(),l,offset as i32);
+                    let y=b.ins().load(types::I8,MemFlagsData::new(),r,offset as i32);
+                    let same=b.ins().icmp(IntCC::Equal,x,y);
+                    equal=b.ins().band(equal,same);
+                }
+            }
+            if *unequal { equal=b.ins().bxor_imm(equal,1); }
+            b.ins().uextend(types::I64,equal)
+        }
         Param(i) => params[*i],
         Local(i) => locals[*i],
         Compare(op,x,y) => {
-            let a=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
-            let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let a=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
+            let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             let cc=match op{0=>IntCC::Equal,1=>IntCC::NotEqual,2=>IntCC::SignedLessThan,3=>IntCC::SignedLessThanOrEqual,4=>IntCC::SignedGreaterThan,5=>IntCC::SignedGreaterThanOrEqual,_=>unreachable!()};
             let cmp=b.ins().icmp(cc,a,z);b.ins().uextend(types::I64,cmp)
         }
         Choose(c,y,n) => {
-            let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             let yes=b.create_block();let no=b.create_block();let done=b.create_block();
             b.append_block_param(done,types::I64);
             let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
             b.ins().brif(truth,yes,&[],no,&[]);
             b.switch_to_block(yes);b.seal_block(yes);
-            let a=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let a=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             b.ins().jump(done,&[BlockArg::Value(a)]);
             b.switch_to_block(no);b.seal_block(no);
-            let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             b.ins().jump(done,&[BlockArg::Value(z)]);
             b.switch_to_block(done);b.seal_block(done);
             b.block_params(done)[0]
         }
         ScalarLoop(args,_,condition,steps,tail,body)=>{
-            let mut frame=args.iter().map(|x|emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error)).collect::<Vec<_>>();
-            emit_scalar_loop(condition,steps,b,&mut frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let mut frame=args.iter().map(|x|emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings)).collect::<Vec<_>>();
+            emit_scalar_loop(condition,steps,b,&mut frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             for x in tail{
-                let value=emit(x,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);frame.push(value);
+                let value=emit(x,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);frame.push(value);
             }
-            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error)
+            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings)
         }
         ScopedCall(args, initializers, body) => {
             // The caller evaluates arguments exactly once, left-to-right.
@@ -375,13 +405,13 @@ fn emit(
             // at the call result. Branch-local emission occurs in the current CFG block.
             let mut frame=Vec::with_capacity(args.len()+initializers.len());
             for arg in args {
-                frame.push(emit(arg,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error));
+                frame.push(emit(arg,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings));
             }
             for init in initializers {
-                let value=emit(init,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+                let value=emit(init,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
                 frame.push(value);
             }
-            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error)
+            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings)
         }
         InlineTask(body) => emit(
             body,
@@ -392,7 +422,7 @@ fn emit(
             divisor_error,
             negative_exponent_error,
             refinement_error,
-            i32_error,
+            i32_error,strings,
         ),
         Sequence(prefix, last) => {
             for part in prefix {
@@ -405,8 +435,8 @@ fn emit(
                     divisor_error,
                     negative_exponent_error,
             refinement_error,
-            i32_error,
-                );
+            i32_error,strings,
+        );
             }
             emit(
                 last,
@@ -417,8 +447,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            )
+            i32_error,strings,
+        )
         }
         Seq(parts) => {
             // The source/host-AST gate guarantees a nonempty bounded list.
@@ -434,8 +464,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             for part in rest {
                 value = emit(
                     part,
@@ -446,8 +476,8 @@ fn emit(
                     divisor_error,
                     negative_exponent_error,
             refinement_error,
-            i32_error,
-                );
+            i32_error,strings,
+        );
             }
             value
         }
@@ -464,8 +494,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
         }
@@ -482,8 +512,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             let rhs = emit(
                 y,
                 b,
@@ -493,8 +523,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
                 BitAnd(_, _) => b.ins().band(lhs, rhs),
@@ -503,7 +533,7 @@ fn emit(
             }
         }
         I32Checked(x)=>{
-            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,i32::MIN as i64);
             let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,i32::MAX as i64);
             let invalid=b.ins().bor(below,above);
@@ -511,7 +541,7 @@ fn emit(
             b.switch_to_block(valid);b.seal_block(valid);value
         }
         RefinementCast(x,lo,hi)=>{
-            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error,strings);
             let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,*lo);
             let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,*hi);
             let invalid=b.ins().bor(below,above);
@@ -519,8 +549,8 @@ fn emit(
             b.switch_to_block(valid);b.seal_block(valid);value
         }
         Div(x, y) => {
-            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error);
-            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error,strings);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error,strings);
             let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
             let nonzero = b.create_block();
             b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
@@ -545,8 +575,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             let right = emit(
                 y,
                 b,
@@ -556,8 +586,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
                 rem
@@ -582,8 +612,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             let exponent = emit(
                 y,
                 b,
@@ -593,8 +623,8 @@ fn emit(
                 divisor_error,
                 negative_exponent_error,
             refinement_error,
-            i32_error,
-            );
+            i32_error,strings,
+        );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
         _ => {
@@ -609,8 +639,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
                 }
@@ -624,8 +654,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     let rhs = emit(
                         y,
                         b,
@@ -635,8 +665,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
                 Sub(x, y) => {
@@ -649,8 +679,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     let rhs = emit(
                         y,
                         b,
@@ -660,8 +690,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
                 Mul(x, y) => {
@@ -674,8 +704,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     let rhs = emit(
                         y,
                         b,
@@ -685,8 +715,8 @@ fn emit(
                         divisor_error,
                         negative_exponent_error,
             refinement_error,
-            i32_error,
-                    );
+            i32_error,strings,
+        );
                     b.ins().smul_overflow(lhs, rhs)
                 }
                 _ => unreachable!(),
@@ -747,7 +777,7 @@ fn prepare_ir(
     module: &mut impl Module,
     linkage: Linkage,
 ) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
-    validate_guest_program(source)?;
+    let string_literals=validate_guest_program(source)?;
     validate_trace_steps(source)?;
     let mut sig = module.make_signature();
     // Stable internal entry ABI: four i64 values + output pointer -> i32 status.
@@ -765,6 +795,15 @@ fn prepare_ir(
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     let ptr = module.target_config().pointer_type();
+    let mut strings=StringGlobals::new();
+    for bytes in string_literals {
+        let id=module.declare_anonymous_data(false,false).map_err(|e|e.to_string())?;
+        let mut data=DataDescription::new();
+        // Empty views still have a valid backing address; their length is zero.
+        data.define(if bytes.is_empty(){vec![0].into_boxed_slice()}else{bytes.clone().into_boxed_slice()});
+        module.define_data(id,&data).map_err(|e|e.to_string())?;
+        strings.insert(bytes,(module.declare_data_in_func(id,&mut ctx.func),ptr));
+    }
     let trace = if source.trace_steps.is_empty() {
         None
     } else {
@@ -854,6 +893,7 @@ fn prepare_ir(
             negative_exponent_error,
         refinement_error,
             i32_error,
+            &strings,
         );
         locals.push(value);
     }
@@ -867,7 +907,8 @@ fn prepare_ir(
         negative_exponent_error,
         refinement_error,
             i32_error,
-    );
+            &strings,
+        );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
     for (block, status) in [
