@@ -81,24 +81,15 @@ fn scalar_control_remains_real_cranelift_guest() {
 }
 
 #[test]
-fn checked_unwrap_guest_remains_unsupported_without_verified_tagged_abi() {
+fn checked_unwrap_remains_denied_in_all_scalar_artifact_modes() {
     let cases = [
         "fnc main():int{val Option<int> x=None;return x.unwrap();}",
         "fnc main():int{val Option<int> x=Some(42);return x.unwrap();}",
         "fnc main():int{val Result<int,Error> x=Err(Error(\"bad\"));return x.unwrap();}",
         "fnc main():int{val Result<int,Error> x=trap! None.unwrap();return 42;}",
+        "pub fnc main():int{val Option<int> x=None;return trap! x.unwrap() |> match<int> over on Ok(n):int -> n, on Err():int -> 42, end;}",
     ];
-    for source in cases.into_iter().chain([r#"declare type Bounded = int where self >= 1 and self <= 42;
-
-pub fnc main() -> int {
-    val Option<int> x = None;
-
-    return trap! x.unwrap() |> match<int>  over
-        on Ok(n): int -> n,
-        on Err(): int -> 42,
-    end;
-}
-"#]) {
+    for source in cases {
         for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
             let output = compile(mode, source.as_bytes());
             assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
