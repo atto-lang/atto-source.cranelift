@@ -359,13 +359,25 @@ struct Parser<'a> {
     entry_scope_checked: bool,
 }
 
+fn identifier_start_width(text: &str, at: usize) -> usize {
+    text.get(at..).and_then(|tail| tail.chars().next())
+        .filter(|c| c.is_alphabetic() || *c == '_' || *c == '〇')
+        .map_or(0, char::len_utf8)
+}
+
+fn identifier_part_width(text: &str, at: usize) -> usize {
+    text.get(at..).and_then(|tail| tail.chars().next())
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '〇')
+        .map_or(0, char::len_utf8)
+}
+
 fn is_comparison_bang(suffix: &str) -> bool {
     suffix.starts_with("!=")
         || suffix.strip_prefix("!eq").is_some_and(|tail| {
             !tail
                 .chars()
                 .next()
-                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '〇')
         })
 }
 
@@ -490,8 +502,7 @@ impl<'a> Parser<'a> {
             }
             let word = expected.as_bytes();
             return b.get(at..at.saturating_add(word.len())) == Some(word)
-                && b.get(at + word.len())
-                    .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_');
+                && identifier_part_width(self.input, at + word.len()) == 0;
         }
     }
 
@@ -557,10 +568,12 @@ impl<'a> Parser<'a> {
                 "ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"
             ));
         }
-        if first.is_ascii_alphabetic() || first == b'_' {
-            while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
-            {
-                self.pos += 1;
+        if identifier_start_width(self.input, start) != 0 {
+            self.pos = start + identifier_start_width(self.input, start);
+            loop {
+                let width = identifier_part_width(self.input, self.pos);
+                if width == 0 { break; }
+                self.pos += width;
             }
             self.current = Token::Word(&self.input[start..self.pos]);
             // Scalar stage-0 has no compiler-owned library linker.
@@ -1843,13 +1856,6 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         Sym(u8),
     }
 
-    fn is_ident_start(byte: u8) -> bool {
-        byte.is_ascii_alphabetic() || byte == b'_'
-    }
-    fn is_ident_continue(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric() || byte == b'_'
-    }
-
     let bytes = text.as_bytes();
     let mut index = 0usize;
     let mut previous: Option<Tok<'_>> = None;
@@ -1904,11 +1910,13 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         }
 
         let token_start = index;
-        let current = if is_ident_start(byte) {
+        let current = if identifier_start_width(text, index) != 0 {
             let start = index;
-            index += 1;
-            while index < bytes.len() && is_ident_continue(bytes[index]) {
-                index += 1;
+            index += identifier_start_width(text, index);
+            loop {
+                let width = identifier_part_width(text, index);
+                if width == 0 { break; }
+                index += width;
             }
             Tok::Id(&text[start..index])
         } else {
@@ -2309,6 +2317,21 @@ pub fn parse(text: &str) -> Result<Program, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unicode_scalar_identifiers_are_distinct_and_resolve() {
+        let source = "pub fnc main(int Φ, int φ, int 数量, int 𠮷): int { return Φ + φ + 数量 + 𠮷; }";
+        let ascii = "pub fnc main(int a, int b, int c, int d): int { return a + b + c + d; }";
+        assert!(super::parse(source).is_ok());
+        assert_eq!(format!("{:?}", super::parse(source).unwrap().body),
+                   format!("{:?}", super::parse(ascii).unwrap().body));
+        for source in [
+            "pub fnc main(): int { return 未定義; }",
+            "pub fnc main(int ρ, int ρ): int { return ρ; }",
+            "pub fnc main(): int { return 42; } // \u{202e}",
+        ] { assert!(super::parse(source).is_err(), "{source}"); }
+        assert!(super::parse("pub fnc main(): int { val int 価格 = 20; val int 價格 = 22; return 価格 + 價格; }").is_ok());
+    }
+
     #[test]
     fn strict_refinement_admission() {
         let pre = "type Bounded = int where self >= 1 and self <= 42;";
