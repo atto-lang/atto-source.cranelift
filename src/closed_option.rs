@@ -125,6 +125,16 @@ fn refinement(p: &mut Parser<'_>) -> Result<Option<String>, String> {
     Ok(Some(name))
 }
 
+// The lexer exposes punctuation as individual tokens. Composite source
+// operators must be adjacent bytes, not two tokens separated by trivia.
+fn adjacent_pair(p: &mut Parser<'_>, first: u8, second: u8) -> Result<(), String> {
+    if p.current != Token::Punct(first) || p.input.as_bytes().get(p.pos) != Some(&second) {
+        return Err("E_CLOSED_OPTION_OPERATOR_ADJACENCY".into());
+    }
+    p.next()?;
+    p.expect(Token::Punct(second))
+}
+
 fn variant(p: &mut Parser<'_>) -> Result<Option<Expr>, String> {
     if p.take(Token::Word("None"))? { return Ok(None); }
     p.expect(Token::Word("Some"))?;
@@ -162,8 +172,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
         p.expect(Token::Punct(b')'))?;
     }
     if !p.take(Token::Punct(b':'))? {
-        p.expect(Token::Punct(b'-'))?;
-        p.expect(Token::Punct(b'>'))?;
+        adjacent_pair(&mut p, b'-', b'>')?;
     }
     p.expect(Token::Word("int"))?;
     p.expect(Token::Punct(b'{'))?;
@@ -198,8 +207,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("unwrap"))?;
     p.expect(Token::Punct(b'('))?;
     p.expect(Token::Punct(b')'))?;
-    p.expect(Token::Punct(b'|'))?;
-    p.expect(Token::Punct(b'>'))?;
+    adjacent_pair(&mut p, b'|', b'>')?;
     p.expect(Token::Word("match"))?;
     p.expect(Token::Punct(b'<'))?;
     p.expect(Token::Word("int"))?;
@@ -215,8 +223,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Punct(b')'))?;
     p.expect(Token::Punct(b':'))?;
     p.expect(Token::Word("int"))?;
-    p.expect(Token::Punct(b'-'))?;
-    p.expect(Token::Punct(b'>'))?;
+    adjacent_pair(&mut p, b'-', b'>')?;
     if p.name()? != payload { return Err("E_CLOSED_OPTION_PAYLOAD".into()); }
     p.expect(Token::Punct(b','))?;
     p.expect(Token::Word("on"))?;
@@ -225,8 +232,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Punct(b')'))?;
     p.expect(Token::Punct(b':'))?;
     p.expect(Token::Word("int"))?;
-    p.expect(Token::Punct(b'-'))?;
-    p.expect(Token::Punct(b'>'))?;
+    adjacent_pair(&mut p, b'-', b'>')?;
     let fallback = scalar(&mut p, 0, 0)?;
     validate_ast_depth(&fallback)?;
     p.take(Token::Punct(b','))?;
