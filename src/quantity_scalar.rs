@@ -201,6 +201,7 @@ struct Refinement {
     scale: Scale,
     lo: i64,
     hi: i64,
+    holes: u8,
     width: Width,
 }
 #[derive(Clone)]
@@ -479,6 +480,7 @@ impl<'a> Quantities<'a> {
                     scale,
                     lo,
                     hi,
+                    holes: 0,
                     width,
                 },
             ));
@@ -831,7 +833,10 @@ impl<'a> Quantities<'a> {
         if want.scale != value.scale {
             return Err("E_UNIT_SCALE: incompatible boundary".into());
         }
-        if !value.range.contained(want.lo, want.hi) {
+        if !value.range.contained(want.lo, want.hi)
+            || (want.holes & 1 != 0 && value.range.has(0))
+            || (want.holes & 2 != 0 && value.range.has(-1))
+        {
             return Err(format!("{code}: unproved refinement"));
         }
         Ok(())
@@ -922,6 +927,7 @@ impl<'a> Quantities<'a> {
                 scale: Scale::ONE,
                 lo: i64::MIN,
                 hi: i64::MAX,
+                holes: 0,
                 width: Width::I64,
             });
         }
@@ -931,6 +937,7 @@ impl<'a> Quantities<'a> {
                 scale: Scale::ONE,
                 lo: I32_LO,
                 hi: I32_HI,
+                holes: 0,
                 width: Width::I32,
             });
         }
@@ -1188,25 +1195,77 @@ impl<'a> Quantities<'a> {
         }
         Ok(n)
     }
+    fn contract_annotations(&mut self) -> Result<Vec<(Cursor<'a>, Cursor<'a>, bool)>, String> {
+        let mut spans = Vec::new();
+        while self.p.take(Token::Punct(b'@'))? {
+            if spans.len() >= 16 {
+                return Err("E_REFINEMENT_CONTRACT: contract budget".into());
+            }
+            let req = self.p.take(Token::Word("requires"))?;
+            if !req && !self.p.take(Token::Word("ensures"))? {
+                return Err("E_REFINEMENT_CONTRACT: unsupported annotation".into());
+            }
+            self.p.expect(Token::Punct(b'('))?;
+            let start = self.cursor();
+            let mut count = 0;
+            while self.p.current != Token::Punct(b')') {
+                count += 1;
+                if count > 32
+                    || matches!(
+                        self.p.current,
+                        Token::End | Token::Punct(b'(' | b'{' | b'}' | b';' | b'@')
+                    )
+                {
+                    return Err(
+                        "E_REFINEMENT_CONTRACT: invalid bounded annotation predicate".into(),
+                    );
+                }
+                self.p.next()?;
+            }
+            let end = self.cursor();
+            self.p.next()?;
+            spans.push((start, end, req));
+        }
+        Ok(spans)
+    }
     fn contracts(
         &mut self,
         params: &mut [Refinement],
         result: Refinement,
         main: bool,
+        annotations: &[(Cursor<'a>, Cursor<'a>, bool)],
     ) -> Result<Vec<Contract>, String> {
         let mut out = Vec::new();
         let mut count = 0;
+        let mut spans = annotations.iter();
         loop {
-            let require = self.p.take(Token::Word("requires"))?;
-            if !require && !self.p.take(Token::Word("ensures"))? {
-                break;
-            }
+            let resume = self.cursor();
+            let span = spans.next();
+            let require = if let Some(&(start, _, req)) = span {
+                self.seek(start);
+                req
+            } else {
+                let req = self.p.take(Token::Word("requires"))?;
+                if !req && !self.p.take(Token::Word("ensures"))? {
+                    break;
+                }
+                req
+            };
             count += 1;
             if main || count > 16 {
                 return Err("E_REFINEMENT_CONTRACT: contract limit or exported entry".into());
             }
             let name = self.p.name()?;
-            let op = self.contract_op()?;
+            let op = if require
+                && self.p.current == Token::Punct(b'!')
+                && self.p.input.as_bytes().get(self.p.pos) == Some(&b'=')
+            {
+                self.p.next()?;
+                self.p.expect(Token::Punct(b'='))?;
+                1
+            } else {
+                self.contract_op()?
+            };
             if require {
                 let i = self
                     .bindings
@@ -1216,7 +1275,14 @@ impl<'a> Quantities<'a> {
                 let w = params[i];
                 let n = self.contract_bound(w)?;
                 let (mut lo, mut hi) = (w.lo, w.hi);
+                let mut holes = w.holes;
                 match op {
+                    1 => {
+                        if Range::bit(n) == 0 {
+                            return Err("E_REFINEMENT_CONTRACT: unsupported exclusion".into());
+                        }
+                        holes |= Range::bit(n);
+                    }
                     0 => {
                         lo = lo.max(n);
                         hi = hi.min(n);
@@ -1237,12 +1303,13 @@ impl<'a> Quantities<'a> {
                     5 => lo = lo.max(n),
                     _ => unreachable!(),
                 }
-                if lo > hi {
-                    return Err("E_REFINEMENT_EMPTY: contradictory requires".into());
-                }
-                params[i].lo = lo;
-                params[i].hi = hi;
-                self.bindings[i].1.range = Range { lo, hi, holes: 0 };
+                let range = Range { lo, hi, holes }
+                    .normalize()
+                    .ok_or("E_REFINEMENT_EMPTY: contradictory requires")?;
+                params[i].lo = range.lo;
+                params[i].hi = range.hi;
+                params[i].holes = range.holes;
+                self.bindings[i].1.range = range;
             } else {
                 if name != "result" {
                     return Err("E_REFINEMENT_CONTRACT: ensures must constrain result".into());
@@ -1273,6 +1340,12 @@ impl<'a> Quantities<'a> {
                         bound: Some(n),
                     });
                 }
+            }
+            if let Some(&(_, end, _)) = span {
+                if self.cursor() != end {
+                    return Err("E_REFINEMENT_CONTRACT: trailing annotation tokens".into());
+                }
+                self.seek(resume);
             }
         }
         Ok(out)
@@ -2010,6 +2083,7 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         q.bindings.clear();
         q.locals.clear();
         q.arrays.clear();
+        let annotations = q.contract_annotations()?;
         let public = q.p.take(Token::Word("pub"))?;
         q.p.expect(Token::Word("fnc"))?;
         let name = q.p.name()?;
@@ -2065,8 +2139,9 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
             return Err("E_UNIT_ERASURE: main requires plain int".into());
         }
         let result = q.annotation(&ty)?;
-        let contracted = matches!(q.p.current, Token::Word("requires" | "ensures"));
-        let contracts = q.contracts(&mut params, result, main)?;
+        let contracted =
+            !annotations.is_empty() || matches!(q.p.current, Token::Word("requires" | "ensures"));
+        let contracts = q.contracts(&mut params, result, main, &annotations)?;
         let end_delimited = if q.p.take(Token::Punct(b'{'))? {
             false
         } else if q.pair(b':')? {
