@@ -190,10 +190,14 @@ mod tests {
         let peer = sibling.issue_allocation(0, 8).unwrap();
         let next_id = first.next_id;
         for _ in 0..8 {
-            assert!(matches!(first.issue_allocation(56, 9),
-                Err("invalid actor allocation bounds")));
-            assert!(matches!(first.issue_allocation(48, 8),
-                Err("overlapping live allocations")));
+            assert!(matches!(
+                first.issue_allocation(56, 9),
+                Err("invalid actor allocation bounds")
+            ));
+            assert!(matches!(
+                first.issue_allocation(48, 8),
+                Err("overlapping live allocations")
+            ));
             assert_eq!(first.next_id, next_id);
             assert_eq!(first.live.len(), 1);
             assert_eq!(first.checked_offset(&root, 1, 56), Ok(0));
