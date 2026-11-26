@@ -723,6 +723,7 @@ impl<'a> Parser<'a> {
                         | "WriteLoan"
                 )
             ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
+                && !(self.current == Token::Word("Entry") && self.next_significant_is(b'.'))
             {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
@@ -1047,7 +1048,9 @@ impl<'a> Parser<'a> {
                     pending.push(a);
                     pending.push(b);
                 }
-                _ => return Err("E_ENTRY_VALUE_UNSUPPORTED: checked i64 operands required".into()),
+                _ => {
+                    return Err("E_ENTRY_VALUE_UNSUPPORTED: checked i64 operands required".into());
+                }
             }
         }
         self.expect(Token::Punct(b')'))?;

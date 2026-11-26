@@ -277,7 +277,7 @@ fn entry_projection_rejects_unproved_operands_escape_and_shadowing() {
         ),
         (
             "fnc main(Entry:int):int{return Entry.of(1,2).key;}",
-            "E_ENTRY_SCOPE_UNSUPPORTED",
+            "E_SAFE_COLLECTION_ACCESS_UNSUPPORTED",
         ),
         (
             "fnc main(a:int):int{val n=a;return Entry.of(42,n).key;}",
