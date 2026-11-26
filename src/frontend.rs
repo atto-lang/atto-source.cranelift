@@ -1505,7 +1505,50 @@ impl<'a> Parser<'a> {
             return Err("E_IMMUTABLE_REBIND: local const/val is not rebindable".into());
         }
         let mut trace_steps = Vec::new();
-        let result = if self.current == Token::Word("using") {
+        let result = if self.take(Token::Word("if"))? {
+            // Closed scalar stage-0 conditional. A dynamic predicate needs
+            // real typed CFG lowering, not eager arithmetic selection.
+            if !self.parameters.is_empty() || !self.bindings.is_empty() {
+                return Err("E_STATIC_CONDITION_ONLY: closed scalar entry required".into());
+            }
+            let condition = if self.take(Token::Word("true"))? {
+                true
+            } else if self.take(Token::Word("false"))? {
+                false
+            } else {
+                let lhs = self.atom(0)?;
+                let less = self.take(Token::Punct(b'<'))?;
+                if !less { self.expect(Token::Punct(b'>'))?; }
+                let rhs = self.atom(0)?;
+                let (Expr::Literal(a), Expr::Literal(b)) = (lhs,rhs) else {
+                    return Err("E_STATIC_CONDITION_ONLY: integer literals required".into());
+                };
+                if less { a < b } else { a > b }
+            };
+            self.expect(Token::Word("do"))?;
+            self.expect(Token::Word("return"))?;
+            let yes = self.expr(0,0)?;
+            validate_ast_depth(&yes)?;
+            self.expect(Token::Punct(b';'))?;
+            let no = if self.take(Token::Word("else"))? {
+                self.expect(Token::Word("return"))?;
+                let value = self.expr(0,0)?;
+                self.expect(Token::Punct(b';'))?;
+                self.expect(Token::Word("fi"))?;
+                value
+            } else {
+                self.expect(Token::Word("fi"))?;
+                self.expect(Token::Word("return"))?;
+                let value = self.expr(0,0)?;
+                self.expect(Token::Punct(b';'))?;
+                value
+            };
+            validate_ast_depth(&no)?;
+            self.expect(Token::Punct(b'}'))?;
+            // Both arms are statically parsed and checked, but only the
+            // selected arm becomes executable IR (including checked traps).
+            if condition { yes } else { no }
+        } else if self.current == Token::Word("using") {
             if !self.local_initializers.is_empty() {
                 return Err("E_TELEMETRY_SCOPE: scoped telemetry with runtime local initializers is not lowered".into());
             }
