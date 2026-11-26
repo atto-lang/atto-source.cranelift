@@ -36,11 +36,23 @@ impl Range {
         }
     }
 }
-struct Typed { expr: Expr, dim: Dim, scale:Scale, range:Range }
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum Width { Literal, I32, I64 }
+const I32_LO:i64=i32::MIN as i64;
+const I32_HI:i64=i32::MAX as i64;
+impl Range {
+    fn intersect(self,other:Self)->Self {
+        let lo=self.lo.max(other.lo);let hi=self.hi.min(other.hi);
+        // Disjoint checked cast has no normal successor. Retain target
+        // bounds, never claim an impossible pre-cast value survived.
+        if lo>hi{other}else{Self{lo,hi}}
+    }
+}
+struct Typed { expr: Expr, dim: Dim, scale:Scale, range:Range, width:Width }
 #[derive(Clone,Copy)]
-struct Binding {dim:Dim,scale:Scale,range:Range,slot:usize}
+struct Binding {dim:Dim,scale:Scale,range:Range,slot:usize,width:Width}
 #[derive(Clone,Copy)]
-struct Refinement {dim:Dim,scale:Scale,lo:i64,hi:i64}
+struct Refinement {dim:Dim,scale:Scale,lo:i64,hi:i64,width:Width}
 #[derive(Clone)]
 struct Helper {params:Vec<Refinement>,result:Refinement,locals:Vec<Expr>,body:Expr}
 fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
@@ -53,6 +65,7 @@ fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
         Expr::Sub(a,b)=>Expr::Sub(one(a)?,one(b)?),
         Expr::Mul(a,b)=>Expr::Mul(one(a)?,one(b)?),
         Expr::Div(a,b)=>Expr::Div(one(a)?,one(b)?),
+        Expr::I32Checked(x)=>Expr::I32Checked(one(x)?),
         Expr::RefinementCast(x,l,h)=>Expr::RefinementCast(one(x)?,*l,*h),
         _=>return Err("E_UNIT_CALL: unsupported helper expression".into())
     })
@@ -127,16 +140,18 @@ impl<'a> Quantities<'a> {
     fn refinement_declarations(&mut self)->Result<(),String>{
         while self.p.take(Token::Word("type"))?{
             if self.refinements.len()==32{return Err("E_REFINEMENT_LIMIT".into());}
+            if matches!(self.p.current,Token::Word("int"|"i64"|"i32")){return Err("E_REFINEMENT_DUPLICATE: reserved carrier".into());}
             let name=self.declaration_name()?;
             self.p.expect(Token::Punct(b'='))?;
-            if !self.p.take(Token::Word("int"))?{self.p.expect(Token::Word("i64"))?;}
+            let width=if self.p.take(Token::Word("i32"))?{Width::I32}else{if !self.p.take(Token::Word("int"))?{self.p.expect(Token::Word("i64"))?;}Width::I64};
             self.p.expect(Token::Word("where"))?;
-            let(mut lo,mut hi)=(i64::MIN,i64::MAX);
+            let(mut lo,mut hi)=if width==Width::I32{(I32_LO,I32_HI)}else{(i64::MIN,i64::MAX)};
             let mut count=0;
             let mut has_units=false;
             loop{
                 if self.p.take(Token::Word("units"))?{has_units=true;break;}
                 self.p.expect(Token::Word("self"))?;
+                if self.p.take(Token::Word("eq"))?{let n=self.signed_bound()?;lo=lo.max(n);hi=hi.min(n);count+=1;if count>16||lo>hi{return Err("E_REFINEMENT_EMPTY: empty interval".into());}if !self.p.take(Token::Word("and"))?{break;}continue;}
                 let end=self.p.pos;
                 let lower=if self.p.take(Token::Punct(b'>'))?{true}else{self.p.expect(Token::Punct(b'<'))?;false};
                 let inclusive=self.p.pos==end+1&&self.p.take(Token::Punct(b'='))?;
@@ -155,7 +170,7 @@ impl<'a> Quantities<'a> {
                 dim[*i]=1;scale=*s;
             }
             self.p.expect(Token::Punct(b';'))?;
-            self.refinements.push((name,Refinement{dim,scale,lo,hi}));
+            self.refinements.push((name,Refinement{dim,scale,lo,hi,width}));
         }
         Ok(())
     }
@@ -176,12 +191,12 @@ impl<'a> Quantities<'a> {
         if value.scale!=target.scale{return Err("E_UNIT_SCALE: refinement scale mismatch".into());}
         if self.strict&&!value.range.contained(target.lo,target.hi){return Err("E_VERIFY_UNPROVEN: refinement cast may fail".into());}
         let expr=self.p.node(Expr::RefinementCast(Box::new(value.expr),target.lo,target.hi))?;
-        Ok(Typed{expr,dim:value.dim,scale:value.scale,range:Range{lo:target.lo,hi:target.hi}})
+        Ok(Typed{expr,dim:value.dim,scale:value.scale,range:value.range.intersect(Range{lo:target.lo,hi:target.hi}),width:target.width})
     }
     fn target(&mut self,value:Typed,cast:bool)->Result<Typed,String>{
         let mut value=value;
         if cast && matches!(self.p.current,Token::Word("int"|"i64")) {
-            self.p.checked_i64_cast_target()?;Self::scalar(&value)?;
+            self.p.checked_i64_cast_target()?;Self::scalar(&value)?;value.width=Width::I64;
         }else if cast{
             let target=self.refinements.iter().find(|(n,_)|matches!(self.p.current,Token::Word(s) if s==n)).map(|(_,r)|*r);
             if let Some(r)=target{self.p.next()?;return self.checked_refinement(value,r);}
@@ -224,7 +239,7 @@ impl<'a> Quantities<'a> {
             }
             self.p.checked_i64_cast_target()?;
             self.p.expect(Token::Punct(b'>'))?;
-            let value=self.atom(depth+1)?;Self::scalar(&value)?;return Ok(value);
+            let mut value=self.atom(depth+1)?;Self::scalar(&value)?;value.width=Width::I64;return Ok(value);
         }
         if self.p.take(Token::Punct(b'+'))? {return self.atom(depth+1);}
         if self.p.take(Token::Punct(b'-'))? {
@@ -234,12 +249,15 @@ impl<'a> Quantities<'a> {
                     self.p.next()?;
                     let compact=self.p.pos==end+1;
                     let expr=self.p.node(Expr::Literal(i64::MIN))?;
-                    return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(i64::MIN)},compact,true);
+                    return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(i64::MIN),width:Width::Literal},compact,true);
                 }
             }
             let value=self.atom(depth+1)?;
             if self.strict&&value.range.lo==i64::MIN{return Err("E_VERIFY_UNPROVEN: signed negation may overflow".into());}
-            return Ok(Typed{expr:self.p.node(Expr::Neg(Box::new(value.expr)))?,dim:value.dim,scale:value.scale,range:value.range.neg()});
+            let range=value.range.neg();
+            let expr=self.p.node(Expr::Neg(Box::new(value.expr)))?;
+            let (expr,range)=self.checked_width(expr,range,value.width)?;
+            return Ok(Typed{expr,dim:value.dim,scale:value.scale,range,width:value.width});
         }
         if self.p.take(Token::Punct(b'('))? {
             let value=self.expr(0,depth+1)?;
@@ -252,13 +270,13 @@ impl<'a> Quantities<'a> {
             self.p.next()?;
             let compact=self.p.pos==end+1;
             let expr=self.p.node(Expr::Literal(v))?;
-            return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(v)},compact,true);
+            return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(v),width:Width::Literal},compact,true);
         }
         if let Token::Word(name)=self.p.current{
             if let Some((_,b))=self.bindings.iter().find(|(n,_)|n==name){
                 let b=*b;self.p.next()?;
                 let expr=self.p.node(Expr::Local(b.slot))?;
-                return self.postfix(Typed{expr,dim:b.dim,scale:b.scale,range:b.range},false,false);
+                return self.postfix(Typed{expr,dim:b.dim,scale:b.scale,range:b.range,width:b.width},false,false);
             }
         }
         if let Token::Word(name)=self.p.current{
@@ -268,6 +286,11 @@ impl<'a> Quantities<'a> {
             }
         }
         Err("E_UNIT_PROFILE: expected quantity expression, binding or earlier private helper".into())
+    }
+    fn checked_width(&mut self,expr:Expr,range:Range,width:Width)->Result<(Expr,Range),String>{
+        if width!=Width::I32{return Ok((expr,range));}
+        if self.strict&&!range.contained(I32_LO,I32_HI){return Err("E_VERIFY_UNPROVEN: i32 arithmetic may overflow".into());}
+        Ok((self.p.node(Expr::I32Checked(Box::new(expr)))?,range.intersect(Range{lo:I32_LO,hi:I32_HI})))
     }
     fn push_local(&mut self,expr:Expr)->Result<usize,String>{
         if self.locals.len()>=64{return Err("E_UNIT_LIMIT: runtime locals".into());}
@@ -302,10 +325,11 @@ impl<'a> Quantities<'a> {
         }
         let slot=self.push_local(remap(&h.body,&slots)?)?;
         let expr=self.p.node(Expr::Local(slot))?;
-        self.postfix(Typed{expr,dim:h.result.dim,scale:h.result.scale,range:Range{lo:h.result.lo,hi:h.result.hi}},false,false)
+        self.postfix(Typed{expr,dim:h.result.dim,scale:h.result.scale,range:Range{lo:h.result.lo,hi:h.result.hi},width:h.result.width},false,false)
     }
     fn annotation(&self,name:&str)->Result<Refinement,String>{
-        if matches!(name,"int"|"i64"){return Ok(Refinement{dim:SCALAR,scale:Scale::ONE,lo:i64::MIN,hi:i64::MAX});}
+        if matches!(name,"int"|"i64"){return Ok(Refinement{dim:SCALAR,scale:Scale::ONE,lo:i64::MIN,hi:i64::MAX,width:Width::I64});}
+        if name=="i32"{return Ok(Refinement{dim:SCALAR,scale:Scale::ONE,lo:I32_LO,hi:I32_HI,width:Width::I32});}
         self.refinements.iter().find(|(n,_)|n==name).map(|(_,r)|*r).ok_or_else(||"E_UNIT_NAME: unknown annotation".into())
     }
     fn binding_name(&self,name:&str)->Result<(),String>{
@@ -328,13 +352,14 @@ impl<'a> Quantities<'a> {
             };
             self.binding_name(&name)?;
             self.p.expect(Token::Punct(b'='))?;
-            let value=self.expr(0,0)?;
+            let mut value=self.expr(0,0)?;
             self.p.expect(Token::Punct(b';'))?;
             if let Some(w)=want{
                 Self::boundary(w,&value,"E_REFINEMENT_BINDING")?;
-            }
+                value.width=w.width;
+            }else if value.width==Width::Literal{value.width=Width::I64;}
             let slot=self.push_local(value.expr)?;
-            self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot}));
+            self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot,width:value.width}));
         }
         Ok(())
     }
@@ -370,10 +395,17 @@ impl<'a> Quantities<'a> {
                 }
             }
             if self.strict&&!lhs.range.proves(rhs.range,op){return Err("E_VERIFY_UNPROVEN: signed arithmetic may overflow or divide by zero".into());}
+            let width=match (lhs.width,rhs.width){
+                (Width::I64,_)|(_,Width::I64)=>Width::I64,
+                (Width::I32,_)|(_,Width::I32)=>Width::I32,
+                _=>Width::I64
+            };
+            if width==Width::I32 && ((lhs.width==Width::Literal&&!lhs.range.contained(I32_LO,I32_HI))||(rhs.width==Width::Literal&&!rhs.range.contained(I32_LO,I32_HI))){return Err("E_I32_RANGE: literal operand out of range".into());}
             let range=lhs.range.binary(rhs.range,op);
             let left=Box::new(lhs.expr);let right=Box::new(rhs.expr);
             let expr=self.p.node(match op{b'+'=>Expr::Add(left,right),b'-'=>Expr::Sub(left,right),b'*'=>Expr::Mul(left,right),b'/'=>Expr::Div(left,right),_=>unreachable!()})?;
-            lhs=Typed{expr,dim,scale,range};
+            let (expr,range)=self.checked_width(expr,range,width)?;
+            lhs=Typed{expr,dim,scale,range,width};
         }
         // Quantity casts/ascriptions have lower precedence than arithmetic.
         // Parenthesize attachment when used as a subsequent operand.
@@ -405,7 +437,7 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
                 let ty=q.p.name()?;let want=q.annotation(&ty)?;
                 let param=q.p.name()?;q.binding_name(&param)?;
                 let slot=q.push_local(Expr::Literal(0))?;
-                q.bindings.push((param,Binding{dim:want.dim,scale:want.scale,range:Range{lo:want.lo,hi:want.hi},slot}));
+                q.bindings.push((param,Binding{dim:want.dim,scale:want.scale,range:Range{lo:want.lo,hi:want.hi},slot,width:want.width}));
                 params.push(want);
                 if q.p.take(Token::Punct(b')'))?{break;}
                 q.p.expect(Token::Punct(b','))?;
