@@ -23,7 +23,7 @@ const O_PATH: c_int = 0o10000000;
 const LOCK_EX: c_int = 2;
 const LOCK_NB: c_int = 4;
 const PENDING: &str = ".pending";
-extern "C" {
+unsafe extern "C" {
     fn openat(dirfd: c_int, pathname: *const c_char, flags: c_int, ...) -> c_int;
     fn unlinkat(dirfd: c_int, pathname: *const c_char, flags: c_int) -> c_int;
     fn renameat(oldfd: c_int, old: *const c_char, newfd: c_int, new: *const c_char) -> c_int;
