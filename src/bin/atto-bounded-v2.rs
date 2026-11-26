@@ -64,7 +64,7 @@ fn emit(schema:u64,mut tags:Vec<u8>)->Result<Vec<u8>,String>{
         let value=if let Some((target,tag_data))=imported{
             let mut args=b.block_params(entry).to_vec();
             args.push(b.ins().iconst(types::I64,schema as i64));
-            args.push(b.ins().global_value(ptr,tag_data));
+            args.push(b.ins().symbol_value(ptr,tag_data));
             args.push(b.ins().iconst(types::I32,count));
             let call=b.ins().call(target,&args);
             b.inst_results(call)[0]
