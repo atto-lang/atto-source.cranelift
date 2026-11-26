@@ -254,9 +254,24 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 }
 
 #[test]
-fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
+fn undocumented_caret_infix_does_not_gain_fake_glm_feature_support() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
-    expect_unsupported("pub fnc main():int{return 3 / 2;}");
+}
+
+#[test]
+fn checked_signed_i64_division_is_a_scalar_intersection_not_glm_parity() {
+    // This explicitly typed scalar profile already implements checked
+    // signed quotient, with independent native object coverage in
+    // checked_division_aot.rs. Do not confuse this with float/tensor GLM.
+    expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
+    expect_native("pub fnc main(a:int,b:int):int{return a/b;}", &["-7","2"], "-3\n");
+    for args in [["7","0"], ["-9223372036854775808","-1"]] {
+        let result = run_guest("run", "pub fnc main(a:int,b:int):int{return a/b;}", &args);
+        assert_eq!(result.status.code(), Some(1));
+        assert!(result.stdout.is_empty());
+        assert!(!result.stderr.is_empty());
+    }
+    expect_unsupported("pub fnc main():int{return 3.0 / 2.0;}");
 }
 
 #[test]
