@@ -1,0 +1,39 @@
+name: Draft bounded v2 Cranelift static object
+on:
+  pull_request:
+    paths:
+      - 'src/bin/atto-bounded-v2.rs'
+      - 'native/durable_bounded_v2_runtime.c'
+      - 'tests/durable_bounded_v2_native.cpp'
+      - '.github/workflows/durable-bounded-v2-object.yml'
+permissions:
+  contents: read
+jobs:
+  object:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head and compile native object
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD^{tree}
+          cargo build --locked --bin atto-bounded-v2
+          emitter=target/debug/atto-bounded-v2
+          "$emitter" Ledger count:int open:bool name:string payload:bytes > "$RUNNER_TEMP/ledger.o"
+          "$emitter" Ledger count:int open:bool name:string payload:bytes > "$RUNNER_TEMP/ledger-repeat.o"
+          cmp "$RUNNER_TEMP/ledger.o" "$RUNNER_TEMP/ledger-repeat.o"
+          for invalid in bad-name x:constructor x:bool; do
+            if "$emitter" Ledger x:int "$invalid" > "$RUNNER_TEMP/rejected.o"; then exit 1; fi
+            test ! -s "$RUNNER_TEMP/rejected.o"
+          done
+          gcc -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -c native/durable_bounded_v2_runtime.c -o "$RUNNER_TEMP/runtime.o"
+          g++ -std=c++17 -O1 -g -Wall -Wextra -Wpedantic -Werror -UNDEBUG -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie tests/durable_bounded_v2_native.cpp "$RUNNER_TEMP/ledger.o" "$RUNNER_TEMP/runtime.o" -o "$RUNNER_TEMP/guest"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 timeout 60 "$RUNNER_TEMP/guest"
