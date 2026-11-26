@@ -219,6 +219,11 @@ fn validate_guest_expr(
             }
             Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x,depth+1));}
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
+            Expr::Choose(c,y,n) => {work.push((c,depth+1));work.push((y,depth+1));work.push((n,depth+1));}
+            Expr::Compare(op,a,b) => {
+                if *op>5{return Err("invalid comparison opcode before native codegen".into());}
+                work.push((a,depth+1));work.push((b,depth+1));
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -252,6 +257,27 @@ fn emit(
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         Local(i) => locals[*i],
+        Compare(op,x,y) => {
+            let a=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let cc=match op{0=>IntCC::Equal,1=>IntCC::NotEqual,2=>IntCC::SignedLessThan,3=>IntCC::SignedLessThanOrEqual,4=>IntCC::SignedGreaterThan,5=>IntCC::SignedGreaterThanOrEqual,_=>unreachable!()};
+            let cmp=b.ins().icmp(cc,a,z);b.ins().uextend(types::I64,cmp)
+        }
+        Choose(c,y,n) => {
+            let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            let yes=b.create_block();let no=b.create_block();let done=b.create_block();
+            b.append_block_param(done,types::I64);
+            let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
+            b.ins().brif(truth,yes,&[],no,&[]);
+            b.switch_to_block(yes);b.seal_block(yes);
+            let a=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            b.ins().jump(done,&[BlockArg::Value(a)]);
+            b.switch_to_block(no);b.seal_block(no);
+            let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error);
+            b.ins().jump(done,&[BlockArg::Value(z)]);
+            b.switch_to_block(done);b.seal_block(done);
+            b.block_params(done)[0]
+        }
         InlineTask(body) => emit(
             body,
             b,
