@@ -41,6 +41,11 @@ fn parse_import_line(line: &str) -> Result<NamedImport, String> {
     if !valid_identifier(exported_name) || !valid_identifier(local_name) {
         return Err("E_LINK_IMPORT_NAME".into());
     }
+    if functional_pipelines::reserved_sum_name(exported_name)
+        || functional_pipelines::reserved_sum_name(local_name)
+    {
+        return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
+    }
     let raw = path
         .strip_prefix('"')
         .and_then(|p| p.strip_suffix("\";"))
