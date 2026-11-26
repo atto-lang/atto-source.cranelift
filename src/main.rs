@@ -2,6 +2,7 @@
 #[allow(dead_code)]
 mod actor_isolation_access_v1;
 mod backend;
+mod counted_static_ready;
 pub mod critical_gate;
 mod frontend;
 mod functional_pipelines;
@@ -222,7 +223,7 @@ fn run() -> Result<(), String> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object" | "emit-counted-static-ready-object"
     ) {
         return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
@@ -262,6 +263,12 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
+    if mode == "emit-counted-static-ready-object" {
+        if !values.is_empty() || path.extension().and_then(|x|x.to_str()) != Some("atto") { return Err("E_COUNTED_STATIC_READY: expected .atto and no runtime arguments".into()); }
+        let program = counted_static_ready::compile(source)?;
+        let object = backend::emit_object(&program)?;
+        return std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string());
+    }
     // Strict AOT admission is isolated from ordinary and linked-native dispatch.
     // Never emit bytes until the complete source proof has succeeded.
     if mode == "emit-object-strict" {
