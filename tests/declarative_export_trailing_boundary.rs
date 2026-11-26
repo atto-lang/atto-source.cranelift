@@ -1,3 +1,6 @@
+// Parser-only test crate intentionally imports a subset of the production frontend.
+// Production binary retains its independent strict dead-code gate.
+#[allow(dead_code)]
 #[path = "../src/frontend.rs"]
 mod frontend;
 use frontend::parse;
