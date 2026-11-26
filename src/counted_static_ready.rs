@@ -13,7 +13,7 @@ fn choose(c:Expr,y:Expr,n:Expr)->Expr{Expr::Choose(boxed(c),boxed(y),boxed(n))}
 #[derive(Clone)]
 enum Slot {
     Scalar(usize), Channel{cap:usize,queue:VecDeque<usize>},
-    Future{value:Expr,retired:bool}, Array(Vec<usize>), Pending(Plan),
+    Future{value:Expr,retired:bool}, Array(Vec<usize>), Pending(Plan), Consumed,
 }
 #[derive(Clone)]
 struct Arm { source:String, projection:Expr }
@@ -162,7 +162,7 @@ impl Parser {
             "channel"=>{if self.pending.is_some(){return Err(err("await batch first"))}self.need("Channel")?;self.need(".")?;self.need("new")?;self.need("<")?;self.need("int")?;self.need(">")?;self.need("(")?;let cap=self.small(64)?;self.need(")")?;if cap==0{return Err(err("zero capacity"))}Slot::Channel{cap,queue:VecDeque::new()}},
             "future"=>{if self.pending.is_some(){return Err(err("await batch first"))}self.need("select")?;self.need("<")?;self.need("int")?;self.need(">")?;let over=self.eat("over");if !over{self.need("{")?}self.need("default")?;self.need(":")?;self.need("->")?;self.need("{")?;self.need("return")?;let value=self.expr(0,Some("$no_binder"),false)?.int()?;self.need(";")?;self.need("}")?;self.need(if over{"end"}else{"}"})?;Slot::Future{value,retired:false}},
             "pending"=>{self.eat("nb");self.need("select")?;let p=self.plan()?;self.pending=Some(n.clone());Slot::Pending(p)},
-            "array"=>{self.need("await")?;let legacy=self.eat("nb");let p=if self.eat("select"){self.plan()?}else{if legacy{return Err(err("nb requires select"))}let h=self.name()?;if self.pending.as_deref()!=Some(&h){return Err(err("expected outstanding batch"))}let Some(Slot::Pending(p))=self.slots.remove(&h) else{return Err(err("pending plan"))};self.pending=None;p};Slot::Array(self.drive(p)?)},
+            "array"=>{self.need("await")?;let legacy=self.eat("nb");let p=if self.eat("select"){self.plan()?}else{if legacy{return Err(err("nb requires select"))}let h=self.name()?;if self.pending.as_deref()!=Some(&h){return Err(err("expected outstanding batch"))}let Some(Slot::Pending(p))=self.slots.get(&h).cloned() else{return Err(err("pending plan"))};self.slots.insert(h,Slot::Consumed);self.pending=None;p};Slot::Array(self.drive(p)?)},
             "int"=>{let v=self.expr(0,None,false)?.int()?;Slot::Scalar(self.local(v)?)},
             _=>return Err(err("type")),
         };
