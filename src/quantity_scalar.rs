@@ -79,6 +79,8 @@ struct Binding {dim:Dim,scale:Scale,range:Range,slot:usize,width:Width}
 #[derive(Clone,Copy)]
 struct Refinement {dim:Dim,scale:Scale,lo:i64,hi:i64,width:Width}
 #[derive(Clone)]
+struct Contract {op:u8, parameter:Option<usize>, bound:Option<i64>}
+#[derive(Clone)]
 struct Helper {params:Vec<Refinement>,result:Refinement,locals:Vec<Expr>,body:Expr}
 fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
     let one=|e:&Expr|remap(e,slots).map(Box::new);
@@ -314,6 +316,7 @@ impl<'a> Quantities<'a> {
                 return self.call(helper,depth+1);
             }
         }
+        if let Token::Word(_)=self.p.current{if self.p.input.as_bytes().get(self.p.pos..).is_some_and(|tail|tail.iter().copied().find(|c|!c.is_ascii_whitespace())==Some(b'(')){return Err("E_REFINEMENT_CALL: unknown or recursive helper".into());}}
         Err("E_UNIT_PROFILE: expected quantity expression, binding or earlier private helper".into())
     }
     fn checked_width(&mut self,expr:Expr,range:Range,width:Width)->Result<(Expr,Range),String>{
@@ -343,6 +346,7 @@ impl<'a> Quantities<'a> {
         let mut slots=Vec::new();
         for (i,want) in h.params.iter().enumerate(){
             if i>0{self.p.expect(Token::Punct(b','))?;}
+            if self.p.current==Token::Punct(b')'){return Err("E_REFINEMENT_CALL: missing argument".into());}
             let value=self.expr(0,depth+1)?;
             Self::boundary(*want,&value,"E_REFINEMENT_PRECONDITION")?;
             slots.push(self.push_local(value.expr)?);
@@ -391,6 +395,78 @@ impl<'a> Quantities<'a> {
             self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot,width:value.width}));
         }
         Ok(())
+    }
+    fn contract_op(&mut self)->Result<u8,String>{
+        if self.p.take(Token::Word("eq"))?{return Ok(0);}
+        let Token::Punct(symbol)=self.p.current else{return Err("E_REFINEMENT_CONTRACT: comparison required".into());};
+        let paired=self.p.input.as_bytes().get(self.p.pos)==Some(&b'=');
+        self.p.next()?;if paired{self.p.expect(Token::Punct(b'='))?;}
+        match(symbol,paired){(b'=',true)=>Ok(0),(b'<',false)=>Ok(2),(b'<',true)=>Ok(3),(b'>',false)=>Ok(4),(b'>',true)=>Ok(5),_=>Err("E_REFINEMENT_CONTRACT: unsupported comparison".into())}
+    }
+    fn contract_bound(&mut self,w:Refinement)->Result<i64,String>{
+        let n=self.signed_bound()?;let mut dim=SCALAR;let mut scale=Scale::ONE;
+        let dotted=self.p.take(Token::Punct(b'.'))?;
+        if dotted||self.p.current==Token::Punct(b'<'){
+            self.p.expect(Token::Punct(b'<'))?;let name=self.p.name()?;self.p.expect(Token::Punct(b'>'))?;
+            let (_,index,s)=self.units.iter().find(|(u,_,_)|u==&name).ok_or("E_UNIT_NAME: contract unit")?;
+            dim[*index]=1;scale=*s;
+        }
+        if dim!=w.dim{return Err("E_UNIT_DIMENSION: contract operand".into());}
+        if scale!=w.scale{return Err("E_UNIT_SCALE: contract operand".into());}
+        Ok(n)
+    }
+    fn contracts(&mut self,params:&mut [Refinement],result:Refinement,main:bool)->Result<Vec<Contract>,String>{
+        let mut out=Vec::new();let mut count=0;
+        loop{
+            let require=self.p.take(Token::Word("requires"))?;
+            if !require&&!self.p.take(Token::Word("ensures"))?{break;}
+            count+=1;if main||count>16{return Err("E_REFINEMENT_CONTRACT: contract limit or exported entry".into());}
+            let name=self.p.name()?;let op=self.contract_op()?;
+            if require{
+                let i=self.bindings.iter().position(|(n,_)|n==&name).ok_or("E_REFINEMENT_CONTRACT: unknown parameter")?;
+                let w=params[i];let n=self.contract_bound(w)?;
+                let (mut lo,mut hi)=(w.lo,w.hi);
+                match op{0=>{lo=lo.max(n);hi=hi.min(n);},2=>hi=hi.min(n.checked_sub(1).ok_or("E_REFINEMENT_EMPTY: impossible requires")?),3=>hi=hi.min(n),4=>lo=lo.max(n.checked_add(1).ok_or("E_REFINEMENT_EMPTY: impossible requires")?),5=>lo=lo.max(n),_=>unreachable!()}
+                if lo>hi{return Err("E_REFINEMENT_EMPTY: contradictory requires".into());}
+                params[i].lo=lo;params[i].hi=hi;self.bindings[i].1.range=Range{lo,hi,holes:0};
+            }else{
+                if name!="result"{return Err("E_REFINEMENT_CONTRACT: ensures must constrain result".into());}
+                if let Token::Word(p)=self.p.current{
+                    let i=self.bindings.iter().position(|(n,_)|n==p).ok_or("E_REFINEMENT_CONTRACT: unknown relational parameter")?;
+                    if params[i].dim!=result.dim{return Err("E_UNIT_DIMENSION: ensures operand".into());}
+                    if params[i].scale!=result.scale{return Err("E_UNIT_SCALE: ensures operand".into());}
+                    self.p.next()?;out.push(Contract{op,parameter:Some(i),bound:None});
+                }else{let n=self.contract_bound(result)?;out.push(Contract{op,parameter:None,bound:Some(n)});}
+            }
+        }Ok(out)
+    }
+    // Prove a relation to the original parameter, not a call-site sample.
+    // Only identity, checked casts and positive division of an already
+    // nonnegative parameter are admitted. Every recursive edge decreases
+    // depth; local references stop at parameter slots.
+    fn relation(&self,e:&Expr,param:usize,param_count:usize,nonnegative:bool,depth:usize)->bool{
+        if depth>=64{return false;}
+        match e{
+            Expr::Local(i) if *i<param_count=>*i==param,
+            Expr::Local(i)=>self.locals.get(*i).is_some_and(|v|self.relation(v,param,param_count,nonnegative,depth+1)),
+            Expr::RefinementCast(v,_,_)|Expr::I32Checked(v)=>self.relation(v,param,param_count,nonnegative,depth+1),
+            Expr::Div(a,b) if nonnegative=>self.relation(a,param,param_count,nonnegative,depth+1)&&self.positive_constant(b,param_count,depth+1),
+            _=>false
+        }
+    }
+    fn positive_constant(&self,e:&Expr,param_count:usize,depth:usize)->bool{
+        if depth>=64{return false;}
+        match e{Expr::Literal(n)=>*n>=1,Expr::Local(i) if *i>=param_count=>self.locals.get(*i).is_some_and(|v|self.positive_constant(v,param_count,depth+1)),_=>false}
+    }
+    fn prove_contracts(&self,contracts:&[Contract],value:&Typed,params:&[Refinement])->Result<(),String>{
+        for c in contracts{
+            let proven=if let Some(n)=c.bound{match c.op{0=>value.range.lo==n&&value.range.hi==n,2=>value.range.hi<n,3=>value.range.hi<=n,4=>value.range.lo>n,5=>value.range.lo>=n,_=>false}}
+            else if let Some(i)=c.parameter{
+                let p=params[i];
+                match c.op{3=>value.range.hi<=p.lo||self.relation(&value.expr,i,params.len(),p.lo>=0,0),2=>value.range.hi<p.lo,4=>value.range.lo>p.hi,5=>value.range.lo>=p.hi,0=>value.range.lo==value.range.hi&&p.lo==p.hi&&p.lo==value.range.lo,_=>false}
+            }else{false};
+            if !proven{return Err("E_REFINEMENT_POSTCONDITION: unproved ensures".into());}
+        }Ok(())
     }
     fn pair(&mut self,b:u8)->Result<bool,String>{
         if self.p.current!=Token::Punct(b)||self.p.input.as_bytes().get(self.p.pos)!=Some(&b){return Ok(false);}
@@ -523,7 +599,8 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
         let name=q.p.name()?;
         let main=name=="main";
         if !main{
-            if public||q.helpers.len()>=16{return Err("E_UNIT_CALL: private earlier-only helpers required".into());}
+            if public{return Err("E_REFINEMENT_EXPORT: private helpers only".into());}
+            if q.helpers.len()>=16{return Err("E_REFINEMENT_CALL: helper limit".into());}
             q.binding_name(&name)?;
         }
         q.p.expect(Token::Punct(b'('))?;
@@ -544,11 +621,14 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
         let ty=q.p.name()?;
         if main&&ty!="int"{return Err("E_UNIT_ERASURE: main requires plain int".into());}
         let result=q.annotation(&ty)?;
+        let contracts=q.contracts(&mut params,result,main)?;
         q.p.expect(Token::Punct(b'{'))?;
         q.bindings()?;
+        if q.p.current==Token::Word("let"){return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());}
         let value=q.returning(0)?;
         if main{Quantities::scalar(&value)?;}
         Quantities::boundary(result,&value,"E_REFINEMENT_RETURN")?;
+        q.prove_contracts(&contracts,&value,&params)?;
         q.p.expect(Token::Punct(b'}'))?;
         validate_ast_depth(&value.expr)?;
         if main{
