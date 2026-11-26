@@ -174,3 +174,95 @@ fn bounded_declaration_is_checked_not_stripped() {
         }
     }
 }
+
+fn result_source(init: &str, fallback: &str) -> String {
+    source(init, fallback).replace("Option<int>", "Result<int,int>")
+}
+#[test]
+fn closed_scalar_result_executes_selected_payload_and_preserves_initializer_faults() {
+    let ws=Workspace::new();
+    let file=ws.0.join("result.atto");
+    for (init,fallback,arg,expected) in [
+        ("Ok(n+1)", "42/0", "41", "42\n"),
+        ("Err(n+1)", "42", "41", "42\n"),
+        ("n eq 0 ? Ok(42) : Err(42/n)", "42", "0", "42\n"),
+        ("n eq 0 ? Err(9) : Ok(42/n)", "42", "0", "42\n"),
+        ("n eq 0 ? Err(9) : Ok(42/n)", "42", "2", "21\n"),
+    ] {
+        fs::write(&file,result_source(init,fallback)).unwrap();
+        success(invoke("check",&file,&[]),b"");
+        success(invoke("run",&file,&[arg]),expected.as_bytes());
+    }
+    for (init,fallback,arg,expected) in [
+        ("Err(42/n)","42","0","orescranelift: integer divisor zero\n"),
+        ("Err(n+1)","42","9223372036854775807","orescranelift: i64 arithmetic overflow\n"),
+        ("n eq 0 ? Err(42/n) : Ok(42)","42","0","orescranelift: integer divisor zero\n"),
+        ("Err(9)","42/n","0","orescranelift: integer divisor zero\n"),
+    ] {
+        fs::write(&file,result_source(init,fallback)).unwrap();
+        let out=invoke("run",&file,&[arg]);
+        assert_eq!(out.status.code(),Some(1));
+        assert!(out.stdout.is_empty());
+        assert_eq!(out.stderr,expected.as_bytes());
+    }
+}
+#[test]
+fn closed_result_rejects_escaping_errors_wrong_tags_and_nominal_error_claims() {
+    let ws=Workspace::new();
+    let file=ws.0.join("result.atto");
+    let good=result_source("Err(n)","42");
+    for invalid in [
+        good.replace("Result<int,int>","Result<int,Error>"),
+        good.replace("Err(n)","Some(n)"),
+        good.replace("Err(n)","None"),
+        good.replace("Err(n)","Err(true)"),
+        good.replace("Err(n)","Err(n,1)"),
+        good.replace("on Err()","on Err(e)"),
+        good.replace("x.unwrap()","x.expect()"),
+        good.replace("Err(n)","n eq 0 ? Err(1) : Err(2)"),
+    ] {
+        fs::write(&file,&invalid).unwrap();
+        for mode in ["check","run","ir","emit-object","emit-object-strict"] {
+            let out=invoke(mode,&file,if mode=="run" {&["0"]} else {&[]});
+            assert_eq!(out.status.code(),Some(1),"{mode}: {invalid}");
+            assert!(out.stdout.is_empty(),"{mode}: emitted artifact");
+        }
+    }
+    fs::write(&file,&good).unwrap();
+    let out=invoke("emit-object-strict",&file,&[]);
+    assert_eq!(out.status.code(),Some(1));
+    assert!(out.stdout.is_empty());
+}
+#[cfg(unix)]
+#[test]
+fn closed_result_linked_object_preserves_discarded_payload_fault() {
+    let ws=Workspace::new();
+    let file=ws.0.join("result.atto");
+    let obj=ws.0.join("result.o");
+    let harness=ws.0.join("result.c");
+    fs::write(&file,result_source("n eq 0 ? Ok(42) : Err(84/(n-2))","42")).unwrap();
+    let artifact=invoke("emit-object",&file,&[]);
+    assert!(artifact.status.success(),"{}",String::from_utf8_lossy(&artifact.stderr));
+    assert!(!artifact.stdout.is_empty());
+    fs::write(&obj,artifact.stdout).unwrap();
+    fs::write(&harness,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void) {
+  int64_t out=777;
+  assert(oreslang_scalar_entry(0,0,0,0,&out)==0 && out==42);
+  assert(oreslang_scalar_entry(4,0,0,0,&out)==0 && out==42);
+  out=777;
+  assert(oreslang_scalar_entry(2,0,0,0,&out)==2 && out==777);
+  assert(oreslang_scalar_entry(INT64_MIN,0,0,0,&out)==1 && out==777);
+  return 0;
+}
+"#).unwrap();
+    for opt in ["-O0","-O2"] {
+        let binary=ws.0.join(format!("result{opt}"));
+        let link=Command::new("cc").args(["-std=c11","-Wall","-Werror",opt]).arg(&harness).arg(&obj).arg("-o").arg(&binary).output().unwrap();
+        assert!(link.status.success(),"{}",String::from_utf8_lossy(&link.stderr));
+        assert!(Command::new(&binary).status().unwrap().success());
+    }
+}
