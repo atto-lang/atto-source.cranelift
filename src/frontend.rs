@@ -331,7 +331,7 @@ impl<'a> Parser<'a> {
             // Atto bang keywords are contextual words, not Rust-style macro
             // calls. Require whitespace after the complete suffix, including copy!!.
             if matches!(self.current, Token::Word("trap" | "throw" | "raise" | "panic"
-                | "copy" | "take" | "borrow" | "share" | "pin" | "drop"
+                | "copy" | "take" | "move" | "borrow" | "share" | "pin" | "drop"
                 | "pipe" | "rpipe" | "stop" | "expand"))
                 && b.get(self.pos) == Some(&b'!')
             {
@@ -339,7 +339,8 @@ impl<'a> Parser<'a> {
                     && b.get(self.pos + 1) == Some(&b'!') { 2 } else { 1 };
                 // Keep inequality operators distinct from keyword suffixes.
                 if b.get(self.pos + 1) != Some(&b'=')
-                    && b.get(self.pos + 1..self.pos + 3) != Some(&b"eq"[..])
+                    && !(b.get(self.pos + 1..self.pos + 3) == Some(&b"eq"[..])
+                        && b.get(self.pos + 3).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_')))
                     && !b.get(after).is_some_and(|c| c.is_ascii_whitespace())
                 {
                     return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
@@ -356,8 +357,11 @@ impl<'a> Parser<'a> {
             // operator before scalar AST admission, including borrow! mut.
             if matches!(
                 self.current,
-                Token::Word("copy" | "take" | "borrow" | "share" | "pin" | "drop")
-            ) && b.get(self.pos) == Some(&b'!') {
+                Token::Word("copy" | "take" | "move" | "borrow" | "share" | "pin" | "drop")
+            ) && b.get(self.pos) == Some(&b'!')
+                && b.get(self.pos + 1) != Some(&b'=')
+                && !(b.get(self.pos + 1..self.pos + 3) == Some(&b"eq"[..])
+                    && b.get(self.pos + 3).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))) {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
             }
             // The 'mut borrow!' form also must fail with an ownership-specific
