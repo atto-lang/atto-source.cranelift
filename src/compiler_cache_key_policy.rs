@@ -1,7 +1,9 @@
 //! In-memory candidate receipt-key lifecycle. Host provisions the secret,
 //! tenant scope and monotonically advancing epoch from an independent
 //! protected ledger. No disk key storage or durable anti-rollback claim.
-use crate::compiler_artifact_receipt::{self as receipt, equal, hmac};
+#[cfg(test)]
+use crate::compiler_artifact_receipt as receipt;
+use crate::compiler_artifact_receipt::{equal, hmac};
 const INVALID: &str = "E_CACHE_KEY_POLICY: invalid scope, epoch or key";
 pub(crate) struct ActiveKey {
     scope: String,

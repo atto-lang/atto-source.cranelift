@@ -13,6 +13,7 @@ use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 mod telemetry;
+pub use telemetry::Span;
 
 pub struct Compiled {
     pub(crate) module: JITModule, // Own executable allocations until after every native call.
@@ -878,7 +879,7 @@ pub fn emit_object(source: &Program) -> Result<Vec<u8>, String> {
 }
 
 impl Compiled {
-    pub fn run_traced(&self, args: &[i64]) -> (Result<i64, String>, Vec<telemetry::Span>) {
+    pub fn run_traced(&self, args: &[i64]) -> (Result<i64, String>, Vec<Span>) {
         telemetry::record(|| self.run(args))
     }
 

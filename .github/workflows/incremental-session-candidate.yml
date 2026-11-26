@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/main.rs'
+      - 'src/lib.rs'
       - 'src/sha256.rs'
       - 'src/compiler_cache_key.rs'
       - 'src/compiler_artifact_receipt.rs'
@@ -26,9 +27,10 @@ jobs:
         run: |
           set -eu
           cargo test --locked --bin orescranelift incremental_object_tests::exact_native_object_reuse -- --nocapture
-          cargo test --locked --bin orescranelift sha256::tests:: -- --nocapture
-          cargo test --locked --bin orescranelift compiler_cache_key::tests:: -- --nocapture
-          cargo test --locked --bin orescranelift compiler_artifact_receipt::tests:: -- --nocapture
-          cargo test --locked --bin orescranelift compiler_artifact_store::tests:: -- --nocapture
-          cargo test --locked --bin orescranelift compiler_cache_key_policy::tests:: -- --nocapture
-          cargo test --locked --bin orescranelift compiler_cache_ledger::tests:: -- --nocapture
+          cargo test --locked --lib sha256::tests:: -- --nocapture
+          cargo test --locked --lib compiler_cache_key::tests:: -- --nocapture
+          cargo test --locked --lib compiler_artifact_receipt::tests:: -- --nocapture
+          cargo test --locked --lib compiler_artifact_store::tests:: -- --nocapture
+          cargo test --locked --lib compiler_cache_key_policy::tests:: -- --nocapture
+          cargo test --locked --lib compiler_cache_ledger::tests:: -- --nocapture
+          cargo clippy --locked --all-targets -- -D warnings

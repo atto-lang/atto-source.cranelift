@@ -4,12 +4,12 @@ mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
-mod namespace_provider;
 mod functional_pipelines;
 mod isolate;
 pub mod layout;
 mod linked_native;
 mod module_link;
+mod namespace_provider;
 #[allow(dead_code)]
 mod owned_region;
 #[allow(dead_code)]
@@ -494,10 +494,12 @@ fn run() -> Result<(), String> {
 }
 // Explicit internal one-entry host-native object session. No persistent
 // cache, external package linkage, or JIT fallback.
+#[cfg(test)]
 #[derive(Default)]
 struct IncrementalObjectSession {
     prior: Option<(String, Vec<u8>)>,
 }
+#[cfg(test)]
 impl IncrementalObjectSession {
     fn build(&mut self, source: &str, cold: bool) -> Result<(Vec<u8>, bool), String> {
         if !cold
@@ -512,6 +514,13 @@ impl IncrementalObjectSession {
         Ok((bytes, false))
     }
 }
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("orescranelift: {e}");
+        std::process::exit(1);
+    }
+}
+
 #[cfg(test)]
 mod incremental_object_tests {
     use super::*;
@@ -568,21 +577,5 @@ mod incremental_object_tests {
         }
         std::fs::remove_dir_all(dir).unwrap();
         println!("INCREMENTAL_CRANELIFT|actual-aot-guest=42/43|rollback");
-    }
-}
-// Canonical compiler-cache host substrate, exact shared Rust source vectors.
-mod compiler_artifact_receipt;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod compiler_artifact_store;
-mod compiler_cache_key;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod compiler_cache_key_policy;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod compiler_cache_ledger;
-mod sha256;
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("orescranelift: {e}");
-        std::process::exit(1);
     }
 }
