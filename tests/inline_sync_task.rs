@@ -226,3 +226,36 @@ fn unused_task_initializer_is_still_evaluated_once() {
     assert!(got.stdout.is_empty());
     assert!(String::from_utf8_lossy(&got.stderr).contains("overflow"));
 }
+
+#[test]
+fn mutable_task_local_versions_execute_in_native_order() {
+    for source in [
+        "fnc main():int {return sync task {let int x=1;x=40;x=x+2;return x;};}",
+        "fnc main():int {return sync task {let int x=20;val int before=x;x=22;return before+x;};}",
+        "fnc main():int {return sync task {let int x=40;x=sync task {let int y=x;y=y+1;return y;};return x+1;};}",
+        "fnc main():int {return sync task {let int x=20;x=x+1;return x;}+sync task {let int x=22;x=x-1;return x;};}",
+    ] {
+        let fixture=Source::new(source);
+        let got=call("run",&fixture,&[]);
+        assert!(got.status.success(), "{source}: {}", String::from_utf8_lossy(&got.stderr));
+        assert_eq!(got.stdout,b"42\n");
+    }
+    let fixture=Source::new("fnc main():int {return sync task {let int x=0;x=9223372036854775807+1;x=42;return x;};}");
+    assert!(call("check",&fixture,&[]).status.success());
+    let got=call("run",&fixture,&[]);
+    assert_eq!(got.status.code(),Some(1));
+    assert!(got.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&got.stderr).contains("overflow"));
+    for source in [
+        "fnc main():int {return sync task {val int x=0;x=42;return x;};}",
+        "fnc main():int {return sync task {let int x=0;return sync task {let int y=1;x=42;return y;};};}",
+        "fnc main():int {return sync task {let int x=0;let int x=42;return x;};}",
+    ] {
+        let fixture=Source::new(source);
+        for mode in ["check","ir","run"] {
+            let got=call(mode,&fixture,&[]);
+            assert_eq!(got.status.code(),Some(1),"{mode}: {source}");
+            assert!(got.stdout.is_empty());
+        }
+    }
+}
