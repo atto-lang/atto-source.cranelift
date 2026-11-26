@@ -218,7 +218,7 @@ fn bounded_declaration_is_checked_not_stripped() {
     ] {
         fs::write(&file, format!("{header}\n{good}")).unwrap();
         for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
-            let out = invoke(mode, &file, if mode=="run" { &["42"] } else { &[] });
+            let out = invoke(mode, &file, if mode == "run" { &["42"] } else { &[] });
             assert_eq!(out.status.code(), Some(1), "{mode}: {header}");
             assert!(out.stdout.is_empty(), "{mode}: emitted artifact");
         }
