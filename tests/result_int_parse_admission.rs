@@ -79,3 +79,23 @@ fn scalar_control_remains_real_cranelift_guest() {
     assert!(output.status.success(), "scalar source failed admission");
     assert_eq!(output.stdout, b"42\n");
 }
+
+#[test]
+fn checked_unwrap_guest_remains_unsupported_without_verified_tagged_abi() {
+    let cases = [
+        "fnc main():int{val Option<int> x=None;return x.unwrap();}",
+        "fnc main():int{val Option<int> x=Some(42);return x.unwrap();}",
+        "fnc main():int{val Result<int,Error> x=Err(Error(\"bad\"));return x.unwrap();}",
+        "fnc main():int{val Result<int,Error> x=trap! None.unwrap();return 42;}",
+    ];
+    for source in cases {
+        for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
+            let output = compile(mode, source.as_bytes());
+            assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
+            assert!(output.stdout.is_empty(), "unexpected artifact {mode}: {source}");
+            let err = String::from_utf8_lossy(&output.stderr);
+            assert!(err.starts_with("orescranelift: ") && !err.contains("panicked"),
+                "unsanitized diagnostic {mode}: {err}");
+        }
+    }
+}
