@@ -333,6 +333,7 @@ struct ScalarErrorBlocks {
     negative_exponent_error: Block,
     refinement_error: Block,
     i32_error: Block,
+    unsigned: bool,
 }
 
 fn emit_scalar_loop(
@@ -427,6 +428,7 @@ fn emit(
         negative_exponent_error,
         refinement_error,
         i32_error,
+        unsigned,
     } = errors;
     use Expr::*;
     match e {
@@ -567,6 +569,9 @@ fn emit(
             b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
             b.switch_to_block(nonzero);
             b.seal_block(nonzero);
+            if unsigned {
+                return b.ins().udiv(left, right);
+            }
             let minimum = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
             let minus_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
             let overflow = b.ins().band(minimum, minus_one);
@@ -608,17 +613,29 @@ fn emit(
                 Add(x, y) => {
                     let lhs = emit(x, b, params, locals, errors);
                     let rhs = emit(y, b, params, locals, errors);
-                    b.ins().sadd_overflow(lhs, rhs)
+                    if unsigned {
+                        b.ins().uadd_overflow(lhs, rhs)
+                    } else {
+                        b.ins().sadd_overflow(lhs, rhs)
+                    }
                 }
                 Sub(x, y) => {
                     let lhs = emit(x, b, params, locals, errors);
                     let rhs = emit(y, b, params, locals, errors);
-                    b.ins().ssub_overflow(lhs, rhs)
+                    if unsigned {
+                        b.ins().usub_overflow(lhs, rhs)
+                    } else {
+                        b.ins().ssub_overflow(lhs, rhs)
+                    }
                 }
                 Mul(x, y) => {
                     let lhs = emit(x, b, params, locals, errors);
                     let rhs = emit(y, b, params, locals, errors);
-                    b.ins().smul_overflow(lhs, rhs)
+                    if unsigned {
+                        b.ins().umul_overflow(lhs, rhs)
+                    } else {
+                        b.ins().smul_overflow(lhs, rhs)
+                    }
                 }
                 _ => unreachable!(),
             };
@@ -677,6 +694,7 @@ fn prepare_ir(
     source: &Program,
     module: &mut impl Module,
     linkage: Linkage,
+    unsigned: bool,
 ) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
     validate_guest_program(source)?;
     validate_trace_steps(source)?;
@@ -691,7 +709,15 @@ fn prepare_ir(
         .push(AbiParam::new(module.target_config().pointer_type()));
     sig.returns.push(AbiParam::new(types::I32));
     let id = module
-        .declare_function("oreslang_scalar_entry", linkage, &sig)
+        .declare_function(
+            if unsigned {
+                "atto_u64_scalar_entry"
+            } else {
+                "oreslang_scalar_entry"
+            },
+            linkage,
+            &sig,
+        )
         .map_err(|e| e.to_string())?;
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -751,6 +777,7 @@ fn prepare_ir(
         negative_exponent_error,
         refinement_error,
         i32_error,
+        unsigned,
     };
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -835,13 +862,13 @@ fn jit_module() -> Result<JITModule, String> {
 // define_function, finalize_definitions, or executable-code allocation.
 pub fn render_ir(source: &Program) -> Result<String, String> {
     let mut module = jit_module()?;
-    let (ctx, _) = prepare_ir(source, &mut module, Linkage::Local)?;
+    let (ctx, _) = prepare_ir(source, &mut module, Linkage::Local, false)?;
     Ok(ctx.func.display().to_string())
 }
 
 pub fn compile(source: &Program) -> Result<Compiled, String> {
     let mut module = jit_module()?;
-    let (mut ctx, id) = prepare_ir(source, &mut module, Linkage::Local)?;
+    let (mut ctx, id) = prepare_ir(source, &mut module, Linkage::Local, false)?;
     #[cfg(test)]
     let clif = ctx.func.display().to_string();
     module
@@ -861,6 +888,16 @@ pub fn compile(source: &Program) -> Result<Compiled, String> {
 /// Emit a host-target relocatable object for the verified scalar entry ABI.
 /// Native linking uses a caller-supplied host. This path owns no JIT module.
 pub fn emit_object(source: &Program) -> Result<Vec<u8>, String> {
+    emit_scalar_object(source, false)
+}
+
+pub(crate) fn emit_unsigned_object(
+    source: &crate::frontend::UnsignedProgram,
+) -> Result<Vec<u8>, String> {
+    emit_scalar_object(source.inner(), true)
+}
+
+fn emit_scalar_object(source: &Program, unsigned: bool) -> Result<Vec<u8>, String> {
     let mut flags = settings::builder();
     flags.set("is_pic", "true").map_err(|e| e.to_string())?;
     let isa = cranelift_native::builder()
@@ -870,7 +907,7 @@ pub fn emit_object(source: &Program) -> Result<Vec<u8>, String> {
     let builder = ObjectBuilder::new(isa, "atto_scalar", default_libcall_names())
         .map_err(|e| e.to_string())?;
     let mut module = ObjectModule::new(builder);
-    let (mut ctx, id) = prepare_ir(source, &mut module, Linkage::Export)?;
+    let (mut ctx, id) = prepare_ir(source, &mut module, Linkage::Export, unsigned)?;
     module
         .define_function(id, &mut ctx)
         .map_err(|e| e.to_string())?;
