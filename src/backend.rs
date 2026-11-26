@@ -208,6 +208,36 @@ fn validate_guest_expr(
             Expr::Local(_) => {
                 return Err("invalid or forward local reference before native codegen".into());
             }
+            Expr::ScalarLoop(args,writable,condition,steps,tail,body)=>{
+                if args.len()>8||args.len()+tail.len()>64{return Err("E_UNIT_LIMIT: invalid loop frame".into());}
+                let mut allowed=std::collections::BTreeSet::new();
+                for i in writable{if *i>=args.len()||!allowed.insert(*i){return Err("invalid loop writable slot".into());}}
+                for x in args{work.push((x,depth+1,admitted_locals,admitted_params));}
+                work.push((condition,depth+1,args.len(),0));
+                work.push((body,depth+1,args.len()+tail.len(),0));
+                for(i,x)in tail.iter().enumerate(){work.push((x,depth+1,args.len()+i,0));}
+                let mut blocks=vec![(steps.as_slice(),args.len(),allowed,depth+1)];
+                while let Some((items,mut count,mut mutable,d))=blocks.pop(){
+                    if d>128||items.len()>64{return Err("E_UNIT_LIMIT: loop statements".into());}
+                    for step in items{
+                        *nodes+=1;if *nodes>4096{return Err("AST node budget exceeded".into());}
+                        use crate::frontend::LoopStep;
+                        match step{
+                            LoopStep::Bind(x,m)=>{
+                                if count>=64{return Err("loop local limit".into());}
+                                work.push((x,d+1,count,0));if *m{mutable.insert(count);}count+=1;
+                            }
+                            LoopStep::Set(i,x)=>{
+                                if *i>=count||!mutable.contains(i){return Err("invalid loop assignment".into());}
+                                work.push((x,d+1,count,0));
+                            }
+                            LoopStep::Loop(c,ss)=>{
+                                work.push((c,d+1,count,0));blocks.push((ss,count,mutable.clone(),d+1));
+                            }
+                        }
+                    }
+                }
+            }
             Expr::ScopedCall(args, callee_locals, body) => {
                 if args.len()>8 || args.len()+callee_locals.len()>64 {
                     return Err("E_UNIT_LIMIT: invalid scoped helper frame".into());
@@ -257,6 +287,33 @@ fn validate_guest_expr(
     Ok(())
 }
 
+fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut FunctionBuilder<'_>,frame:&mut Vec<Value>,
+    error:Block,divisor_error:Block,negative_exponent_error:Block,refinement_error:Block,i32_error:Block){
+    use crate::frontend::LoopStep;
+    let count=frame.len();
+    let header=b.create_block();let body=b.create_block();let exit=b.create_block();
+    for _ in 0..count{b.append_block_param(header,types::I64);}
+    let entry=frame.iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
+    b.ins().jump(header,&entry);
+    b.switch_to_block(header);
+    let header_values=b.block_params(header).to_vec();
+    let test=emit(condition,b,&[],&header_values,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+    let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
+    b.ins().brif(truth,body,&[],exit,&[]);
+    b.switch_to_block(body);b.seal_block(body);
+    let mut current=header_values.clone();
+    for step in steps{
+        match step{
+            LoopStep::Bind(x,_)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);current.push(value);}
+            LoopStep::Set(i,x)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);current[*i]=value;}
+            LoopStep::Loop(c,ss)=>emit_scalar_loop(c,ss,b,&mut current,error,divisor_error,negative_exponent_error,refinement_error,i32_error),
+        }
+    }
+    let back=current[..count].iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
+    b.ins().jump(header,&back);b.seal_block(header);
+    b.switch_to_block(exit);b.seal_block(exit);*frame=header_values;
+}
+
 fn emit(
     e: &Expr,
     b: &mut FunctionBuilder,
@@ -293,6 +350,14 @@ fn emit(
             b.ins().jump(done,&[BlockArg::Value(z)]);
             b.switch_to_block(done);b.seal_block(done);
             b.block_params(done)[0]
+        }
+        ScalarLoop(args,_,condition,steps,tail,body)=>{
+            let mut frame=args.iter().map(|x|emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error)).collect::<Vec<_>>();
+            emit_scalar_loop(condition,steps,b,&mut frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            for x in tail{
+                let value=emit(x,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);frame.push(value);
+            }
+            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error)
         }
         ScopedCall(args, initializers, body) => {
             // The caller evaluates arguments exactly once, left-to-right.
