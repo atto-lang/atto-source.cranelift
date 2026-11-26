@@ -32,6 +32,27 @@ pub(crate) enum Raw {
     Sub(Box<Raw>, Box<Raw>),
     Mul(Box<Raw>, Box<Raw>),
     Call(String, Vec<Raw>),
+    Tuple(Vec<Raw>),
+    TuplePattern(Vec<Raw>, Vec<Option<String>>, Box<Raw>),
+}
+impl Raw {
+    fn requires_tuple_lowering(&self) -> bool {
+        match self {
+            Self::Tuple(_) | Self::TuplePattern(_, _, _) => true,
+            Self::Literal(_) | Self::Bool(_) | Self::Name(_) => false,
+            Self::Not(v) => v.requires_tuple_lowering(),
+            Self::Add(a,b) | Self::Sub(a,b) | Self::Mul(a,b) | Self::Eq(a,b) |
+            Self::Ne(a,b) | Self::And(a,b) | Self::Or(a,b) | Self::Xor(a,b) =>
+                a.requires_tuple_lowering() || b.requires_tuple_lowering(),
+            Self::If(c,y,n) => c.requires_tuple_lowering() ||
+                y.requires_tuple_lowering() || n.requires_tuple_lowering(),
+            Self::Call(_, args) => args.iter().any(Self::requires_tuple_lowering),
+        }
+    }
+}
+pub(crate) fn requires_tuple_lowering(functions: &[Fn]) -> bool {
+    functions.iter().any(|f| f.result.requires_tuple_lowering() ||
+        f.locals.iter().any(|(_,v)| v.requires_tuple_lowering()))
 }
 pub(crate) struct Fn {
     pub(crate) public: bool,
@@ -94,7 +115,7 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || bytes[i..].starts_with(b"!=")
         {
             i += 2;
-        } else if b"(){}:,;+-*=!".contains(&bytes[i]) {
+        } else if b"(){}:,;+-*=!|".contains(&bytes[i]) {
             i += 1;
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
@@ -229,9 +250,24 @@ impl Parser {
             return Err("E_PIPE_DEPTH".into());
         }
         let mut lhs = if self.eat("(") {
-            let inner = self.expr(0, depth + 1, None)?;
-            self.need(")")?;
-            inner
+            if self.eat(")") {
+                Raw::Tuple(Vec::new())
+            } else {
+                let inner = self.expr(0, depth + 1, None)?;
+                if self.eat(",") {
+                    let mut items = vec![inner];
+                    while self.peek() != ")" {
+                        if items.len() >= 8 { return Err("E_PIPE_TUPLE_LIMIT".into()); }
+                        items.push(self.expr(0, depth + 1, None)?);
+                        if !self.eat(",") { break; }
+                    }
+                    self.need(")")?;
+                    Raw::Tuple(items)
+                } else {
+                    self.need(")")?;
+                    inner
+                }
+            }
         } else if self.eat("!") || self.eat("not") {
             Raw::Not(Box::new(self.expr(30, depth + 1, direction)?))
         } else if self.eat("-") {
@@ -309,6 +345,42 @@ impl Parser {
                     }
                     pipe = Some(op.clone());
                     if op == "|>" {
+                        if self.eat("|") {
+                            let values = match lhs {
+                                Raw::Tuple(values) => values,
+                                _ => return Err("E_PIPE_PATTERN_SHAPE".into()),
+                            };
+                            self.need("(")?;
+                            let mut bindings = Vec::new();
+                            let mut names = std::collections::HashSet::new();
+                            if !self.eat(")") {
+                                loop {
+                                    let n = self.name()?;
+                                    if bindings.len() >= 8 { return Err("E_PIPE_TUPLE_LIMIT".into()); }
+                                    if n == "self" || n == "arguments" ||
+                                       (n != "_" && !names.insert(n.clone())) {
+                                        return Err("E_PIPE_DUP_PARAM".into());
+                                    }
+                                    if self.eat(":") {
+                                        if n == "_" { return Err("E_PIPE_PATTERN".into()); }
+                                        self.need("int")?;
+                                    }
+                                    bindings.push(if n == "_" { None } else { Some(n) });
+                                    if !self.eat(",") {
+                                        if bindings.len() == 1 { return Err("E_PIPE_PATTERN".into()); }
+                                        self.need(")")?;
+                                        break;
+                                    }
+                                    if self.eat(")") { break; }
+                                }
+                            }
+                            if values.len() != bindings.len() { return Err("E_PIPE_ARITY".into()); }
+                            self.need("|")?;
+                            self.need("->")?;
+                            let body = self.expr(bp + 1, depth + 1, None)?;
+                            lhs = Raw::TuplePattern(values, bindings, Box::new(body));
+                            continue;
+                        }
                         let target = self.name()?;
                         let mut args = if self.peek() == "(" {
                             self.args(depth + 1)?
@@ -467,6 +539,7 @@ impl Lower<'_> {
         }
         self.budget -= 1;
         Ok(match raw {
+            Raw::Tuple(_) | Raw::TuplePattern(_, _, _) => return Err("E_PIPE_TUPLE_REQUIRES_LINKED_NATIVE".into()),
             Raw::Literal(v) => Expr::Literal(*v),
             Raw::Bool(_) | Raw::Not(_) | Raw::Eq(_, _) | Raw::Ne(_, _) |
             Raw::And(_, _) | Raw::Or(_, _) | Raw::Xor(_, _) | Raw::If(_, _, _) =>
