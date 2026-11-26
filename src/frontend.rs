@@ -2322,8 +2322,8 @@ mod tests {
         let source = "pub fnc main(int Φ, int φ, int 数量, int 𠮷): int { return Φ + φ + 数量 + 𠮷; }";
         let ascii = "pub fnc main(int a, int b, int c, int d): int { return a + b + c + d; }";
         assert!(super::parse(source).is_ok());
-        assert_eq!(format!("{:?}", super::parse(source).unwrap().body),
-                   format!("{:?}", super::parse(ascii).unwrap().body));
+        assert_eq!(format!("{:?}", super::parse(source).unwrap().result),
+                   format!("{:?}", super::parse(ascii).unwrap().result));
         for source in [
             "pub fnc main(): int { return 未定義; }",
             "pub fnc main(int ρ, int ρ): int { return ρ; }",
