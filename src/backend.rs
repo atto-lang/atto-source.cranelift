@@ -1712,3 +1712,236 @@ mod scoped_helper_frame_tests {
         }
     }
 }
+
+// Native object only. No JIT allocation or guest storage capability.
+pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
+    let descriptor = crate::frontend::durable_counter_descriptor(source)?;
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_durable_counter", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    let id = module.declare_data("atto_durable_descriptor_v1", Linkage::Export, false, false)
+        .map_err(|e| e.to_string())?;
+    let mut data = DataDescription::new();
+    data.define(descriptor.into_boxed_slice());
+    module.define_data(id, &data).map_err(|e| e.to_string())?;
+    let mut sig = module.make_signature();
+    for _ in 0..3 { sig.params.push(AbiParam::new(types::I64)); }
+    sig.returns.push(AbiParam::new(types::I64));
+    let id = module.declare_function("atto_durable_transition_v1", Linkage::Export, &sig)
+        .map_err(|e| e.to_string())?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+    let entry = b.create_block();
+    let dispatch = b.create_block();
+    let read = b.create_block();
+    let increment = b.create_block();
+    let bounds = b.create_block();
+    let add = b.create_block();
+    let reject = b.create_block();
+    let read_ok = b.create_block();
+    b.append_block_params_for_function_params(entry);
+    b.switch_to_block(entry);
+    let args = b.block_params(entry).to_vec();
+    let (s, op, d) = (args[0], args[1], args[2]);
+    let low = b.ins().icmp_imm_s(IntCC::SignedLessThan, s, 0);
+    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, s, 1_000_000_000);
+    let bad = b.ins().bor(low, high);
+    b.ins().brif(bad, reject, &[], dispatch, &[]);
+    b.switch_to_block(dispatch);
+    let is_read = b.ins().icmp_imm_s(IntCC::Equal, op, 2);
+    b.ins().brif(is_read, read, &[], increment, &[]);
+    b.switch_to_block(read);
+    let zero = b.ins().icmp_imm_s(IntCC::Equal, d, 0);
+    b.ins().brif(zero, read_ok, &[], reject, &[]);
+    b.switch_to_block(read_ok);
+    b.ins().return_(&[s]);
+    b.switch_to_block(increment);
+    let wrong = b.ins().icmp_imm_s(IntCC::NotEqual, op, 1);
+    let low = b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, d, 0);
+    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 1_000_000_000);
+    let bad = b.ins().bor(low, high);
+    let bad = b.ins().bor(bad, wrong);
+    b.ins().brif(bad, reject, &[], bounds, &[]);
+    b.switch_to_block(bounds);
+    let max = b.ins().iconst(types::I64, 1_000_000_000);
+    let remaining = b.ins().isub(max, s);
+    let overflow = b.ins().icmp(IntCC::SignedGreaterThan, d, remaining);
+    b.ins().brif(overflow, reject, &[], add, &[]);
+    b.switch_to_block(add);
+    let next = b.ins().iadd(s, d);
+    b.ins().return_(&[next]);
+    b.switch_to_block(reject);
+    let denied = b.ins().iconst(types::I64, -1);
+    b.ins().return_(&[denied]);
+    b.seal_all_blocks();
+    b.finalize(module.target_config());
+    validate_ir(&ctx.func, module.isa())?;
+    module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    module.finish().emit().map_err(|e| e.to_string())
+}
+
+// Native schema-specialized codecs. Every input byte/value is staged in SSA
+// before the first output write. ABI requires trusted, valid, quiescent
+// caller-owned ranges, including non-null dummy pointers for empty schemas.
+pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
+    let (initial, tags) = crate::frontend::durable_scalar_schema(source)?;
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder().map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags)).map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_durable_scalar", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    if module.target_config().pointer_type() != types::I64 {
+        return Err("E_DURABLE_SCALAR_SCHEMA_V1: 64-bit native target required".into());
+    }
+    let size = initial.len() as i64;
+    let count = tags.len() as i64;
+    fn hash(b: &mut FunctionBuilder, bytes: &[Value]) -> Value {
+        let mut h = b.ins().iconst(types::I64, 0xcbf29ce484222325_u64 as i64);
+        let prime = b.ins().iconst(types::I64, 0x100000001b3);
+        for &byte in bytes {
+            let xor = b.ins().bxor(h, byte);
+            h = b.ins().imul(xor, prime);
+        }
+        h
+    }
+    fn byte_at(b: &mut FunctionBuilder, value: Value, i: usize) -> Value {
+        let shift = b.ins().iconst(types::I64, (i * 8) as i64);
+        let shifted = b.ins().ushr(value, shift);
+        b.ins().band_imm_u(shifted, 255)
+    }
+    fn word_at(b: &mut FunctionBuilder, bytes: &[Value]) -> Value {
+        let mut word = b.ins().iconst(types::I64, 0);
+        for (i, &byte) in bytes.iter().enumerate() {
+            let shift = b.ins().iconst(types::I64, (i * 8) as i64);
+            let part = b.ins().ishl(byte, shift);
+            word = b.ins().bor(word, part);
+        }
+        word
+    }
+    fn require(b: &mut FunctionBuilder, ok: Value, reject: Block) {
+        let next = b.create_block();
+        b.ins().brif(ok, next, &[], reject, &[]);
+        b.switch_to_block(next);
+    }
+    fn output_bytes(b: &mut FunctionBuilder, dst: Value, bytes: &[Value]) {
+        for (i, &byte) in bytes.iter().enumerate() {
+            let v = b.ins().ireduce(types::I8, byte);
+            b.ins().store(MemFlagsData::new(), v, dst, i as i32);
+        }
+    }
+    for (name, arity, mode) in [
+        ("atto_scalar_size_v1", 0, 0),
+        ("atto_scalar_fields_v1", 0, 1),
+        ("atto_scalar_initial_v1", 2, 2),
+        ("atto_scalar_encode_v1", 4, 3),
+        ("atto_scalar_decode_v1", 4, 4),
+    ] {
+        let mut sig = module.make_signature();
+        for _ in 0..arity { sig.params.push(AbiParam::new(types::I64)); }
+        sig.returns.push(AbiParam::new(types::I64));
+        let id = module.declare_function(name, Linkage::Export, &sig).map_err(|e| e.to_string())?;
+        let mut ctx = module.make_context();
+        ctx.func.signature = sig;
+        let mut fbctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let args = b.block_params(entry).to_vec();
+        if mode < 2 {
+            let v = b.ins().iconst(types::I64, if mode == 0 { size } else { count });
+            b.ins().return_(&[v]);
+        } else {
+            let reject = b.create_block();
+            let dst = if mode == 2 { args[0] } else { args[2] };
+            let cap = if mode == 2 { args[1] } else { args[3] };
+            let needed = if mode == 4 { count } else { size };
+            let nonnull = b.ins().icmp_imm_s(IntCC::NotEqual, dst, 0);
+            require(&mut b, nonnull, reject);
+            let enough = b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, cap, needed);
+            require(&mut b, enough, reject);
+            if mode == 2 {
+                let bytes: Vec<Value> = initial.iter().map(|&x| b.ins().iconst(types::I64, i64::from(x))).collect();
+                output_bytes(&mut b, dst, &bytes);
+            } else {
+                let src = args[0];
+                let nonnull = b.ins().icmp_imm_s(IntCC::NotEqual, src, 0);
+                require(&mut b, nonnull, reject);
+                let len = b.ins().icmp_imm_s(IntCC::Equal, args[1], if mode == 3 { count } else { size });
+                require(&mut b, len, reject);
+                if mode == 3 {
+                    let mut bytes: Vec<Value> = initial[..19].iter().map(|&x| b.ins().iconst(types::I64, i64::from(x))).collect();
+                    for (i, &tag) in tags.iter().enumerate() {
+                        let value = b.ins().load(types::I64, MemFlagsData::new(), src, (i * 8) as i32);
+                        bytes.push(b.ins().iconst(types::I64, i64::from(tag)));
+                        if tag == 1 {
+                            for j in 0..8 { bytes.push(byte_at(&mut b, value, j)); }
+                        } else {
+                            let ok = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, value, 1);
+                            require(&mut b, ok, reject);
+                            bytes.push(value);
+                        }
+                    }
+                    let checksum = hash(&mut b, &bytes);
+                    for j in 0..8 { bytes.push(byte_at(&mut b, checksum, j)); }
+                    output_bytes(&mut b, dst, &bytes);
+                } else {
+                    let mut bytes = Vec::with_capacity(size as usize);
+                    for i in 0..size {
+                        let byte = b.ins().load(types::I8, MemFlagsData::new(), src, i as i32);
+                        bytes.push(b.ins().uextend(types::I64, byte));
+                    }
+                    let end = bytes.len() - 8;
+                    let checksum = hash(&mut b, &bytes[..end]);
+                    let stored = word_at(&mut b, &bytes[end..]);
+                    let ok = b.ins().icmp(IntCC::Equal, stored, checksum);
+                    require(&mut b, ok, reject);
+                    for (i, &x) in initial[..19].iter().enumerate() {
+                        let ok = b.ins().icmp_imm_s(IntCC::Equal, bytes[i], i64::from(x));
+                        require(&mut b, ok, reject);
+                    }
+                    let mut pos = 19;
+                    let mut values = Vec::with_capacity(tags.len());
+                    for &tag in &tags {
+                        let ok = b.ins().icmp_imm_s(IntCC::Equal, bytes[pos], i64::from(tag));
+                        require(&mut b, ok, reject);
+                        pos += 1;
+                        if tag == 1 {
+                            values.push(word_at(&mut b, &bytes[pos..pos + 8]));
+                            pos += 8;
+                        } else {
+                            let value = bytes[pos];
+                            let ok = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, value, 1);
+                            require(&mut b, ok, reject);
+                            values.push(value);
+                            pos += 1;
+                        }
+                    }
+                    for (i, value) in values.into_iter().enumerate() {
+                        b.ins().store(MemFlagsData::new(), value, dst, (i * 8) as i32);
+                    }
+                }
+            }
+            let v = b.ins().iconst(types::I64, needed);
+            b.ins().return_(&[v]);
+            b.switch_to_block(reject);
+            let v = b.ins().iconst(types::I64, -1);
+            b.ins().return_(&[v]);
+        }
+        b.seal_all_blocks();
+        b.finalize(module.target_config());
+        validate_ir(&ctx.func, module.isa())?;
+        module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    }
+    module.finish().emit().map_err(|e| e.to_string())
+}
