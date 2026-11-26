@@ -199,6 +199,7 @@ struct Refinement {
     scale: Scale,
     lo: i64,
     hi: i64,
+    holes: u8,
     width: Width,
 }
 #[derive(Clone)]
@@ -477,6 +478,7 @@ impl<'a> Quantities<'a> {
                     scale,
                     lo,
                     hi,
+                    holes: 0,
                     width,
                 },
             ));
@@ -832,7 +834,7 @@ impl<'a> Quantities<'a> {
         if want.scale != value.scale {
             return Err("E_UNIT_SCALE: incompatible boundary".into());
         }
-        if !value.range.contained(want.lo, want.hi) {
+        if !value.range.contained(want.lo, want.hi) || (want.holes&1!=0 && value.range.has(0)) || (want.holes&2!=0 && value.range.has(-1)) {
             return Err(format!("{code}: unproved refinement"));
         }
         Ok(())
@@ -923,6 +925,7 @@ impl<'a> Quantities<'a> {
                 scale: Scale::ONE,
                 lo: i64::MIN,
                 hi: i64::MAX,
+                holes: 0,
                 width: Width::I64,
             });
         }
@@ -932,6 +935,7 @@ impl<'a> Quantities<'a> {
                 scale: Scale::ONE,
                 lo: I32_LO,
                 hi: I32_HI,
+                holes: 0,
                 width: Width::I32,
             });
         }
@@ -1227,7 +1231,7 @@ impl<'a> Quantities<'a> {
                 return Err("E_REFINEMENT_CONTRACT: contract limit or exported entry".into());
             }
             let name = self.p.name()?;
-            let op = self.contract_op()?;
+            let op = if require && self.p.current==Token::Punct(b'!') && self.p.input.as_bytes().get(self.p.pos)==Some(&b'=') { self.p.next()?; self.p.expect(Token::Punct(b'='))?; 1 } else {self.contract_op()?};
             if require {
                 let i = self
                     .bindings
@@ -1237,7 +1241,9 @@ impl<'a> Quantities<'a> {
                 let w = params[i];
                 let n = self.contract_bound(w)?;
                 let (mut lo, mut hi) = (w.lo, w.hi);
+                let mut holes=w.holes;
                 match op {
+                    1 => {if Range::bit(n)==0 {return Err("E_REFINEMENT_CONTRACT: unsupported exclusion".into());} holes|=Range::bit(n);}
                     0 => {
                         lo = lo.max(n);
                         hi = hi.min(n);
@@ -1258,12 +1264,11 @@ impl<'a> Quantities<'a> {
                     5 => lo = lo.max(n),
                     _ => unreachable!(),
                 }
-                if lo > hi {
-                    return Err("E_REFINEMENT_EMPTY: contradictory requires".into());
-                }
-                params[i].lo = lo;
-                params[i].hi = hi;
-                self.bindings[i].1.range = Range { lo, hi, holes: 0 };
+                let range=Range{lo,hi,holes}.normalize().ok_or("E_REFINEMENT_EMPTY: contradictory requires")?;
+                params[i].lo=range.lo;
+                params[i].hi=range.hi;
+                params[i].holes=range.holes;
+                self.bindings[i].1.range=range;
             } else {
                 if name != "result" {
                     return Err("E_REFINEMENT_CONTRACT: ensures must constrain result".into());
