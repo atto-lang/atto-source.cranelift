@@ -110,7 +110,11 @@ fn checked_unwrap_remains_denied_in_all_scalar_artifact_modes() {
 fn closed_option_discard_match_now_executes_but_strict_aot_still_refuses() {
     let source = b"pub fnc main():int{val Option<int> x=None;return trap! x.unwrap() |> match<int> over on Ok(n):int -> n, on Err():int -> 42, end;}";
     let result = compile("run", source);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(result.stdout, b"42\n");
     let strict = compile("emit-object-strict", source);
     assert_eq!(strict.status.code(), Some(1));
