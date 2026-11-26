@@ -514,6 +514,13 @@ impl IncrementalObjectSession {
         Ok((bytes, false))
     }
 }
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("orescranelift: {e}");
+        std::process::exit(1);
+    }
+}
+
 #[cfg(test)]
 mod incremental_object_tests {
     use super::*;
@@ -570,11 +577,5 @@ mod incremental_object_tests {
         }
         std::fs::remove_dir_all(dir).unwrap();
         println!("INCREMENTAL_CRANELIFT|actual-aot-guest=42/43|rollback");
-    }
-}
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("orescranelift: {e}");
-        std::process::exit(1);
     }
 }
