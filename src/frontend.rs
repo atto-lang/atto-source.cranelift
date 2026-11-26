@@ -188,6 +188,7 @@ pub enum LoopStep {
     Bind(Expr,bool),
     Set(usize,Expr),
     Loop(Expr,Vec<LoopStep>),
+    Exit(Expr,bool),
 }
 
 #[derive(Debug)]
@@ -1705,7 +1706,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     for step in items{
                         counted_nodes+=1;if counted_nodes>MAX_NODES{return Err("AST node budget exceeded".into());}
                         match step{
-                            LoopStep::Bind(x,_)|LoopStep::Set(_,x)=>pending.push((x,d+1)),
+                            LoopStep::Bind(x,_)|LoopStep::Set(_,x)|LoopStep::Exit(x,_)=>pending.push((x,d+1)),
                             LoopStep::Loop(c,ss)=>{pending.push((c,d+1));blocks.push((ss,d+1));}
                         }
                     }

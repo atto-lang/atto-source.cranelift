@@ -676,9 +676,30 @@ impl<'a> Quantities<'a> {
         }
         let(c,yes,no)=self.guard_or(&header,0)?;
         self.p.expect(Token::Punct(b'{'))?;self.bindings=yes;
-        let mut decls=mutable.clone();let mut steps=Vec::new();let mut len=frame_len;
+        let mut decls=mutable.clone();let mut steps=Vec::new();let mut len=frame_len;let mut has_break=false;
         while !self.p.take(Token::Punct(b'}'))?{
             if steps.len()>=64{return Err("E_UNIT_LIMIT: loop statements".into());}
+            if matches!(self.p.current,Token::Word("if"|"break"|"continue")){
+                let guarded=self.p.take(Token::Word("if"))?;
+                let incoming=self.bindings.clone();
+                let(test,yes,no)=if guarded{self.guard_or(&incoming,0)?}
+                    else{(Expr::Literal(1),incoming.clone(),incoming)};
+                if guarded{self.p.expect(Token::Punct(b'{'))?;}
+                let breaking=self.p.take(Token::Word("break"))?;
+                if !breaking&&!self.p.take(Token::Word("continue"))?{return Err("E_VERIFY_UNSUPPORTED: loop if requires a direct exit".into());}
+                self.p.expect(Token::Punct(b';'))?;
+                if guarded{self.p.expect(Token::Punct(b'}'))?;}
+                else if self.p.current!=Token::Punct(b'}'){return Err("E_VERIFY_UNSUPPORTED: statement after unconditional loop exit".into());}
+                if breaking{has_break=true;}else{
+                    for(name,b)in &yes{
+                        if writes.contains(name){
+                            let w=mutable.iter().find(|(n,_)|n==name).unwrap().1;
+                            if !b.range.contained(w.lo,w.hi){return Err("E_REFINEMENT_BINDING: continue backedge".into());}
+                        }
+                    }
+                }
+                steps.push(LoopStep::Exit(test,breaking));self.bindings=no;continue;
+            }
             if self.p.take(Token::Word("while"))?{
                 let(c,inner,exit)=self.loop_plan(&decls,len,depth+1)?;
                 steps.push(LoopStep::Loop(c,inner));self.bindings=exit;continue;
@@ -715,7 +736,7 @@ impl<'a> Quantities<'a> {
                 if !b.range.contained(w.lo,w.hi){return Err("E_REFINEMENT_BINDING: loop backedge".into());}
             }
         }
-        Ok((c,steps,no))
+        Ok((c,steps,if has_break{header}else{no}))
     }
     fn sequence(&mut self,mut mutable:MutableTypes,depth:usize,tail:Option<Tail<'a>>)->Result<Typed,String>{
         if depth>16{return Err("E_UNIT_LIMIT: returning guard depth".into());}
@@ -774,6 +795,7 @@ impl<'a> Quantities<'a> {
             if y.dim!=n.dim||y.scale!=n.scale{return Err("E_UNIT_DIMENSION: incompatible branch return".into());}
             return Ok(Typed{expr:self.p.node(Expr::Choose(Box::new(c),Box::new(y.expr),Box::new(n.expr)))?,dim:y.dim,scale:y.scale,range:y.range.join(n.range),width:if y.width==n.width{y.width}else{Width::I64}});
         }
+        if self.strict&&matches!(self.p.current,Token::Word("break"|"continue")){return Err("E_VERIFY_UNSUPPORTED: loop exit outside strict while".into());}
         self.p.expect(Token::Word("return"))?;let value=self.expr(0,0)?;self.p.expect(Token::Punct(b';'))?;Ok(value)
     }
     fn expr(&mut self,min_bp:u8,depth:usize)->Result<Typed,String>{
