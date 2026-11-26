@@ -259,3 +259,50 @@ fn mutable_task_local_versions_execute_in_native_order() {
         }
     }
 }
+
+
+// Native task-local compound XOR reuses the existing bounded SSA frame.
+// Captures remain immutable and no general mutable main/quantity support is claimed.
+#[test]
+fn compound_xor_uses_task_local_ssa_versions() {
+    for (source, expected) in [
+        ("fnc main():int {return sync task<int> {let int x=12;x ^^=10;return x;};}", "6\n"),
+        ("fnc main():int {return sync task<int> {let int x=-9223372036854775808;x ^^= -1;return x;};}", "9223372036854775807\n"),
+        ("fnc main():int {return sync task<int> {let int x=9223372036854775807;x ^^= -1;return x;};}", "-9223372036854775808\n"),
+        ("fnc main():int {return sync task<int> {let int x=12;x ^^=x;return x;};}", "0\n"),
+        ("fnc main():int {return sync task<int> {let int x=12;val int before=x;x ^^=10;return before+x;};}", "18\n"),
+        ("fnc main():int {return sync task<int> {let int x=12;x ^^=sync task<int> {val int y=x;return y-2;};return x;};}", "6\n"),
+        ("fnc main():int {return 5+6 ^^ 4;}", "15\n"),
+        ("fnc main():int {return 11 ^^ 4 ^^ 7;}", "8\n"),
+    ] {
+        let fixture = Source::new(source);
+        let got = call("run", &fixture, &[]);
+        assert_eq!(got.status.code(), Some(0), "{source}: {:?}", got.stderr);
+        assert!(got.stderr.is_empty(), "{source}: {:?}", got.stderr);
+        assert_eq!(got.stdout, expected.as_bytes(), "{source}");
+    }
+    let overflow = Source::new("fnc main():int {return sync task<int> {let int x=9223372036854775807;x ^^=x+1;return x;};}");
+    assert!(call("check", &overflow, &[]).status.success());
+    let got = call("run", &overflow, &[]);
+    assert_eq!(got.status.code(), Some(1));
+    assert!(got.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&got.stderr).contains("overflow"));
+    for source in [
+        "fnc main():int {return sync task<int> {val int x=12;x ^^=10;return x;};}",
+        "fnc main():int {return sync task<int> {let int x ^^=10;return x;};}",
+        "fnc main():int {return sync task<int> {let int x=12;x ^^ =10;return x;};}",
+        "fnc main():int {return sync task<int> {let int x=12;x ^/*gap*/^=10;return x;};}",
+        "fnc main():int {return sync task<int> {let int x=12;x ^^=true;return x;};}",
+        "fnc main():int {val int x=12;return sync task<int> {let int y=1;x ^^=10;return y;};}",
+        "fnc main():int {return true ^^ false;}",
+        "fnc main():int {return 12 ^ ^ 10;}",
+    ] {
+        let fixture = Source::new(source);
+        for mode in ["check", "ir", "run"] {
+            let got = call(mode, &fixture, &[]);
+            assert_eq!(got.status.code(), Some(1), "{mode}: {source}");
+            assert!(got.stdout.is_empty(), "{mode}: {source}");
+            assert!(!got.stderr.is_empty(), "{mode}: {source} missing diagnostic");
+        }
+    }
+}

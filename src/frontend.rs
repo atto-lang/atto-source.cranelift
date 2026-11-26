@@ -218,6 +218,8 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    Xor,
+    XorAssign,
     End,
 }
 
@@ -771,6 +773,14 @@ impl<'a> Parser<'a> {
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
+        } else if first == b'^' && b.get(self.pos) == Some(&b'^') {
+            self.pos += 1;
+            if b.get(self.pos) == Some(&b'=') {
+                self.pos += 1;
+                self.current = Token::XorAssign;
+            } else {
+                self.current = Token::Xor;
+            }
         } else if b"()+-*/{}[];:,><=.!&|".contains(&first) {
             self.current = Token::Punct(first);
         } else {
@@ -967,8 +977,21 @@ impl<'a> Parser<'a> {
                 if captures.len() + initializers.len() >= MAX_LOCALS {
                     return Err("E_TASK_LOCAL: over-budget inline local or write".into());
                 }
-                self.expect(Token::Punct(b'='))?;
-                let init = self.expr(0, depth + 1)?;
+                // Only a previously declared mutable task-local can consume
+                // contiguous ^^=. Captures and immutable locals never become
+                // writable. Read the old SSA slot before parsing the RHS.
+                let old = if self.take(Token::XorAssign)? {
+                    let index = target.ok_or("E_TASK_LOCAL: compound XOR requires an existing mutable local")?;
+                    Some(self.node(Expr::Local(self.bindings[index].2))?)
+                } else {
+                    self.expect(Token::Punct(b'='))?;
+                    None
+                };
+                let rhs = self.expr(0, depth + 1)?;
+                let init = match old {
+                    Some(left) => self.node(Expr::BitXor(Box::new(left), Box::new(rhs)))?,
+                    None => rhs,
+                };
                 self.expect(Token::Punct(b';'))?;
                 let slot = captures.len() + initializers.len();
                 initializers.push(init);
@@ -1210,11 +1233,12 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let (l_bp, r_bp, op) = match self.current {
-                Token::Punct(b'+') => (1, 2, b'+'),
-                Token::Punct(b'-') => (1, 2, b'-'),
-                Token::Punct(b'*') => (3, 4, b'*'),
-                Token::Punct(b'/') => (3, 4, b'/'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                Token::Xor => (0, 1, b'^'),
+                Token::Punct(b'+') => (2, 3, b'+'),
+                Token::Punct(b'-') => (2, 3, b'-'),
+                Token::Punct(b'*') => (4, 5, b'*'),
+                Token::Punct(b'/') => (4, 5, b'/'),
+                Token::Punct(b'>') => (1, 2, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -1230,6 +1254,7 @@ impl<'a> Parser<'a> {
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
                 b'/' => Expr::Div(Box::new(lhs), Box::new(rhs)),
+                b'^' => Expr::BitXor(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -2993,8 +3018,8 @@ end"#;
     }
     #[test]
     fn removed_remainder_operator_is_rejected_before_lowering() {
-        // The language contract removed %, ^ and ^^. The tokenizer must
-        // reject all forms of % rather than accepting a restricted subset.
+        // The language contract removed %. The tokenizer must reject all
+        // forms of % rather than accepting a restricted subset.
         for source in [
             "fnc main():int{return -7%3;}",
             "fnc main():int{return 7%-3;}",
