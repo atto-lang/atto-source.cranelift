@@ -54,9 +54,25 @@ impl Range {
 }
 struct Typed { expr: Expr, dim: Dim, scale:Scale, range:Range }
 #[derive(Clone,Copy)]
-struct Binding {dim:Dim,scale:Scale,range:Range}
+struct Binding {dim:Dim,scale:Scale,range:Range,slot:usize}
 #[derive(Clone,Copy)]
 struct Refinement {dim:Dim,scale:Scale,lo:i64,hi:i64}
+#[derive(Clone)]
+struct Helper {params:Vec<Refinement>,result:Refinement,locals:Vec<Expr>,body:Expr}
+fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
+    let one=|e:&Expr|remap(e,slots).map(Box::new);
+    Ok(match expr{
+        Expr::Literal(n)=>Expr::Literal(*n),
+        Expr::Local(i)=>Expr::Local(*slots.get(*i).ok_or("E_UNIT_CALL: invalid local reference")?),
+        Expr::Neg(x)=>Expr::Neg(one(x)?),
+        Expr::Add(a,b)=>Expr::Add(one(a)?,one(b)?),
+        Expr::Sub(a,b)=>Expr::Sub(one(a)?,one(b)?),
+        Expr::Mul(a,b)=>Expr::Mul(one(a)?,one(b)?),
+        Expr::QuantityDiv(a,b)=>Expr::QuantityDiv(one(a)?,one(b)?),
+        Expr::RefinementCast(x,l,h)=>Expr::RefinementCast(one(x)?,*l,*h),
+        _=>return Err("E_UNIT_CALL: unsupported helper expression".into())
+    })
+}
 struct Quantities<'a> {
     p: Parser<'a>,
     dimensions: Vec<String>,
@@ -64,6 +80,8 @@ struct Quantities<'a> {
     refinements: Vec<(String,Refinement)>,
     bindings: Vec<(String,Binding)>,
     strict: bool,
+    locals:Vec<Expr>,
+    helpers:Vec<(String,Helper)>,
 }
 impl<'a> Quantities<'a> {
     fn declaration_name(&mut self) -> Result<String,String> {
@@ -135,6 +153,7 @@ impl<'a> Quantities<'a> {
             let mut count=0;
             let mut has_units=false;
             loop{
+                if self.p.take(Token::Word("units"))?{has_units=true;break;}
                 self.p.expect(Token::Word("self"))?;
                 let end=self.p.pos;
                 let lower=if self.p.take(Token::Punct(b'>'))?{true}else{self.p.expect(Token::Punct(b'<'))?;false};
@@ -254,13 +273,54 @@ impl<'a> Quantities<'a> {
             return self.postfix(Typed{expr,dim:SCALAR,scale:Scale::ONE,range:Range::exact(v)},compact,true);
         }
         if let Token::Word(name)=self.p.current{
-            if let Some((i,(_,b)))=self.bindings.iter().enumerate().find(|(_, (n,_))|n==name){
+            if let Some((_,b))=self.bindings.iter().find(|(n,_)|n==name){
                 let b=*b;self.p.next()?;
-                let expr=self.p.node(Expr::Local(i))?;
+                let expr=self.p.node(Expr::Local(b.slot))?;
                 return self.postfix(Typed{expr,dim:b.dim,scale:b.scale,range:b.range},false,false);
             }
         }
-        Err("E_UNIT_PROFILE: expected quantity expression or earlier immutable binding".into())
+        if let Token::Word(name)=self.p.current{
+            if let Some((_,helper))=self.helpers.iter().find(|(n,_)|n==name){
+                let helper=helper.clone();self.p.next()?;
+                return self.call(helper,depth+1);
+            }
+        }
+        Err("E_UNIT_PROFILE: expected quantity expression, binding or earlier private helper".into())
+    }
+    fn push_local(&mut self,expr:Expr)->Result<usize,String>{
+        if self.locals.len()>=64{return Err("E_UNIT_LIMIT: runtime locals".into());}
+        validate_ast_depth(&expr)?;
+        let slot=self.locals.len();self.locals.push(expr);Ok(slot)
+    }
+    fn materialize(&mut self,mut value:Typed)->Result<Typed,String>{
+        let slot=self.push_local(value.expr)?;
+        value.expr=self.p.node(Expr::Local(slot))?;Ok(value)
+    }
+    fn boundary(want:Refinement,value:&Typed,code:&str)->Result<(),String>{
+        if want.dim!=value.dim{return Err("E_UNIT_DIMENSION: incompatible boundary".into());}
+        if want.scale!=value.scale{return Err("E_UNIT_SCALE: incompatible boundary".into());}
+        if !value.range.contained(want.lo,want.hi){return Err(format!("{code}: unproved refinement"));}
+        Ok(())
+    }
+    // Eager arguments and helper locals get fresh slots; never substitute an
+    // effectful expression at multiple uses of a parameter.
+    fn call(&mut self,h:Helper,depth:usize)->Result<Typed,String>{
+        self.p.expect(Token::Punct(b'('))?;
+        let mut slots=Vec::new();
+        for (i,want) in h.params.iter().enumerate(){
+            if i>0{self.p.expect(Token::Punct(b','))?;}
+            let value=self.expr(0,depth+1)?;
+            Self::boundary(*want,&value,"E_REFINEMENT_PRECONDITION")?;
+            slots.push(self.push_local(value.expr)?);
+        }
+        self.p.expect(Token::Punct(b')'))?;
+        for init in h.locals.iter().skip(h.params.len()){
+            let value=remap(init,&slots)?;
+            slots.push(self.push_local(value)?);
+        }
+        let slot=self.push_local(remap(&h.body,&slots)?)?;
+        let expr=self.p.node(Expr::Local(slot))?;
+        self.postfix(Typed{expr,dim:h.result.dim,scale:h.result.scale,range:Range{lo:h.result.lo,hi:h.result.hi}},false,false)
     }
     fn annotation(&self,name:&str)->Result<Refinement,String>{
         if matches!(name,"int"|"i64"){return Ok(Refinement{dim:SCALAR,scale:Scale::ONE,lo:i64::MIN,hi:i64::MAX});}
@@ -268,15 +328,14 @@ impl<'a> Quantities<'a> {
     }
     fn binding_name(&self,name:&str)->Result<(),String>{
         if matches!(name,"val"|"let"|"int"|"i64"|"i32"|"bool"|"float"|"string"|"void"|"return"|"self"|"main"|"fnc"|"pub"|"define"|"type"|"where"|"as"|"and"|"units"|"in"|"true"|"false"|"if"|"else"|"end"|"begin"|"while"|"loop"|"task"|"await"|"suspends"|"infer"|"new"|"match"|"const"|"mut"|"_" ) ||
-           self.dimensions.iter().any(|n|n==name)||self.units.iter().any(|(n,_,_)|n==name)||self.refinements.iter().any(|(n,_)|n==name)||self.bindings.iter().any(|(n,_)|n==name){
+           self.dimensions.iter().any(|n|n==name)||self.units.iter().any(|(n,_,_)|n==name)||self.refinements.iter().any(|(n,_)|n==name)||self.bindings.iter().any(|(n,_)|n==name)||self.helpers.iter().any(|(n,_)|n==name){
             return Err("E_UNIT_BINDING: reserved or duplicate binding".into());
         }
         Ok(())
     }
-    fn bindings(&mut self)->Result<Vec<Expr>,String>{
-        let mut locals=Vec::new();
+    fn bindings(&mut self)->Result<(),String>{
         while self.p.take(Token::Word("val"))?{
-            if locals.len()==64{return Err("E_UNIT_LIMIT: local bindings".into());}
+            if self.locals.len()==64{return Err("E_UNIT_LIMIT: local bindings".into());}
             let first=self.p.name()?;
             let (name,want)=if self.p.take(Token::Punct(b':'))?{
                 let ty=self.p.name()?;(first,Some(self.annotation(&ty)?))
@@ -293,11 +352,10 @@ impl<'a> Quantities<'a> {
                 if value.dim!=w.dim||value.scale!=w.scale{return Err("E_UNIT_BINDING: incompatible unit or scale".into());}
                 if !value.range.contained(w.lo,w.hi){return Err("E_REFINEMENT_BINDING: unproved refinement".into());}
             }
-            validate_ast_depth(&value.expr)?;
-            self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range}));
-            locals.push(value.expr);
+            let slot=self.push_local(value.expr)?;
+            self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot}));
         }
-        Ok(locals)
+        Ok(())
     }
     fn expr(&mut self,min_bp:u8,depth:usize)->Result<Typed,String>{
         if depth>MAX_DEPTH {return Err("expression depth budget exceeded".into());}
@@ -312,6 +370,9 @@ impl<'a> Quantities<'a> {
             };
             if l<min_bp {break;}
             self.p.next()?;
+            // A later operand can contain an eager helper expansion. Freeze
+            // the left operand before parsing it, preserving failure order.
+            if !self.helpers.is_empty(){lhs=self.materialize(lhs)?;}
             let rhs=self.expr(r,depth+1)?;
             let mut dim=lhs.dim;let mut scale=lhs.scale;
             if op==b'+'||op==b'-' {
@@ -343,24 +404,50 @@ impl<'a> Quantities<'a> {
 }
 pub(super) fn parse(p:Parser<'_>)->Result<Program,String>{parse_mode(p,false)}
 pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict};
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,locals:Vec::new(),helpers:Vec::new()};
     q.declarations()?;q.refinement_declarations()?;
     if strict&&q.refinements.is_empty(){return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());}
-    q.p.take(Token::Word("pub"))?;
-    q.p.expect(Token::Word("fnc"))?;
-    q.p.expect(Token::Word("main"))?;
-    q.p.expect(Token::Punct(b'('))?;
-    q.p.expect(Token::Punct(b')'))?;
-    if !q.p.take(Token::Punct(b':'))? {q.p.expect(Token::Punct(b'-'))?;q.p.expect(Token::Punct(b'>'))?;}
-    q.p.expect(Token::Word("int"))?;
-    q.p.expect(Token::Punct(b'{'))?;
-    let locals=q.bindings()?;
-    q.p.expect(Token::Word("return"))?;
-    let value=q.expr(0,0)?;
-    Quantities::scalar(&value)?;
-    q.p.expect(Token::Punct(b';'))?;
-    q.p.expect(Token::Punct(b'}'))?;
-    q.p.expect(Token::End)?;
-    validate_ast_depth(&value.expr)?;
-    Ok(Program{parameters:Vec::new(),locals,result:value.expr,trace_steps:Vec::new()})
+    loop{
+        q.bindings.clear();q.locals.clear();
+        let public=q.p.take(Token::Word("pub"))?;
+        q.p.expect(Token::Word("fnc"))?;
+        let name=q.p.name()?;
+        let main=name=="main";
+        if !main{
+            if public||q.helpers.len()>=16{return Err("E_UNIT_CALL: private earlier-only helpers required".into());}
+            q.binding_name(&name)?;
+        }
+        q.p.expect(Token::Punct(b'('))?;
+        let mut params=Vec::new();
+        if !q.p.take(Token::Punct(b')'))?{
+            loop{
+                if main||params.len()>=8{return Err("E_UNIT_LIMIT: parameters".into());}
+                let ty=q.p.name()?;let want=q.annotation(&ty)?;
+                let param=q.p.name()?;q.binding_name(&param)?;
+                let slot=q.push_local(Expr::Literal(0))?;
+                q.bindings.push((param,Binding{dim:want.dim,scale:want.scale,range:Range{lo:want.lo,hi:want.hi},slot}));
+                params.push(want);
+                if q.p.take(Token::Punct(b')'))?{break;}
+                q.p.expect(Token::Punct(b','))?;
+            }
+        }
+        if !q.p.take(Token::Punct(b':'))?{q.p.expect(Token::Punct(b'-'))?;q.p.expect(Token::Punct(b'>'))?;}
+        let ty=q.p.name()?;
+        if main&&ty!="int"{return Err("E_UNIT_ERASURE: main requires plain int".into());}
+        let result=q.annotation(&ty)?;
+        q.p.expect(Token::Punct(b'{'))?;
+        q.bindings()?;
+        q.p.expect(Token::Word("return"))?;
+        let value=q.expr(0,0)?;
+        if main{Quantities::scalar(&value)?;}
+        Quantities::boundary(result,&value,"E_REFINEMENT_RETURN")?;
+        q.p.expect(Token::Punct(b';'))?;
+        q.p.expect(Token::Punct(b'}'))?;
+        validate_ast_depth(&value.expr)?;
+        if main{
+            q.p.expect(Token::End)?;
+            return Ok(Program{parameters:Vec::new(),locals:q.locals,result:value.expr,trace_steps:Vec::new()});
+        }
+        q.helpers.push((name,Helper{params,result,locals:std::mem::take(&mut q.locals),body:value.expr}));
+    }
 }
