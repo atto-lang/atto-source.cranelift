@@ -1065,7 +1065,11 @@ impl<'a> Parser<'a> {
             return Err("E_ENTRY_PROJECTION_UNSUPPORTED: expected key or value".into());
         };
         let body = self.node(Expr::Local(slot))?;
-        self.node(Expr::ScopedCall(vec![first, second], vec![], Box::new(body)))
+        self.node(Expr::ScopedCall(
+            vec![first, second],
+            vec![],
+            Box::new(body),
+        ))
     }
 
     fn pair_projection(&mut self, depth: usize) -> Result<Expr, String> {
