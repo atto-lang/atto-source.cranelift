@@ -440,9 +440,7 @@ mod tests {
         compile: impl FnOnce(&str) -> Result<Vec<u8>, String>,
     ) -> Result<(Vec<u8>, bool), String> {
         let key = fixture_key(source);
-        if !cold
-            && let Some(bytes) = store.load(&key, &SECRET).map_err(|e| e.to_string())?
-        {
+        if !cold && let Some(bytes) = store.load(&key, &SECRET).map_err(|e| e.to_string())? {
             return Ok((bytes, true));
         }
         let bytes = compile(source)?;

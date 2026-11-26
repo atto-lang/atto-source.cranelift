@@ -98,9 +98,7 @@ impl NativeSession {
             .lease(&self.scope, current_pin, master)
             .map_err(|e| e.to_string())?;
         let secret = lease.secret();
-        if !cold
-            && let Some(bytes) = self.store.load(&key, &secret).map_err(|e| e.to_string())?
-        {
+        if !cold && let Some(bytes) = self.store.load(&key, &secret).map_err(|e| e.to_string())? {
             return Ok(Build {
                 bytes,
                 reused: true,

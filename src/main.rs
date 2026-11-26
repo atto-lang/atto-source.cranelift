@@ -4,12 +4,12 @@ mod actor_isolation_access_v1;
 mod backend;
 pub mod critical_gate;
 mod frontend;
-mod namespace_provider;
 mod functional_pipelines;
 mod isolate;
 pub mod layout;
 mod linked_native;
 mod module_link;
+mod namespace_provider;
 #[allow(dead_code)]
 mod owned_region;
 #[allow(dead_code)]
