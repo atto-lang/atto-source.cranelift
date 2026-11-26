@@ -41,7 +41,7 @@ fn digest(out: &mut Vec<u8>, value: &str) -> Result<(), &'static str> {
     if value.len() != 64 {
         return Err("E_CACHE_KEY: digest");
     }
-    for pair in value.as_bytes().chunks_exact(2) {
+    for pair in value.as_bytes().as_chunks::<2>().0 {
         out.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
     }
     Ok(())

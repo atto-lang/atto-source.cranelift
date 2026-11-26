@@ -500,12 +500,11 @@ struct IncrementalObjectSession {
 }
 impl IncrementalObjectSession {
     fn build(&mut self, source: &str, cold: bool) -> Result<(Vec<u8>, bool), String> {
-        if !cold {
-            if let Some((old, bytes)) = &self.prior {
-                if old == source {
-                    return Ok((bytes.clone(), true));
-                }
-            }
+        if !cold
+            && let Some((old, bytes)) = &self.prior
+            && old == source
+        {
+            return Ok((bytes.clone(), true));
         }
         let parsed = frontend::parse(source)?;
         let bytes = backend::emit_object(&parsed)?;
