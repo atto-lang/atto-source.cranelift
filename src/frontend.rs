@@ -346,6 +346,7 @@ impl QuantityScale {
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
+    newline_before_current: bool,
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
@@ -353,6 +354,8 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
+    pair_scope_checked: bool,
+    entry_scope_checked: bool,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -409,6 +412,7 @@ impl<'a> Parser<'a> {
         let mut p = Self {
             input,
             pos: 0,
+            newline_before_current: false,
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
@@ -416,6 +420,8 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
+            pair_scope_checked: false,
+            entry_scope_checked: false,
         };
         p.next()?;
         Ok(p)
@@ -488,6 +494,7 @@ impl<'a> Parser<'a> {
     }
 
     fn next(&mut self) -> Result<(), String> {
+        let previous_end = self.pos;
         let b = self.input.as_bytes();
         let preceded_by_sync = self.current == Token::Word("sync");
         let preceded_by_as = self.current == Token::Word("as");
@@ -514,6 +521,8 @@ impl<'a> Parser<'a> {
             }
             break;
         }
+        self.newline_before_current =
+            (previous_end..self.pos).any(|offset| line_break_width(b, offset) != 0);
         if self.pos == b.len() {
             self.current = Token::End;
             return Ok(());
@@ -530,6 +539,10 @@ impl<'a> Parser<'a> {
                 end += 1;
             }
             let name = &self.input[self.pos..end];
+            if matches!(name, "requires" | "ensures") {
+                self.current = Token::Punct(b'@');
+                return Ok(());
+            }
             if matches!(
                 name,
                 "Inject" | "StateBacked" | "MutableStateContainer" | "StateContainer"
@@ -716,6 +729,7 @@ impl<'a> Parser<'a> {
                         | "WriteLoan"
                 )
             ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
+                && !(self.current == Token::Word("Entry") && self.next_significant_is(b'.'))
             {
                 return Err("E_SAFE_COLLECTION_ACCESS_UNSUPPORTED: typed collection, bounds-safe Option and static loan provenance lowering are unavailable in Cranelift stage-0".into());
             }
@@ -1090,6 +1104,182 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
+    // Restricted checked i64 expression projection. No owned Pair ABI is constructed.
+    // Scan source tokens once per compilation, not once per projection.
+    fn check_pair_scope(&mut self) -> Result<(), String> {
+        if self.pair_scope_checked {
+            return Ok(());
+        }
+        let mut scan = Parser::new(self.input)?;
+        let mut previous = Token::End;
+        while scan.current != Token::End {
+            if scan.current == Token::Word("Pair") {
+                if previous == Token::Punct(b'.')
+                    || previous == Token::Punct(b':')
+                    || !scan.next_significant_is(b'.')
+                {
+                    return Err("E_PAIR_SCOPE_UNSUPPORTED: competing Pair name".into());
+                }
+                scan.next()?;
+                scan.expect(Token::Punct(b'.'))?;
+                scan.expect(Token::Word("of"))?;
+                previous = Token::Word("of");
+                continue;
+            }
+            previous = scan.current;
+            scan.next()?;
+        }
+        self.pair_scope_checked = true;
+        Ok(())
+    }
+
+    fn check_entry_scope(&mut self) -> Result<(), String> {
+        if self.entry_scope_checked {
+            return Ok(());
+        }
+        let mut scan = Parser::new(self.input)?;
+        let mut previous = Token::End;
+        while scan.current != Token::End {
+            if scan.current == Token::Word("Entry") {
+                if previous == Token::Punct(b'.')
+                    || previous == Token::Punct(b':')
+                    || !scan.next_significant_is(b'.')
+                {
+                    return Err("E_ENTRY_SCOPE_UNSUPPORTED: competing Entry name".into());
+                }
+                scan.next()?;
+                scan.expect(Token::Punct(b'.'))?;
+                scan.expect(Token::Word("of"))?;
+                previous = Token::Word("of");
+                continue;
+            }
+            previous = scan.current;
+            scan.next()?;
+        }
+        self.entry_scope_checked = true;
+        Ok(())
+    }
+
+    // A restricted i64 projection: evaluate both operands in the caller's
+    // frame, then select an already evaluated slot in an isolated frame.
+    // No first-class Entry allocation or arbitrary-key ABI is admitted.
+    fn entry_projection(&mut self, depth: usize) -> Result<Expr, String> {
+        self.check_entry_scope()?;
+        self.expect(Token::Word("Entry"))?;
+        self.expect(Token::Punct(b'.'))?;
+        self.expect(Token::Word("of"))?;
+        if self.take(Token::Punct(b'<'))? {
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b','))?;
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'>'))?;
+        }
+        self.expect(Token::Punct(b'('))?;
+        let first = self.expr(0, depth + 1)?;
+        self.expect(Token::Punct(b','))?;
+        let second = self.expr(0, depth + 1)?;
+        // Only proven i64 parameters and arithmetic are admitted. Do not
+        // infer types for runtime locals, calls, booleans or arbitrary keys.
+        let mut pending = vec![&first, &second];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Expr::Literal(_) | Expr::Param(_) => {}
+                Expr::Neg(inner) => pending.push(inner),
+                Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) => {
+                    pending.push(a);
+                    pending.push(b);
+                }
+                _ => {
+                    return Err("E_ENTRY_VALUE_UNSUPPORTED: checked i64 operands required".into());
+                }
+            }
+        }
+        self.expect(Token::Punct(b')'))?;
+        if !self.take(Token::Punct(b'.'))? {
+            return Err("E_ENTRY_ESCAPE_UNSUPPORTED: native owned Entry ABI unavailable".into());
+        }
+        let slot = if self.take(Token::Word("key"))? {
+            0
+        } else if self.take(Token::Word("value"))? {
+            1
+        } else {
+            return Err("E_ENTRY_PROJECTION_UNSUPPORTED: expected key or value".into());
+        };
+        let body = self.node(Expr::Local(slot))?;
+        self.node(Expr::ScopedCall(
+            vec![first, second],
+            vec![],
+            Box::new(body),
+        ))
+    }
+
+    fn pair_projection(&mut self, depth: usize) -> Result<Expr, String> {
+        self.check_pair_scope()?;
+        self.expect(Token::Word("Pair"))?;
+        self.expect(Token::Punct(b'.'))?;
+        self.expect(Token::Word("of"))?;
+        if self.take(Token::Punct(b'<'))? {
+            if self.take(Token::Word("string"))? {
+                self.expect(Token::Punct(b','))?;
+                self.expect(Token::Word("int"))?;
+            } else {
+                self.expect(Token::Word("int"))?;
+                if self.current == Token::Punct(b',') {
+                    return Err(
+                        "E_PAIR_KEY_TYPE: Pair first generic argument must be string".into(),
+                    );
+                }
+            }
+            self.expect(Token::Punct(b'>'))?;
+        }
+        self.expect(Token::Punct(b'('))?;
+        let Token::Quoted(raw) = self.current else {
+            return Err("E_PAIR_KEY_TYPE: Pair requires a string key".into());
+        };
+        // The normal quoted-source scanner validates the token. Restrict
+        // discarded keys to plain ASCII strings; no templates or escapes.
+        let bytes = raw.as_bytes();
+        if bytes.len() < 2 || !matches!(bytes[0], b'\'' | b'"') {
+            return Err("E_PAIR_KEY_TYPE: Pair requires a string key".into());
+        }
+        if !bytes[1..bytes.len() - 1]
+            .iter()
+            .all(|c| (32..=126).contains(c) && *c != 92 && *c != 36)
+        {
+            return Err("E_PAIR_KEY_UNSUPPORTED: plain literal string required".into());
+        }
+        self.next()?;
+        self.expect(Token::Punct(b','))?;
+        let value = self.expr(0, depth + 1)?;
+        // Stage-0 has no general type witness for locals or effects. Permit
+        // only known i64 parameters, literals and checked arithmetic trees.
+        // Iterative inspection is bounded by the parser's existing node cap.
+        let mut pending = vec![&value];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Expr::Literal(_) | Expr::Param(_) => {}
+                Expr::Neg(inner) => pending.push(inner),
+                Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) => {
+                    pending.push(a);
+                    pending.push(b);
+                }
+                _ => {
+                    return Err("E_PAIR_VALUE_UNSUPPORTED: checked i64 expression required".into());
+                }
+            }
+        }
+        self.expect(Token::Punct(b')'))?;
+        if !self.take(Token::Punct(b'.'))? {
+            return Err("E_PAIR_ESCAPE_UNSUPPORTED: native owned Pair ABI unavailable".into());
+        }
+        if !self.take(Token::Word("second"))? {
+            return Err(
+                "E_PAIR_PROJECTION_UNSUPPORTED: only i64 second projection admitted".into(),
+            );
+        }
+        Ok(value)
+    }
+
     fn atom_base(&mut self, depth: usize) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
@@ -1142,6 +1332,8 @@ impl<'a> Parser<'a> {
                 }
                 self.inline_task(depth + 1, false)
             }
+            Token::Word("Pair") if self.next_significant_is(b'.') => self.pair_projection(depth),
+            Token::Word("Entry") if self.next_significant_is(b'.') => self.entry_projection(depth),
             Token::Word("Integer") => {
                 // Recognize only these typed signed-i64 intrinsics. Unknown Integer.* calls
                 // must reject before emitting native code.
@@ -2232,153 +2424,6 @@ pub fn parse(text: &str) -> Result<Program, String> {
         }
     }
     original
-}
-
-// Opt-in restricted durable Counter source admission. Use the existing
-// lexer, not the scalar program parser, and consume the complete source.
-// Reject comments/directives in this initial profile to avoid divergence.
-pub fn durable_counter_descriptor(source: &str) -> Result<Vec<u8>, String> {
-    let deny = || "E_DURABLE_COUNTER_ACTOR_ABI".to_owned();
-    if source.len() > 16384
-        || source.bytes().any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b)))
-        || source.contains('/')
-    {
-        return Err(deny());
-    }
-    validate_source_envelope(source)?;
-    let mut p = Parser::new(source)?;
-    fn expect<'a>(p: &mut Parser<'a>, tokens: &[Token<'a>]) -> Result<(), String> {
-        for &token in tokens {
-            if !p.take(token)? {
-                return Err("E_DURABLE_COUNTER_ACTOR_ABI".into());
-            }
-        }
-        Ok(())
-    }
-    use Token::{End, Number, Punct, Word};
-    expect(&mut p, &[Word("define"), Word("durable"), Word("actor"), Word("Counter"), Word("as"), Word("state")])?;
-    let field = match p.current {
-        Word(v @ ("count" | "balance")) => v,
-        _ => return Err(deny()),
-    };
-    expect(&mut p, &[Word(field), Punct(b':'), Word("int"), Punct(b'='), Number("0"), Punct(b';'), Word("receive"), Punct(b'('), Word("ActorMail"), Punct(b'<'), Word("int"), Punct(b'>')])?;
-    let mail = match p.current {
-        Word(v @ ("mail" | "event")) => v,
-        _ => return Err(deny()),
-    };
-    expect(&mut p, &[Word(mail), Punct(b')')])?;
-    // The existing lexer represents the arrow as two punctuators. Require
-    // contiguity before consuming them, not subtraction followed by >.
-    if p.current != Punct(b'-') || source.as_bytes().get(p.pos) != Some(&b'>') {
-        return Err(deny());
-    }
-    expect(&mut p, &[Punct(b'-'), Punct(b'>'), Word("void"), Punct(b'{'), Word("self"), Punct(b'.'), Word(field), Punct(b'='), Word("self"), Punct(b'.'), Word(field), Punct(b'+'), Word(mail), Punct(b'.'), Word("value"), Punct(b';'), Punct(b'}'), Word("end")])?;
-    if p.current != End {
-        return Err(deny());
-    }
-    fn fnv(bytes: &[u8]) -> u64 {
-        bytes.iter().fold(0xcbf29ce484222325, |h, b| {
-            (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
-        })
-    }
-    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
-    for name in ["Counter", field] {
-        sig.extend_from_slice(&(name.len() as u32).to_le_bytes());
-        sig.extend_from_slice(name.as_bytes());
-    }
-    sig.push(1);
-    let mut snapshot = b"ATTOST01\x01".to_vec();
-    snapshot.extend_from_slice(&fnv(&sig).to_le_bytes());
-    snapshot.extend_from_slice(&1u16.to_le_bytes());
-    snapshot.push(1);
-    snapshot.extend_from_slice(&0u64.to_le_bytes());
-    snapshot.extend_from_slice(&fnv(&snapshot).to_le_bytes());
-    let mut descriptor = vec![1, 7];
-    descriptor.extend_from_slice(b"Counter");
-    descriptor.push(field.len() as u8);
-    descriptor.extend_from_slice(field.as_bytes());
-    descriptor.extend_from_slice(&[1, 36]);
-    descriptor.extend_from_slice(&snapshot);
-    Ok(descriptor)
-}
-
-// Restricted schema-only profile, separate from executable actor lowering.
-// Exact ASCII token stream, no comments/directives, bounded signed literals.
-pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let deny = || "E_DURABLE_SCALAR_SCHEMA_V1".to_owned();
-    if source.len() > 16384 || source.bytes().any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b))) || source.contains('/') {
-        return Err(deny());
-    }
-    validate_source_envelope(source)?;
-    let mut p = Parser::new(source)?;
-    use Token::{End, Number, Punct, Word};
-    fn take<'a>(p: &mut Parser<'a>, token: Token<'a>) -> Result<(), String> {
-        if p.take(token)? { Ok(()) } else { Err("E_DURABLE_SCALAR_SCHEMA_V1".into()) }
-    }
-    fn name<'a>(p: &mut Parser<'a>) -> Result<&'a str, String> {
-        const RESERVED: &str = " define pub private durable persistent actor as state end int bool true false self receive init fnc mtd let val mut const return await suspends susp async critical using with import namespace module class struct contract enum new spawn stop if else match on default void ";
-        if let Word(n) = p.current
-            && !n.is_empty() && n.len() <= 128 && n.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-            && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            && !RESERVED.contains(&format!(" {n} ")) {
-            take(p, Word(n))?;
-            return Ok(n);
-        }
-        Err("E_DURABLE_SCALAR_SCHEMA_V1".into())
-    }
-    fn sized(sig: &mut Vec<u8>, n: &str) {
-        sig.extend_from_slice(&(n.len() as u32).to_le_bytes());
-        sig.extend_from_slice(n.as_bytes());
-    }
-    fn fnv(bytes: &[u8]) -> u64 {
-        bytes.iter().fold(0xcbf29ce484222325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))
-    }
-    for word in ["define", "durable", "actor"] { take(&mut p, Word(word))?; }
-    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
-    sized(&mut sig, name(&mut p)?);
-    take(&mut p, Word("as"))?;
-    let mut names = std::collections::BTreeSet::new();
-    let mut tags = Vec::new();
-    let mut payload = Vec::new();
-    while p.current == Word("state") {
-        if tags.len() >= 256 { return Err(deny()); }
-        take(&mut p, Word("state"))?;
-        let field = name(&mut p)?;
-        if !names.insert(field) { return Err(deny()); }
-        sized(&mut sig, field);
-        take(&mut p, Punct(b':'))?;
-        let tag = match p.current {
-            Word("int") => { take(&mut p, Word("int"))?; 1u8 }
-            Word("bool") => { take(&mut p, Word("bool"))?; 2u8 }
-            _ => return Err(deny()),
-        };
-        take(&mut p, Punct(b'='))?;
-        tags.push(tag); sig.push(tag); payload.push(tag);
-        if tag == 1 {
-            let neg = p.take(Punct(b'-'))?;
-            let lit = match p.current { Number(n) => n, _ => return Err(deny()) };
-            if lit.is_empty() || lit.len() > 19 || (lit.len() > 1 && lit.starts_with('0')) || !lit.bytes().all(|b| b.is_ascii_digit()) { return Err(deny()); }
-            take(&mut p, Number(lit))?;
-            let text = if neg { format!("-{lit}") } else { lit.to_owned() };
-            let value = text.parse::<i64>().map_err(|_| deny())?;
-            payload.extend_from_slice(&value.to_le_bytes());
-        } else {
-            let value = match p.current { Word("true") => 1, Word("false") => 0, _ => return Err(deny()) };
-            let token = p.current;
-            take(&mut p, token)?;
-            payload.push(value);
-        }
-        take(&mut p, Punct(b';'))?;
-    }
-    take(&mut p, Word("end"))?;
-    if p.current != End { return Err(deny()); }
-    let mut initial = b"ATTOST01\x01".to_vec();
-    initial.extend_from_slice(&fnv(&sig).to_le_bytes());
-    initial.extend_from_slice(&(tags.len() as u16).to_le_bytes());
-    initial.extend_from_slice(&payload);
-    let checksum = fnv(&initial);
-    initial.extend_from_slice(&checksum.to_le_bytes());
-    Ok((initial, tags))
 }
 
 #[cfg(test)]
@@ -3773,3 +3818,252 @@ end"#;
         }
     }
 }
+
+// Opt-in restricted durable Counter source admission. Use the existing
+// lexer, not the scalar program parser, and consume the complete source.
+// Reject comments/directives in this initial profile to avoid divergence.
+pub fn durable_counter_descriptor(source: &str) -> Result<Vec<u8>, String> {
+    let deny = || "E_DURABLE_COUNTER_ACTOR_ABI".to_owned();
+    if source.len() > 16384
+        || source
+            .bytes()
+            .any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b)))
+        || source.contains('/')
+    {
+        return Err(deny());
+    }
+    validate_source_envelope(source)?;
+    let mut p = Parser::new(source)?;
+    fn expect<'a>(p: &mut Parser<'a>, tokens: &[Token<'a>]) -> Result<(), String> {
+        for &token in tokens {
+            if !p.take(token)? {
+                return Err("E_DURABLE_COUNTER_ACTOR_ABI".into());
+            }
+        }
+        Ok(())
+    }
+    use Token::{End, Number, Punct, Word};
+    expect(
+        &mut p,
+        &[
+            Word("define"),
+            Word("durable"),
+            Word("actor"),
+            Word("Counter"),
+            Word("as"),
+            Word("state"),
+        ],
+    )?;
+    let field = match p.current {
+        Word(v @ ("count" | "balance")) => v,
+        _ => return Err(deny()),
+    };
+    expect(
+        &mut p,
+        &[
+            Word(field),
+            Punct(b':'),
+            Word("int"),
+            Punct(b'='),
+            Number("0"),
+            Punct(b';'),
+            Word("receive"),
+            Punct(b'('),
+            Word("ActorMail"),
+            Punct(b'<'),
+            Word("int"),
+            Punct(b'>'),
+        ],
+    )?;
+    let mail = match p.current {
+        Word(v @ ("mail" | "event")) => v,
+        _ => return Err(deny()),
+    };
+    expect(&mut p, &[Word(mail), Punct(b')')])?;
+    // The existing lexer represents the arrow as two punctuators. Require
+    // contiguity before consuming them, not subtraction followed by >.
+    if p.current != Punct(b'-') || source.as_bytes().get(p.pos) != Some(&b'>') {
+        return Err(deny());
+    }
+    expect(
+        &mut p,
+        &[
+            Punct(b'-'),
+            Punct(b'>'),
+            Word("void"),
+            Punct(b'{'),
+            Word("self"),
+            Punct(b'.'),
+            Word(field),
+            Punct(b'='),
+            Word("self"),
+            Punct(b'.'),
+            Word(field),
+            Punct(b'+'),
+            Word(mail),
+            Punct(b'.'),
+            Word("value"),
+            Punct(b';'),
+            Punct(b'}'),
+            Word("end"),
+        ],
+    )?;
+    if p.current != End {
+        return Err(deny());
+    }
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+        })
+    }
+    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
+    for name in ["Counter", field] {
+        sig.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        sig.extend_from_slice(name.as_bytes());
+    }
+    sig.push(1);
+    let mut snapshot = b"ATTOST01\x01".to_vec();
+    snapshot.extend_from_slice(&fnv(&sig).to_le_bytes());
+    snapshot.extend_from_slice(&1u16.to_le_bytes());
+    snapshot.push(1);
+    snapshot.extend_from_slice(&0u64.to_le_bytes());
+    snapshot.extend_from_slice(&fnv(&snapshot).to_le_bytes());
+    let mut descriptor = vec![1, 7];
+    descriptor.extend_from_slice(b"Counter");
+    descriptor.push(field.len() as u8);
+    descriptor.extend_from_slice(field.as_bytes());
+    descriptor.extend_from_slice(&[1, 36]);
+    descriptor.extend_from_slice(&snapshot);
+    Ok(descriptor)
+}
+
+// Restricted schema-only profile, separate from executable actor lowering.
+// Exact ASCII token stream, no comments/directives, bounded signed literals.
+pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let deny = || "E_DURABLE_SCALAR_SCHEMA_V1".to_owned();
+    if source.len() > 16384
+        || source
+            .bytes()
+            .any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b)))
+        || source.contains('/')
+    {
+        return Err(deny());
+    }
+    validate_source_envelope(source)?;
+    let mut p = Parser::new(source)?;
+    use Token::{End, Number, Punct, Word};
+    fn take<'a>(p: &mut Parser<'a>, token: Token<'a>) -> Result<(), String> {
+        if p.take(token)? {
+            Ok(())
+        } else {
+            Err("E_DURABLE_SCALAR_SCHEMA_V1".into())
+        }
+    }
+    fn name<'a>(p: &mut Parser<'a>) -> Result<&'a str, String> {
+        const RESERVED: &str = " define pub private durable persistent actor as state end int bool true false self receive init fnc mtd let val mut const return await suspends susp async critical using with import namespace module class struct contract enum new spawn stop if else match on default void ";
+        if let Word(n) = p.current
+            && !n.is_empty()
+            && n.len() <= 128
+            && n.bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !RESERVED.contains(&format!(" {n} "))
+        {
+            take(p, Word(n))?;
+            return Ok(n);
+        }
+        Err("E_DURABLE_SCALAR_SCHEMA_V1".into())
+    }
+    fn sized(sig: &mut Vec<u8>, n: &str) {
+        sig.extend_from_slice(&(n.len() as u32).to_le_bytes());
+        sig.extend_from_slice(n.as_bytes());
+    }
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+        })
+    }
+    for word in ["define", "durable", "actor"] {
+        take(&mut p, Word(word))?;
+    }
+    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
+    sized(&mut sig, name(&mut p)?);
+    take(&mut p, Word("as"))?;
+    let mut names = std::collections::BTreeSet::new();
+    let mut tags = Vec::new();
+    let mut payload = Vec::new();
+    while p.current == Word("state") {
+        if tags.len() >= 256 {
+            return Err(deny());
+        }
+        take(&mut p, Word("state"))?;
+        let field = name(&mut p)?;
+        if !names.insert(field) {
+            return Err(deny());
+        }
+        sized(&mut sig, field);
+        take(&mut p, Punct(b':'))?;
+        let tag = match p.current {
+            Word("int") => {
+                take(&mut p, Word("int"))?;
+                1u8
+            }
+            Word("bool") => {
+                take(&mut p, Word("bool"))?;
+                2u8
+            }
+            _ => return Err(deny()),
+        };
+        take(&mut p, Punct(b'='))?;
+        tags.push(tag);
+        sig.push(tag);
+        payload.push(tag);
+        if tag == 1 {
+            let neg = p.take(Punct(b'-'))?;
+            let lit = match p.current {
+                Number(n) => n,
+                _ => return Err(deny()),
+            };
+            if lit.is_empty()
+                || lit.len() > 19
+                || (lit.len() > 1 && lit.starts_with('0'))
+                || !lit.bytes().all(|b| b.is_ascii_digit())
+            {
+                return Err(deny());
+            }
+            take(&mut p, Number(lit))?;
+            let text = if neg {
+                format!("-{lit}")
+            } else {
+                lit.to_owned()
+            };
+            let value = text.parse::<i64>().map_err(|_| deny())?;
+            payload.extend_from_slice(&value.to_le_bytes());
+        } else {
+            let value = match p.current {
+                Word("true") => 1,
+                Word("false") => 0,
+                _ => return Err(deny()),
+            };
+            let token = p.current;
+            take(&mut p, token)?;
+            payload.push(value);
+        }
+        take(&mut p, Punct(b';'))?;
+    }
+    take(&mut p, Word("end"))?;
+    if p.current != End {
+        return Err(deny());
+    }
+    let mut initial = b"ATTOST01\x01".to_vec();
+    initial.extend_from_slice(&fnv(&sig).to_le_bytes());
+    initial.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+    initial.extend_from_slice(&payload);
+    let checksum = fnv(&initial);
+    initial.extend_from_slice(&checksum.to_le_bytes());
+    Ok((initial, tags))
+}
+
+#[path = "scalar_library.rs"]
+pub mod scalar_library;

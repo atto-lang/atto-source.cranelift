@@ -17,3 +17,16 @@ native guest ABI, retain the original Err on ? and execute full
 conformance on exact source/tree/toolchain. Never promote source-only
 or host-only tests as guest pass. Follow spec #124, conformance #68,
 parity tracker #20.
+
+## Checked unwrap host carrier, generation fencing
+
+This forward-port isolates the host-only subset of #143 from unrelated stale
+compiler changes. Errors have private tenant, parser generation and identity
+fields. A fresh parser incarnation cannot observe another incarnation's Error,
+even with the same tenant ID. A foreign Error is a distinct denial, not a
+catchable ordinary unwrap Error; it must not allocate an Error identity.
+Checked Option None and Result Err produce ordinary envelopes; Result retains
+the original Error without formatting or replacing its identity. The native
+guest ABI, cleanup, transfer, and scheduler integration are still unsupported.
+The real compiler must continue to reject checked unwrap source without CLIF,
+JIT output or object bytes. This is not a guest parity promotion.

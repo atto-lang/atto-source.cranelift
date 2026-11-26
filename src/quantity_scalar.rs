@@ -4,6 +4,8 @@ use super::{
     Expr, LoopStep, MAX_DEPTH, Parser, Program, Token, integer_digits, validate_ast_depth,
 };
 type Dim = [i8; 8];
+type GuardFacts = (Expr, Vec<(String, Binding)>, Vec<(String, Binding)>);
+type LoopPlan = (Expr, Vec<LoopStep>, Vec<(String, Binding)>);
 const SCALAR: Dim = [0; 8];
 use super::{QuantityScale as Scale, ScaleUInt};
 #[derive(Clone, Copy)]
@@ -193,15 +195,13 @@ struct Binding {
     slot: usize,
     width: Width,
 }
-type BindingFacts = Vec<(String, Binding)>;
-type GuardFacts = (Expr, BindingFacts, BindingFacts);
-type LoopPlan = (Expr, Vec<LoopStep>, BindingFacts);
 #[derive(Clone, Copy)]
 struct Refinement {
     dim: Dim,
     scale: Scale,
     lo: i64,
     hi: i64,
+    holes: u8,
     width: Width,
 }
 #[derive(Clone)]
@@ -256,7 +256,7 @@ fn remap(expr: &Expr, slots: &[usize]) -> Result<Expr, String> {
         _ => return Err("E_UNIT_CALL: unsupported helper expression".into()),
     })
 }
-type Cursor<'a> = (usize, Token<'a>);
+type Cursor<'a> = (usize, Token<'a>, bool);
 type MutableTypes = Vec<(String, Refinement)>;
 type Tail<'a> = std::rc::Rc<BranchTail<'a>>;
 struct BranchTail<'a> {
@@ -480,6 +480,7 @@ impl<'a> Quantities<'a> {
                     scale,
                     lo,
                     hi,
+                    holes: 0,
                     width,
                 },
             ));
@@ -710,9 +711,7 @@ impl<'a> Quantities<'a> {
                 Self::scalar(&index)?;
                 let (lo, hi) = (index.range.lo, index.range.hi);
                 if lo < 0 || hi >= names.len() as i64 {
-                    return Err(
-                        "E_VERIFY_UNPROVEN: index not proved within receiver bounds".into()
-                    );
+                    return Err("E_VERIFY_UNPROVEN: index not proved within receiver bounds".into());
                 }
                 if !matches!(index.expr, Expr::Local(_) | Expr::Literal(_)) {
                     return Err(
@@ -775,10 +774,15 @@ impl<'a> Quantities<'a> {
             self.p.next()?;
             return self.call(helper, depth + 1);
         }
-        if matches!(self.p.current, Token::Word(_))
-            && self.p.input.as_bytes().get(self.p.pos..).is_some_and(|tail| {
-                tail.iter().copied().find(|c| !c.is_ascii_whitespace()) == Some(b'(')
-            })
+        if let Token::Word(_) = self.p.current
+            && self
+                .p
+                .input
+                .as_bytes()
+                .get(self.p.pos..)
+                .is_some_and(|tail| {
+                    tail.iter().copied().find(|c| !c.is_ascii_whitespace()) == Some(b'(')
+                })
         {
             return Err("E_REFINEMENT_CALL: unknown or recursive helper".into());
         }
@@ -829,7 +833,10 @@ impl<'a> Quantities<'a> {
         if want.scale != value.scale {
             return Err("E_UNIT_SCALE: incompatible boundary".into());
         }
-        if !value.range.contained(want.lo, want.hi) {
+        if !value.range.contained(want.lo, want.hi)
+            || (want.holes & 1 != 0 && value.range.has(0))
+            || (want.holes & 2 != 0 && value.range.has(-1))
+        {
             return Err(format!("{code}: unproved refinement"));
         }
         Ok(())
@@ -920,6 +927,7 @@ impl<'a> Quantities<'a> {
                 scale: Scale::ONE,
                 lo: i64::MIN,
                 hi: i64::MAX,
+                holes: 0,
                 width: Width::I64,
             });
         }
@@ -929,6 +937,7 @@ impl<'a> Quantities<'a> {
                 scale: Scale::ONE,
                 lo: I32_LO,
                 hi: I32_HI,
+                holes: 0,
                 width: Width::I32,
             });
         }
@@ -1068,6 +1077,9 @@ impl<'a> Quantities<'a> {
                 return Err("E_VERIFY_UNSUPPORTED: mutable binding requires explicit type".into());
             }
             self.binding_name(&name)?;
+            if self.strict && self.p.current == Token::Punct(b';') {
+                return Err("E_MISSING_INITIALIZER: explicit initializer required".into());
+            }
             self.p.expect(Token::Punct(b'='))?;
             if self.strict && self.p.take(Token::Word("Array"))? {
                 if mutable || want.is_some() {
@@ -1183,25 +1195,77 @@ impl<'a> Quantities<'a> {
         }
         Ok(n)
     }
+    fn contract_annotations(&mut self) -> Result<Vec<(Cursor<'a>, Cursor<'a>, bool)>, String> {
+        let mut spans = Vec::new();
+        while self.p.take(Token::Punct(b'@'))? {
+            if spans.len() >= 16 {
+                return Err("E_REFINEMENT_CONTRACT: contract budget".into());
+            }
+            let req = self.p.take(Token::Word("requires"))?;
+            if !req && !self.p.take(Token::Word("ensures"))? {
+                return Err("E_REFINEMENT_CONTRACT: unsupported annotation".into());
+            }
+            self.p.expect(Token::Punct(b'('))?;
+            let start = self.cursor();
+            let mut count = 0;
+            while self.p.current != Token::Punct(b')') {
+                count += 1;
+                if count > 32
+                    || matches!(
+                        self.p.current,
+                        Token::End | Token::Punct(b'(' | b'{' | b'}' | b';' | b'@')
+                    )
+                {
+                    return Err(
+                        "E_REFINEMENT_CONTRACT: invalid bounded annotation predicate".into(),
+                    );
+                }
+                self.p.next()?;
+            }
+            let end = self.cursor();
+            self.p.next()?;
+            spans.push((start, end, req));
+        }
+        Ok(spans)
+    }
     fn contracts(
         &mut self,
         params: &mut [Refinement],
         result: Refinement,
         main: bool,
+        annotations: &[(Cursor<'a>, Cursor<'a>, bool)],
     ) -> Result<Vec<Contract>, String> {
         let mut out = Vec::new();
         let mut count = 0;
+        let mut spans = annotations.iter();
         loop {
-            let require = self.p.take(Token::Word("requires"))?;
-            if !require && !self.p.take(Token::Word("ensures"))? {
-                break;
-            }
+            let resume = self.cursor();
+            let span = spans.next();
+            let require = if let Some(&(start, _, req)) = span {
+                self.seek(start);
+                req
+            } else {
+                let req = self.p.take(Token::Word("requires"))?;
+                if !req && !self.p.take(Token::Word("ensures"))? {
+                    break;
+                }
+                req
+            };
             count += 1;
             if main || count > 16 {
                 return Err("E_REFINEMENT_CONTRACT: contract limit or exported entry".into());
             }
             let name = self.p.name()?;
-            let op = self.contract_op()?;
+            let op = if require
+                && self.p.current == Token::Punct(b'!')
+                && self.p.input.as_bytes().get(self.p.pos) == Some(&b'=')
+            {
+                self.p.next()?;
+                self.p.expect(Token::Punct(b'='))?;
+                1
+            } else {
+                self.contract_op()?
+            };
             if require {
                 let i = self
                     .bindings
@@ -1211,7 +1275,14 @@ impl<'a> Quantities<'a> {
                 let w = params[i];
                 let n = self.contract_bound(w)?;
                 let (mut lo, mut hi) = (w.lo, w.hi);
+                let mut holes = w.holes;
                 match op {
+                    1 => {
+                        if Range::bit(n) == 0 {
+                            return Err("E_REFINEMENT_CONTRACT: unsupported exclusion".into());
+                        }
+                        holes |= Range::bit(n);
+                    }
                     0 => {
                         lo = lo.max(n);
                         hi = hi.min(n);
@@ -1232,12 +1303,13 @@ impl<'a> Quantities<'a> {
                     5 => lo = lo.max(n),
                     _ => unreachable!(),
                 }
-                if lo > hi {
-                    return Err("E_REFINEMENT_EMPTY: contradictory requires".into());
-                }
-                params[i].lo = lo;
-                params[i].hi = hi;
-                self.bindings[i].1.range = Range { lo, hi, holes: 0 };
+                let range = Range { lo, hi, holes }
+                    .normalize()
+                    .ok_or("E_REFINEMENT_EMPTY: contradictory requires")?;
+                params[i].lo = range.lo;
+                params[i].hi = range.hi;
+                params[i].holes = range.holes;
+                self.bindings[i].1.range = range;
             } else {
                 if name != "result" {
                     return Err("E_REFINEMENT_CONTRACT: ensures must constrain result".into());
@@ -1268,6 +1340,12 @@ impl<'a> Quantities<'a> {
                         bound: Some(n),
                     });
                 }
+            }
+            if let Some(&(_, end, _)) = span {
+                if self.cursor() != end {
+                    return Err("E_REFINEMENT_CONTRACT: trailing annotation tokens".into());
+                }
+                self.seek(resume);
             }
         }
         Ok(out)
@@ -1492,11 +1570,12 @@ impl<'a> Quantities<'a> {
         Ok((e, yes, no))
     }
     fn cursor(&self) -> Cursor<'a> {
-        (self.p.pos, self.p.current)
+        (self.p.pos, self.p.current, self.p.newline_before_current)
     }
     fn seek(&mut self, c: Cursor<'a>) {
         self.p.pos = c.0;
         self.p.current = c.1;
+        self.p.newline_before_current = c.2;
     }
     fn closing(&mut self) -> Result<Cursor<'a>, String> {
         if self.p.current != Token::Punct(b'{') {
@@ -1685,6 +1764,9 @@ impl<'a> Quantities<'a> {
                     );
                 }
                 self.binding_name(&name)?;
+                if self.p.current == Token::Punct(b';') {
+                    return Err("E_MISSING_INITIALIZER: explicit initializer required".into());
+                }
                 self.p.expect(Token::Punct(b'='))?;
                 let value = self.expr(0, 0)?;
                 self.p.expect(Token::Punct(b';'))?;
@@ -2001,6 +2083,7 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         q.bindings.clear();
         q.locals.clear();
         q.arrays.clear();
+        let annotations = q.contract_annotations()?;
         let public = q.p.take(Token::Word("pub"))?;
         q.p.expect(Token::Word("fnc"))?;
         let name = q.p.name()?;
@@ -2056,8 +2139,22 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
             return Err("E_UNIT_ERASURE: main requires plain int".into());
         }
         let result = q.annotation(&ty)?;
-        let contracts = q.contracts(&mut params, result, main)?;
-        q.p.expect(Token::Punct(b'{'))?;
+        let contracted =
+            !annotations.is_empty() || matches!(q.p.current, Token::Word("requires" | "ensures"));
+        let contracts = q.contracts(&mut params, result, main, &annotations)?;
+        let end_delimited = if q.p.take(Token::Punct(b'{'))? {
+            false
+        } else if q.pair(b':')? {
+            true
+        } else if q.p.current == Token::Word("begin") {
+            if contracted && !q.p.newline_before_current {
+                return Err("E_SYNTAX: contracted begin must start on a later line".into());
+            }
+            q.p.next()?;
+            true
+        } else {
+            return Err("E_SYNTAX: expected verified callable body opener".into());
+        };
         if !strict && q.p.current == Token::Word("let") {
             return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());
         }
@@ -2067,7 +2164,11 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         }
         Quantities::boundary(result, &value, "E_REFINEMENT_RETURN")?;
         q.prove_contracts(&contracts, &value, &params)?;
-        q.p.expect(Token::Punct(b'}'))?;
+        q.p.expect(if end_delimited {
+            Token::Word("end")
+        } else {
+            Token::Punct(b'}')
+        })?;
         validate_ast_depth(&value.expr)?;
         if main {
             q.p.expect(Token::End)?;

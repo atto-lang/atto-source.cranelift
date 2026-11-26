@@ -14,7 +14,10 @@ const MAX_DEPTH: usize = 32;
 const MAX_EXPANSION: usize = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ScalarType { Int, Bool }
+pub(crate) enum ScalarType {
+    Int,
+    Bool,
+}
 
 #[derive(Clone)]
 pub(crate) enum Raw {
@@ -32,6 +35,37 @@ pub(crate) enum Raw {
     Sub(Box<Raw>, Box<Raw>),
     Mul(Box<Raw>, Box<Raw>),
     Call(String, Vec<Raw>),
+    Tuple(Vec<Raw>),
+    TuplePattern(Vec<Raw>, Vec<Option<String>>, Box<Raw>),
+}
+impl Raw {
+    fn requires_tuple_lowering(&self) -> bool {
+        match self {
+            Self::Tuple(_) | Self::TuplePattern(_, _, _) => true,
+            Self::Literal(_) | Self::Bool(_) | Self::Name(_) => false,
+            Self::Not(v) => v.requires_tuple_lowering(),
+            Self::Add(a, b)
+            | Self::Sub(a, b)
+            | Self::Mul(a, b)
+            | Self::Eq(a, b)
+            | Self::Ne(a, b)
+            | Self::And(a, b)
+            | Self::Or(a, b)
+            | Self::Xor(a, b) => a.requires_tuple_lowering() || b.requires_tuple_lowering(),
+            Self::If(c, y, n) => {
+                c.requires_tuple_lowering()
+                    || y.requires_tuple_lowering()
+                    || n.requires_tuple_lowering()
+            }
+            Self::Call(_, args) => args.iter().any(Self::requires_tuple_lowering),
+        }
+    }
+}
+pub(crate) fn requires_tuple_lowering(functions: &[Fn]) -> bool {
+    functions.iter().any(|f| {
+        f.result.requires_tuple_lowering()
+            || f.locals.iter().any(|(_, v)| v.requires_tuple_lowering())
+    })
 }
 pub(crate) struct Fn {
     pub(crate) public: bool,
@@ -41,6 +75,11 @@ pub(crate) struct Fn {
     pub(crate) return_type: ScalarType,
     pub(crate) locals: Vec<(String, Raw)>,
     pub(crate) result: Raw,
+}
+// Keep the alternate scalar frontend aligned with the primary lexer.
+// These are nominal sum types/constructors, never scalar callable aliases.
+pub(crate) fn reserved_sum_name(word: &str) -> bool {
+    matches!(word, "Option" | "Result" | "Some" | "None" | "Ok" | "Err")
 }
 fn lex(text: &str) -> Result<Vec<String>, String> {
     if text.len() > MAX_SOURCE {
@@ -94,12 +133,16 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || bytes[i..].starts_with(b"!=")
         {
             i += 2;
-        } else if b"(){}:,;+-*=!".contains(&bytes[i]) {
+        } else if b"(){}:,;+-*=!|".contains(&bytes[i]) {
             i += 1;
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
         }
-        tokens.push(text[start..i].to_owned());
+        let token = &text[start..i];
+        if reserved_sum_name(token) {
+            return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
+        }
+        tokens.push(token.to_owned());
     }
     tokens.push("<eof>".into());
     Ok(tokens)
@@ -150,8 +193,17 @@ impl Parser {
                     | "false"
                     | "bool"
                     | "boolean"
-                    | "and" | "or" | "xor" | "not" | "eq" | "neq"
-                    | "if" | "then" | "do" | "fi" | "else"
+                    | "and"
+                    | "or"
+                    | "xor"
+                    | "not"
+                    | "eq"
+                    | "neq"
+                    | "if"
+                    | "then"
+                    | "do"
+                    | "fi"
+                    | "else"
                     | "actor"
                     | "unsafe"
                     | "await"
@@ -229,9 +281,28 @@ impl Parser {
             return Err("E_PIPE_DEPTH".into());
         }
         let mut lhs = if self.eat("(") {
-            let inner = self.expr(0, depth + 1, None)?;
-            self.need(")")?;
-            inner
+            if self.eat(")") {
+                Raw::Tuple(Vec::new())
+            } else {
+                let inner = self.expr(0, depth + 1, None)?;
+                if self.eat(",") {
+                    let mut items = vec![inner];
+                    while self.peek() != ")" {
+                        if items.len() >= 8 {
+                            return Err("E_PIPE_TUPLE_LIMIT".into());
+                        }
+                        items.push(self.expr(0, depth + 1, None)?);
+                        if !self.eat(",") {
+                            break;
+                        }
+                    }
+                    self.need(")")?;
+                    Raw::Tuple(items)
+                } else {
+                    self.need(")")?;
+                    inner
+                }
+            }
         } else if self.eat("!") || self.eat("not") {
             Raw::Not(Box::new(self.expr(30, depth + 1, direction)?))
         } else if self.eat("-") {
@@ -298,17 +369,80 @@ impl Parser {
                     Box::new(lhs),
                     Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
                 ),
-                "eq" | "==" => Raw::Eq(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
-                "neq" | "!=" => Raw::Ne(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
-                "and" | "&&" => Raw::And(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
-                "or" | "||" => Raw::Or(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
-                "xor" => Raw::Xor(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
+                "eq" | "==" => Raw::Eq(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "neq" | "!=" => Raw::Ne(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "and" | "&&" => Raw::And(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "or" | "||" => Raw::Or(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "xor" => Raw::Xor(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
                 "|>" | "<|" => {
                     if pipe.as_deref().is_some_and(|existing| existing != op) {
                         return Err("E_PIPE_MIXED_DIRECTION".into());
                     }
                     pipe = Some(op.clone());
                     if op == "|>" {
+                        if self.eat("|") {
+                            let values = match lhs {
+                                Raw::Tuple(values) => values,
+                                _ => return Err("E_PIPE_PATTERN_SHAPE".into()),
+                            };
+                            self.need("(")?;
+                            let mut bindings = Vec::new();
+                            let mut names = std::collections::HashSet::new();
+                            if !self.eat(")") {
+                                loop {
+                                    let n = self.name()?;
+                                    if bindings.len() >= 8 {
+                                        return Err("E_PIPE_TUPLE_LIMIT".into());
+                                    }
+                                    if n == "self"
+                                        || n == "arguments"
+                                        || (n != "_" && !names.insert(n.clone()))
+                                    {
+                                        return Err("E_PIPE_DUP_PARAM".into());
+                                    }
+                                    if self.eat(":") {
+                                        if n == "_" {
+                                            return Err("E_PIPE_PATTERN".into());
+                                        }
+                                        self.need("int")?;
+                                    }
+                                    bindings.push(if n == "_" { None } else { Some(n) });
+                                    if !self.eat(",") {
+                                        if bindings.len() == 1 {
+                                            return Err("E_PIPE_PATTERN".into());
+                                        }
+                                        self.need(")")?;
+                                        break;
+                                    }
+                                    if self.eat(")") {
+                                        break;
+                                    }
+                                }
+                            }
+                            if values.len() != bindings.len() {
+                                return Err("E_PIPE_ARITY".into());
+                            }
+                            self.need("|")?;
+                            self.need("->")?;
+                            let body = self.expr(bp + 1, depth + 1, None)?;
+                            lhs = Raw::TuplePattern(values, bindings, Box::new(body));
+                            continue;
+                        }
                         let target = self.name()?;
                         let mut args = if self.peek() == "(" {
                             self.args(depth + 1)?
@@ -354,9 +488,15 @@ impl Parser {
         // final return. Fold guards into typed conditional expressions.
         let mut guards = Vec::new();
         while self.eat("if") {
-            if guards.len() >= 16 { return Err("E_LINK_GUARD_LIMIT".into()); }
+            if guards.len() >= 16 {
+                return Err("E_LINK_GUARD_LIMIT".into());
+            }
             let condition = self.expr(0, 0, None)?;
-            if self.eat(";") { self.need("do")?; } else { self.need("then")?; }
+            if self.eat(";") {
+                self.need("do")?;
+            } else {
+                self.need("then")?;
+            }
             self.need("return")?;
             let value = self.expr(0, 0, None)?;
             self.need(";")?;
@@ -373,9 +513,13 @@ impl Parser {
         Ok(result)
     }
     fn scalar_type(&mut self) -> Result<ScalarType, String> {
-        if self.eat("int") { Ok(ScalarType::Int) }
-        else if self.eat("bool") { Ok(ScalarType::Bool) }
-        else { Err("E_LINK_SCALAR_TYPE".into()) }
+        if self.eat("int") {
+            Ok(ScalarType::Int)
+        } else if self.eat("bool") {
+            Ok(ScalarType::Bool)
+        } else {
+            Err("E_LINK_SCALAR_TYPE".into())
+        }
     }
     fn parse(mut self) -> Result<Vec<Fn>, String> {
         let mut fns = Vec::new();
@@ -467,10 +611,22 @@ impl Lower<'_> {
         }
         self.budget -= 1;
         Ok(match raw {
+            Raw::Tuple(_) | Raw::TuplePattern(_, _, _) => {
+                return Err("E_PIPE_TUPLE_REQUIRES_LINKED_NATIVE".into());
+            }
             Raw::Literal(v) => Expr::Literal(*v),
-            Raw::Bool(_) | Raw::Not(_) | Raw::Eq(_, _) | Raw::Ne(_, _) |
-            Raw::And(_, _) | Raw::Or(_, _) | Raw::Xor(_, _) | Raw::If(_, _, _) =>
-                return Err("E_PIPE_TYPE: typed Boolean/guard requires linked native lowering".into()),
+            Raw::Bool(_)
+            | Raw::Not(_)
+            | Raw::Eq(_, _)
+            | Raw::Ne(_, _)
+            | Raw::And(_, _)
+            | Raw::Or(_, _)
+            | Raw::Xor(_, _)
+            | Raw::If(_, _, _) => {
+                return Err(
+                    "E_PIPE_TYPE: typed Boolean/guard requires linked native lowering".into(),
+                );
+            }
             Raw::Name(n) => {
                 let value = env.get(n).ok_or("E_PIPE_SYMBOL")?;
                 *used.entry(n.clone()).or_default() += 1;
@@ -579,6 +735,9 @@ pub(crate) fn parse_linked_native(
     validate_source_envelope(entry)?;
     let mut selected = Parser::new(entry)?.parse()?;
     for (requested, local, text) in units {
+        if reserved_sum_name(requested) || reserved_sum_name(local) {
+            return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
+        }
         validate_source_envelope(text)?;
         let candidates = Parser::new(text)?.parse()?;
         let mut exported = candidates

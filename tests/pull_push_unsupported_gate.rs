@@ -1,5 +1,7 @@
 //! Cranelift scalar JIT cannot lower actor subscriptions, channels or
 //! async. Unsupported source must fail parsing; no silent scalar fallback.
+// This parser-only test imports a subset of the production frontend.
+#[allow(dead_code)]
 #[path = "../src/frontend.rs"]
 mod frontend;
 

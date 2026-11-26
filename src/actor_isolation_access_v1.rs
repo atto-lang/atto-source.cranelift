@@ -183,6 +183,49 @@ mod tests {
     }
 
     #[test]
+    fn repeated_denials_preserve_grant_admission_and_sibling_across_retirement() {
+        let mut first = ActorIsolationAccessV1::new(1, 701, 1, 64).unwrap();
+        let mut sibling = ActorIsolationAccessV1::new(1, 702, 1, 64).unwrap();
+        let root = first.issue_allocation(0, 56).unwrap();
+        let peer = sibling.issue_allocation(0, 8).unwrap();
+        let next_id = first.next_id;
+        for _ in 0..8 {
+            assert!(matches!(
+                first.issue_allocation(56, 9),
+                Err("invalid actor allocation bounds")
+            ));
+            assert!(matches!(
+                first.issue_allocation(48, 8),
+                Err("overlapping live allocations")
+            ));
+            assert_eq!(first.next_id, next_id);
+            assert_eq!(first.live.len(), 1);
+            assert_eq!(first.checked_offset(&root, 1, 56), Ok(0));
+            assert_eq!(sibling.checked_offset(&peer, 1, 8), Ok(0));
+        }
+        let tail = first.issue_allocation(56, 8).unwrap();
+        assert_eq!(tail.id, next_id);
+        assert_eq!(first.checked_offset(&tail, 8, 8), Ok(56));
+        assert!(first.issue_allocation(0, 8).is_err());
+        first.release(&tail).unwrap();
+        let replacement = first.issue_allocation(56, 8).unwrap();
+        assert_ne!(replacement.id, tail.id);
+        assert!(first.checked_offset(&tail, 8, 8).is_err());
+        assert_eq!(first.checked_offset(&replacement, 8, 8), Ok(56));
+        first.retire();
+        assert!(first.checked_offset(&root, 1, 8).is_err());
+        assert!(first.issue_allocation(0, 8).is_err());
+        assert_eq!(sibling.checked_offset(&peer, 1, 8), Ok(0));
+
+        let mut restarted = ActorIsolationAccessV1::new(1, 701, 2, 64).unwrap();
+        assert!(restarted.checked_offset(&root, 1, 8).is_err());
+        let fresh = restarted.issue_allocation(0, 64).unwrap();
+        assert_eq!(restarted.checked_offset(&fresh, 1, 64), Ok(0));
+        assert!(sibling.checked_offset(&fresh, 1, 8).is_err());
+        assert_eq!(sibling.checked_offset(&peer, 1, 8), Ok(0));
+    }
+
+    #[test]
     fn compressed32_last_word_has_no_wraparound() {
         let mut gate = ActorIsolationAccessV1::new(1, 1, 1, MAX_COMPRESSED32_SPAN).unwrap();
         let g = gate.issue_allocation(MAX_COMPRESSED32_SPAN - 8, 8).unwrap();
