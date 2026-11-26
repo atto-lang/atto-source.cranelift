@@ -108,12 +108,16 @@ fn scalar(p: &mut Parser<'_>, min: u8, depth: usize) -> Result<Expr, String> {
 // It has no runtime representation or authority in this closed profile.
 fn signed_bound(p: &mut Parser<'_>) -> Result<i64, String> {
     let negative = p.take(Token::Punct(b'-'))?;
-    let Token::Number(n) = p.current else { return Err("E_CLOSED_REFINEMENT_BOUND".into()); };
+    let Token::Number(n) = p.current else {
+        return Err("E_CLOSED_REFINEMENT_BOUND".into());
+    };
     let digits = integer_digits(n)?;
     let bound = if negative && digits == "9223372036854775808" {
         i64::MIN
     } else {
-        let value = digits.parse::<i64>().map_err(|_| "E_CLOSED_REFINEMENT_BOUND")?;
+        let value = digits
+            .parse::<i64>()
+            .map_err(|_| "E_CLOSED_REFINEMENT_BOUND")?;
         if negative { -value } else { value }
     };
     p.next()?;
@@ -121,12 +125,32 @@ fn signed_bound(p: &mut Parser<'_>) -> Result<i64, String> {
 }
 
 fn refinement(p: &mut Parser<'_>) -> Result<Option<String>, String> {
-    if !p.take(Token::Word("declare"))? { return Ok(None); }
+    if !p.take(Token::Word("declare"))? {
+        return Ok(None);
+    }
     p.expect(Token::Word("type"))?;
     let name = identifier(p)?;
-    if matches!(name.as_str(), "i32" | "i64" | "bool" | "string" | "void" |
-        "Integer" | "Array" | "Map" | "Tuple" | "Record" | "Entry" | "Pair" |
-        "Future" | "Error" | "self" | "where" | "declare" | "type") {
+    if matches!(
+        name.as_str(),
+        "i32"
+            | "i64"
+            | "bool"
+            | "string"
+            | "void"
+            | "Integer"
+            | "Array"
+            | "Map"
+            | "Tuple"
+            | "Record"
+            | "Entry"
+            | "Pair"
+            | "Future"
+            | "Error"
+            | "self"
+            | "where"
+            | "declare"
+            | "type"
+    ) {
         return Err("E_CLOSED_REFINEMENT_NAME".into());
     }
     p.expect(Token::Punct(b'='))?;
@@ -149,7 +173,9 @@ fn refinement(p: &mut Parser<'_>) -> Result<Option<String>, String> {
     p.next()?;
     p.expect(Token::Punct(b'='))?;
     let hi = signed_bound(p)?;
-    if lo > hi { return Err("E_CLOSED_REFINEMENT_EMPTY".into()); }
+    if lo > hi {
+        return Err("E_CLOSED_REFINEMENT_EMPTY".into());
+    }
     p.expect(Token::Punct(b';'))?;
     Ok(Some(name))
 }
@@ -248,7 +274,8 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("Ok"))?;
     p.expect(Token::Punct(b'('))?;
     let payload = identifier(&mut p)?;
-    if payload == binding || p.parameters.contains(&payload) || declared.as_ref() == Some(&payload) {
+    if payload == binding || p.parameters.contains(&payload) || declared.as_ref() == Some(&payload)
+    {
         return Err("E_CLOSED_OPTION_PATTERN_SHADOW".into());
     }
     p.expect(Token::Punct(b')'))?;
