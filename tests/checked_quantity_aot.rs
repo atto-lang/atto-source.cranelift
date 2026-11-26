@@ -34,7 +34,7 @@ int main(int argc,char**argv) {
         ("return (84.<Meter> / 2.<Second>) * 1.<Second> / 1.<Meter>;",0),
         ("return (21.<Meter> * 2.<Meter>) / (1.<Meter> * 1.<Meter>);",0),
         ("return (42::<i64>).<Second> / 1.<Second>;",0),
-        ("val distance=84.<Meter>; val time=2.<Second>; val speed=distance/time; return speed*time/2.<Meter>*2;",0),
+        ("val distance=84.<Meter>; val time=2.<Second>; val speed=distance/time; return speed*time/2.<Meter>;",0),
         ("val time=1.<Second>/0.<Second>; return 42;",2),
         ("return 1.<Second>/0.<Second>;",2),
         ("return -9223372036854775808.<Second> / -1.<Second>;",1),
