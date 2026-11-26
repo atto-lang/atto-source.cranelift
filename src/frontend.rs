@@ -197,6 +197,34 @@ enum Token<'a> {
     End,
 }
 
+// Bounded exact rational scale with positive reduced i64 components.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+struct QuantityScale(i64,i64);
+impl QuantityScale {
+    const ONE:Self=Self(1,1);
+    fn gcd(mut a:i128,mut b:i128)->i128{while b!=0{let r=a%b;a=b;b=r;}a}
+    fn inv(self)->Self{Self(self.1,self.0)}
+    fn mul(self,rhs:Self)->Result<Self,String>{
+        let n=i128::from(self.0)*i128::from(rhs.0);
+        let d=i128::from(self.1)*i128::from(rhs.1);
+        let g=Self::gcd(n,d);
+        Ok(Self(i64::try_from(n/g).map_err(|_|"E_UNIT_LIMIT: numerator")?,i64::try_from(d/g).map_err(|_|"E_UNIT_LIMIT: denominator")?))
+    }
+    fn convert(self,v:i64,target:Self)->Result<i64,String>{
+        if v==0{return Ok(0);}
+        let n=i128::from(self.0)*i128::from(target.1);
+        let d=i128::from(self.1)*i128::from(target.0);
+        let g=Self::gcd(n,d);let (n,d)=(n/g,d/g);
+        let v=i128::from(v);
+        if v%d!=0{return Err("E_UNIT_INEXACT: integer conversion".into());}
+        let value=(v/d).checked_mul(n).ok_or("E_UNIT_RANGE: integer conversion")?;
+        i64::try_from(value).map_err(|_|"E_UNIT_RANGE: integer conversion".into())
+    }
+}
+type QuantityDim=([i8;8],QuantityScale);
+const SCALAR_QUANTITY:QuantityDim=([0;8],QuantityScale::ONE);
+type QuantityUnit=(String,usize,QuantityScale);
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -953,7 +981,7 @@ impl<'a> Parser<'a> {
     // before erasure into the existing checked scalar IR.
     fn quantity_program(mut self) -> Result<Program, String> {
         let mut dimensions: Vec<String> = Vec::new();
-        let mut units: Vec<(String, usize)> = Vec::new();
+        let mut units: Vec<QuantityUnit> = Vec::new();
         while self.current == Token::Word("define")
             && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit")) {
             self.next()?;
@@ -963,7 +991,7 @@ impl<'a> Parser<'a> {
             if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
                 return Err("E_UNIT_NAME: expected nominal name".into());
             }
-            if dimensions.contains(&name) || units.iter().any(|(n,_)| *n == name) {
+            if dimensions.contains(&name) || units.iter().any(|(n,_,_)| *n == name) {
                 return Err("E_UNIT_DUPLICATE: duplicate nominal name".into());
             }
             if dimension {
@@ -974,15 +1002,22 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Punct(b':'))?;
                 let dim_name = self.name()?;
                 let index = dimensions.iter().position(|n| *n == dim_name).ok_or("E_UNIT_NAME: unknown dimension")?;
+                let mut scale=QuantityScale::ONE;
                 if self.take(Token::Punct(b'='))? {
-                    let base = self.name()?;
-                    if !units.iter().any(|(n,d)| *n == base && *d == index) {
-                        return Err("E_UNIT_NAME: unknown or incompatible alias".into());
+                    let prefix=matches!(self.current,Token::Number(_));
+                    let mut factor=QuantityScale::ONE;
+                    if prefix{factor.0=self.quantity_factor()?;self.expect(Token::Punct(b'*'))?;}
+                    let base=self.name()?;
+                    let b=units.iter().find(|(n,d,_)| *n==base && *d==index).ok_or("E_UNIT_NAME: unknown or incompatible alias")?.2;
+                    if !prefix{
+                        if self.take(Token::Punct(b'*'))?{factor.0=self.quantity_factor()?;}
+                        else if self.take(Token::Punct(b'/'))?{factor.1=self.quantity_factor()?;}
                     }
-                } else if units.iter().any(|(_,d)| *d == index) {
+                    scale=b.mul(factor)?;
+                } else if units.iter().any(|(_,d,_)| *d == index) {
                     return Err("E_UNIT_DUPLICATE: duplicate base unit".into());
                 }
-                units.push((name,index));
+                units.push((name,index,scale));
             }
             self.expect(Token::Punct(b';'))?;
         }
@@ -997,11 +1032,11 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("int"))?;
         self.expect(Token::Punct(b'{'))?;
-        let mut bindings: Vec<(String,[i8;8])> = Vec::new();
+        let mut bindings: Vec<(String,QuantityDim)> = Vec::new();
         while self.take(Token::Word("val"))? {
             let name = self.name()?;
             if bindings.len() >= 64 || bindings.iter().any(|(n,_)| *n == name)
-                || units.iter().any(|(n,_)| *n == name) || dimensions.contains(&name)
+                || units.iter().any(|(n,_,_)| *n == name) || dimensions.contains(&name)
                 || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
                 || matches!(name.as_str(),"val"|"int"|"return"|"main"|"as"|"i64"|"define"|"unit"|"dimension") {
                 return Err("E_UNIT_BINDING: invalid or duplicate local".into());
@@ -1015,7 +1050,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::Word("return"))?;
         let (result,dim) = self.quantity_expr(0,0,&units,&bindings)?;
-        if dim != [0;8] { return Err("E_UNIT_ERASURE: scalar return".into()); }
+        if dim != SCALAR_QUANTITY { return Err("E_UNIT_ERASURE: scalar return".into()); }
         self.expect(Token::Punct(b';'))?;
         self.expect(Token::Punct(b'}'))?;
         self.expect(Token::End)?;
@@ -1023,25 +1058,31 @@ impl<'a> Parser<'a> {
         Ok(Program { parameters: vec![], locals: self.local_initializers, result, trace_steps: vec![] })
     }
 
-    fn quantity_target(&mut self, dim: &mut [i8;8], units: &[(String,usize)], cast: bool) -> Result<(), String> {
+    fn quantity_factor(&mut self)->Result<i64,String>{
+        let Token::Number(n)=self.current else{return Err("E_UNIT_SCALE: positive integer factor required".into());};
+        let n=integer_digits(n)?.parse::<i64>().map_err(|_|"E_UNIT_LIMIT: factor")?;
+        if n<=0{return Err("E_UNIT_SCALE: nonpositive factor".into());}
+        self.next()?;Ok(n)
+    }
+    fn quantity_target(&mut self, dim: &mut QuantityDim, units: &[QuantityUnit], cast: bool) -> Result<(), String> {
         let name = self.name()?;
         if cast && matches!(name.as_str(),"int"|"i64") {
-            if *dim != [0;8] { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
+            if *dim != SCALAR_QUANTITY { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
             return Ok(());
         }
-        let index = units.iter().find(|(n,_)| *n == name).map(|(_,i)| *i).ok_or("E_UNIT_NAME: unknown unit")?;
-        if *dim != [0;8] { return Err("E_UNIT_ATTACHMENT: repeated unit attachment".into()); }
-        dim[index] = 1;
+        let (_,index,scale)=units.iter().find(|(n,_,_)| *n==name).ok_or("E_UNIT_NAME: unknown unit")?;
+        if *dim != SCALAR_QUANTITY { return Err("E_UNIT_ATTACHMENT: repeated unit attachment".into()); }
+        dim.0[*index]=1;dim.1=*scale;
         Ok(())
     }
 
-    fn quantity_atom(&mut self, depth: usize, units: &[(String,usize)], locals: &[(String,[i8;8])]) -> Result<(Expr,[i8;8]), String> {
+    fn quantity_atom(&mut self, depth: usize, units: &[QuantityUnit], locals: &[(String,QuantityDim)]) -> Result<(Expr,[i8;8]), String> {
         if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
         if self.take(Token::Punct(b'<'))? {
             self.checked_i64_cast_target()?;
             self.expect(Token::Punct(b'>'))?;
             let (value,dim) = self.quantity_atom(depth+1,units,locals)?;
-            if dim != [0;8] { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
+            if dim != SCALAR_QUANTITY { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
             return Ok((value,dim));
         }
         let negative = self.take(Token::Punct(b'-'))?;
@@ -1054,12 +1095,12 @@ impl<'a> Parser<'a> {
             return self.quantity_atom(depth+1,units,locals);
         }
         let mut compact=false;
-        let (value,mut dim)=match self.current {
+        let (mut value,mut dim)=match self.current {
             Token::Number(n) => {
                 let v=if negative { i64::MIN } else { integer_digits(n)?.parse::<i64>().map_err(|_| "i64 literal out of range")? };
                 compact=self.input.as_bytes().get(self.pos)==Some(&b'<');
                 self.next()?;
-                (self.node(Expr::Literal(v))?,[0;8])
+                (self.node(Expr::Literal(v))?,SCALAR_QUANTITY)
             },
             Token::Punct(b'(') => {
                 self.next()?;
@@ -1077,7 +1118,21 @@ impl<'a> Parser<'a> {
         loop {
             let cast= self.current==Token::Punct(b':') && self.input.as_bytes().get(self.pos)==Some(&b':');
             if cast { self.next()?; self.expect(Token::Punct(b':'))?; }
-            else if !self.take(Token::Punct(b'.'))? && !(compact && self.current==Token::Punct(b'<')) { break; }
+            else if self.take(Token::Punct(b'.'))? {
+                if self.take(Token::Word("to_unit"))?{
+                    self.expect(Token::Punct(b'<'))?;
+                    let name=self.name()?;
+                    let (_,index,scale)=units.iter().find(|(n,_,_)| *n==name).ok_or("E_UNIT_NAME: unknown conversion target")?;
+                    let mut target=[0;8];target[*index]=1;
+                    if dim.0!=target{return Err("E_UNIT_DIMENSION: conversion target".into());}
+                    self.expect(Token::Punct(b'>'))?;
+                    self.expect(Token::Punct(b'('))?;
+                    self.expect(Token::Punct(b')'))?;
+                    let Expr::Literal(v)=value else{return Err("E_UNIT_CONVERSION_UNSUPPORTED: requires literal".into());};
+                    value=Expr::Literal(dim.1.convert(v,*scale)?);dim.1=*scale;
+                    compact=false;continue;
+                }
+            } else if !(compact && self.current==Token::Punct(b'<')) {break;}
             self.expect(Token::Punct(b'<'))?;
             self.quantity_target(&mut dim,units,cast)?;
             self.expect(Token::Punct(b'>'))?;
@@ -1086,7 +1141,7 @@ impl<'a> Parser<'a> {
         Ok((value,dim))
     }
 
-    fn quantity_expr(&mut self, min_bp:u8, depth:usize, units:&[(String,usize)], locals:&[(String,[i8;8])]) -> Result<(Expr,[i8;8]),String> {
+    fn quantity_expr(&mut self, min_bp:u8, depth:usize, units:&[QuantityUnit], locals:&[(String,QuantityDim)]) -> Result<(Expr,QuantityDim),String> {
         if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
         let (mut lhs,mut dim)=self.quantity_atom(depth+1,units,locals)?;
         loop {
@@ -1101,12 +1156,14 @@ impl<'a> Parser<'a> {
             self.next()?;
             let (rhs,rd)=self.quantity_expr(r,depth+1,units,locals)?;
             if op==b'+' || op==b'-' {
-                if dim!=rd { return Err("E_UNIT_DIMENSION: incompatible additive operands".into()); }
+                if dim.0!=rd.0{return Err("E_UNIT_DIMENSION: incompatible additive operands".into());}
+                if dim.1!=rd.1{return Err("E_UNIT_SCALE: incompatible additive scales".into());}
             } else {
+                dim.1=dim.1.mul(if op==b'*'{rd.1}else{rd.1.inv()})?;
                 for i in 0..8 {
-                    let e=i16::from(dim[i])+if op==b'*' {i16::from(rd[i])} else {-i16::from(rd[i])};
+                    let e=i16::from(dim.0[i])+if op==b'*' {i16::from(rd.0[i])} else {-i16::from(rd.0[i])};
                     if !(-32..=32).contains(&e) { return Err("E_UNIT_LIMIT: exponent".into()); }
-                    dim[i]=e as i8;
+                    dim.0[i]=e as i8;
                 }
             }
             lhs=self.node(match op {

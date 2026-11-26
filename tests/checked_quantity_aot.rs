@@ -22,9 +22,14 @@ int main(int argc,char**argv) {
   assert(rc==expected && out==(rc==0?42:1234567));
 }
 "#).unwrap();
-    let pre="define dimension Time; define dimension Length; define unit Second: Time; define unit Meter: Length; define unit Tick: Time = Second;";
+    let pre="define dimension Time; define dimension Length; define unit Second: Time; define unit Meter: Length; define unit Tick: Time = Second; define unit Millis: Time = Second / 1000; define unit Kilo: Time = 1000 * Second;";
     for (body,status) in [
         ("return 84.<Second> / 2.<Second>;",0),
+        ("return 42000<Millis>.to_unit<Second>()/1<Second>;",0),
+        ("return 42<Second>.to_unit<Millis>()/1000<Millis>;",0),
+        ("return (21<Millis>*2<Kilo>)/(1<Second>*1<Second>);",0),
+        ("return 42+0<Kilo>.to_unit<Millis>()/1<Millis>;",0),
+        ("return -42000<Millis>.to_unit<Second>() / -1<Second>;",0),
         ("return 84<Second> / 2<Tick>;",0),
         ("return 84::<Second> / 2::<Second>;",0),
         ("return (84 as Second) / (2 as Second);",0),
@@ -51,6 +56,12 @@ int main(int argc,char**argv) {
     }
     for (body,category) in [
         ("return 1.<Meter> + 1.<Second>;","E_UNIT_DIMENSION"),
+        ("return 1<Second>+1<Millis>;","E_UNIT_SCALE"),
+        ("return 1<Second>/1<Millis>;","E_UNIT_ERASURE"),
+        ("return 1<Millis>.to_unit<Second>()/1<Second>;","E_UNIT_INEXACT"),
+        ("return 9223372036854775807<Second>.to_unit<Millis>()/1<Millis>;","E_UNIT_RANGE"),
+        ("return (1<Second>/1<Millis>).<Second>;","E_UNIT_ATTACHMENT"),
+        ("return 1<Meter>.to_unit<Second>();","E_UNIT_DIMENSION"),
         ("return 1.<Meter>/1.<Second>;","E_UNIT_ERASURE"),
         ("return 1.<Meter>*1.<Meter>;","E_UNIT_ERASURE"),
         ("return 42.<Time>;","E_UNIT_NAME"),
