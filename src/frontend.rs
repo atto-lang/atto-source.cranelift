@@ -180,6 +180,14 @@ pub enum Expr {
     Sequence(Vec<Expr>, Box<Expr>),
     /// Eager arguments in the caller; callee locals and result in an isolated lexical slot frame.
     ScopedCall(Vec<Expr>, Vec<Expr>, Box<Expr>),
+    ScalarLoop(Vec<Expr>,Vec<usize>,Box<Expr>,Vec<LoopStep>,Vec<Expr>,Box<Expr>),
+}
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub enum LoopStep {
+    Bind(Expr,bool),
+    Set(usize,Expr),
+    Loop(Expr,Vec<LoopStep>),
 }
 
 #[derive(Debug)]
@@ -1685,6 +1693,22 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((item, level + 1));
                 }
             }
+            Expr::ScalarLoop(args,writable,condition,steps,locals,body)=>{
+                if args.len()>8||args.len()+locals.len()>64||writable.len()>args.len(){return Err("E_UNIT_LIMIT: loop frame".into());}
+                pending.push((condition,level+1));pending.push((body,level+1));
+                for x in args.iter().chain(locals){pending.push((x,level+1));}
+                let mut blocks=vec![(steps.as_slice(),level+1)];
+                while let Some((items,d))=blocks.pop(){
+                    if d>MAX_DEPTH||items.len()>64{return Err("E_UNIT_LIMIT: loop statements".into());}
+                    for step in items{
+                        counted_nodes+=1;if counted_nodes>MAX_NODES{return Err("AST node budget exceeded".into());}
+                        match step{
+                            LoopStep::Bind(x,_)|LoopStep::Set(_,x)=>pending.push((x,d+1)),
+                            LoopStep::Loop(c,ss)=>{pending.push((c,d+1));blocks.push((ss,d+1));}
+                        }
+                    }
+                }
+            }
             Expr::ScopedCall(args, locals, body) => {
                 if args.len()>8 || args.len()+locals.len()>64 {
                     return Err("E_UNIT_LIMIT: scoped helper frame".into());
@@ -1753,7 +1777,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
             }
             Ok(last)
         }
-        Expr::ScopedCall(_,_,_) | Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
+        Expr::ScalarLoop(..) | Expr::ScopedCall(_,_,_) | Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
@@ -2359,7 +2383,7 @@ end"#;
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
-            Expr::Local(_) | Expr::ScopedCall(_,_,_) => Err("test evaluator does not execute runtime local sequences"),
+            Expr::Local(_) | Expr::ScalarLoop(..) | Expr::ScopedCall(_,_,_) => Err("test evaluator does not execute runtime local sequences"),
             Expr::Choose(c,y,n) => if eval(c,args)?!=0{eval(y,args)}else{eval(n,args)},
             Expr::Compare(op,a,b) => {let a=eval(a,args)?;let b=eval(b,args)?;Ok(match op{0=>a==b,1=>a!=b,2=>a<b,3=>a<=b,4=>a>b,5=>a>=b,_=>return Err("invalid comparison")} as i64)},
             Expr::InlineTask(body) => eval(body, args),
