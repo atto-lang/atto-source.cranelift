@@ -95,6 +95,8 @@ fn oresllm_checked_overflow_must_fail_without_stdout() {
         "-(-9223372036854775808)",
         "(9223372036854775807 + 1) * 0",
         "0 - (9223372036854775807 + 1)",
+        "7 / 0",
+        "-9223372036854775808 / -1",
     ] {
         run_case(expression, None);
     }
@@ -102,7 +104,7 @@ fn oresllm_checked_overflow_must_fail_without_stdout() {
 
 #[test]
 fn oresllm_invalid_scalar_source_must_not_execute() {
-    for expression in ["unknown_value", "7 / 2", "5 ^ 3", "5 ^^ 3", "1__0"] {
+    for expression in ["unknown_value", "7.0 / 2.0", "5 ^ 3", "5 ^^ 3", "1__0"] {
         run_case(expression, None);
     }
 }
@@ -112,6 +114,8 @@ fn supplemental_scalar_arithmetic_executes_through_real_jit() {
     // Extra native execution checks; intentionally not counted as shared-manifest vectors.
     for (expression, expected) in [
         ("-7 * 0", "0"),
+        ("7 / 2", "3"),
+        ("-7 / 2", "-3"),
         ("(2 + 3) * (10 - 2)", "40"),
         ("9223372036854775807 - 9223372036854775807", "0"),
     ] {
