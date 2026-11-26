@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
                 if b.get(self.pos + 1) != Some(&b'=')
                     && !(b.get(self.pos + 1..self.pos + 3) == Some(&b"eq"[..])
                         && b.get(self.pos + 3).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_')))
-                    && !b.get(after).is_some_and(|c| c.is_ascii_whitespace())
+                    && !b.get(after).is_some_and(|c| matches!(*c, b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c'))
                 {
                     return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
                 }
@@ -1285,6 +1285,20 @@ mod tests {
     }
 
     #[test]
+    fn bang_separator_uses_all_six_ascii_whitespace_bytes() {
+        for gap in [" ", "\t", "\r", "\n", "\x0b", "\x0c"] {
+            let src = format!("fnc main():int{{return move!{gap}value;}}");
+            let error = parse(&src).unwrap_err();
+            assert!(error.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"), "{gap:?}: {error}");
+        }
+        for gap in ["", "\u{a0}", "/* gap */"] {
+            let src = format!("fnc main():int{{return move!{gap}value;}}");
+            let error = parse(&src).unwrap_err();
+            assert!(error.contains("E_BANG_KEYWORD_WHITESPACE"), "{gap:?}: {error}");
+        }
+    }
+
+    #[test]
     fn pin_and_drop_bang_are_owned_operations_not_scalar_intrinsics() {
         for operation in ["pin!", "drop!", "copy!!"] {
             for expression in [
@@ -1293,10 +1307,12 @@ mod tests {
             ] {
                 let source = format!("fnc main(value:int):int{{return {expression};}}");
                 let error = parse(&source).expect_err("unsupported owner instruction entered scalar IR");
-                assert!(
-                    error.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
-                    "wrong error for {source}: {error}"
-                );
+                let expected = if expression.starts_with(&format!("{operation} ")) {
+                    "OWNERSHIP_BANG_BACKEND_UNSUPPORTED"
+                } else {
+                    "E_BANG_KEYWORD_WHITESPACE"
+                };
+                assert!(error.contains(expected), "wrong error for {source}: {error}");
             }
         }
         // The bare words are not keywords. Only the bang operators require
