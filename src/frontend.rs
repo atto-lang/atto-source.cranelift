@@ -3586,3 +3586,6 @@ end"#;
         }
     }
 }
+
+#[path = "scalar_library.rs"]
+pub mod scalar_library;
