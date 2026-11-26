@@ -204,7 +204,7 @@ fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
     let mode = argv.next().ok_or(
-        "usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+        "usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities",
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
@@ -222,9 +222,9 @@ fn run() -> Result<(), String> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict"
+        "run" | "run-traced" | "ir" | "isolate" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
     ) {
-        return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
+        return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
@@ -232,7 +232,11 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if matches!(mode.as_str(), "ir" | "check" | "emit-object" | "emit-object-strict") && !supplied.is_empty() {
+    if matches!(
+        mode.as_str(),
+        "ir" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+    ) && !supplied.is_empty()
+    {
         return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
@@ -263,12 +267,22 @@ fn run() -> Result<(), String> {
     if mode == "emit-object-strict" {
         let parsed = frontend::parse_verified_strict_i64(source)?;
         let object = backend::emit_object(&parsed)?;
-        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
     }
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
     frontend::validate_source_envelope(source)?;
+    if mode == "emit-durable-counter-object" || mode == "emit-durable-scalar-object" {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("atto") {
+            return Err("E_DURABLE_COUNTER_ACTOR_ABI: expected .atto".into());
+        }
+        let object = if mode == "emit-durable-scalar-object" { backend::emit_durable_scalar_object(source)? } else { backend::emit_durable_counter_object(source)? };
+        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+    }
     let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated

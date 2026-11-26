@@ -118,11 +118,23 @@ fn portable_shared_scalar_matrix_executes_in_real_cranelift_jit() {
     }
 }
 
+// The frozen v1 inventory predates checked division. Keep its original
+// case and manifest bytes, but record the intentional current-profile
+// divergence explicitly rather than counting v1 denial parity as achieved.
+#[test]
+fn historical_div_int_case_now_executes_checked_quotient() {
+    assert_manifest_case("div-int", "7 / 2", None);
+    let fixture = Fixture::new();
+    let result = run_source(&fixture, "div-int", "7 / 2");
+    assert!(result.status.success());
+    assert_eq!(result.stdout, b"3\n");
+    assert!(result.stderr.is_empty());
+}
+
 #[test]
 fn portable_shared_scalar_negatives_fail_closed_without_guest_stdout() {
     let fixture = Fixture::new();
     for (id, expr) in [
-        ("div-int", "7 / 2"),
         ("forbidden-caret", "7 ^ 3"),
         ("forbidden-double-caret", "7 ^^ 3"),
         ("forbidden-remainder", "7 % 3"),
