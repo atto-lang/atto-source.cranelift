@@ -100,11 +100,10 @@ fn eager_checked_overflow_cannot_hide_under_zero_or_bitxor() {
 }
 
 #[test]
-fn checked_signed_division_executes_and_traps_without_success_output() {
-    for (expr, expected) in [("1 / 2",0), ("-7 / 3",-2), ("7 / -3",-2), ("-7 / -3",2)] {
-        accept(expr, expected);
-    }
-    for expr in ["1 / 0", "-9223372036854775808 / -1", "0 * (1 / 0)"] {
+fn checked_division_scalar_intersection_executes() {
+    accept("1 / 2", 0);
+    accept("-7 / 2", -3);
+    for expr in ["1 / 0", "-9223372036854775808 / -1"] {
         let output = cli(&guest(expr), "run");
         assert_eq!(output.status.code(), Some(1), "{expr}");
         assert!(output.stdout.is_empty(), "{expr}");

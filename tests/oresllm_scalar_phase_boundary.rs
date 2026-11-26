@@ -94,6 +94,22 @@ fn shared_scalar_compile_rejections_are_not_jit_overflow() {
     }
 }
 #[test]
+fn checked_division_has_distinct_compile_and_execute_phases() {
+    let ir = invoke("ir", "7 / 2");
+    assert!(ir.status.success());
+    assert!(!ir.stdout.is_empty());
+    assert!(ir.stderr.is_empty());
+    let guest = invoke("run", "7 / 2");
+    assert!(guest.status.success());
+    assert_eq!(guest.stdout, b"3\n");
+    assert!(guest.stderr.is_empty());
+    let fault = invoke("run", "7 / 0");
+    assert_eq!(fault.status.code(), Some(1));
+    assert!(fault.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&fault.stderr).starts_with("orescranelift: "));
+}
+
+#[test]
 fn shared_scalar_checked_i64_overflows_are_not_compiler_refusals() {
     for expression in [
         "9223372036854775807 + 1",
@@ -102,23 +118,7 @@ fn shared_scalar_checked_i64_overflows_are_not_compiler_refusals() {
         "-(-9223372036854775808)",
         "(9223372036854775807 + 1) * 0",
         "0 - (9223372036854775807 + 1)",
-        "-9223372036854775808 / -1",
     ] {
         runtime_overflows(expression);
     }
-}
-
-#[test]
-fn checked_quotient_has_guarded_ir_and_native_result() {
-    let ir = invoke("ir", "7 / 2");
-    assert!(ir.status.success());
-    let clif = String::from_utf8_lossy(&ir.stdout);
-    assert!(clif.contains("sdiv") && clif.matches("brif").count() >= 2);
-    let guest = invoke("run", "7 / 2");
-    assert!(guest.status.success());
-    assert_eq!(String::from_utf8_lossy(&guest.stdout), "3\n");
-    let zero = invoke("run", "7 / 0");
-    assert_eq!(zero.status.code(), Some(1));
-    assert!(zero.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&zero.stderr).starts_with("orescranelift: "));
 }

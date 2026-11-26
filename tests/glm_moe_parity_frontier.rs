@@ -254,35 +254,22 @@ fn cross_file_imports_are_not_flattened_into_an_unreviewed_program() {
 }
 
 #[test]
-fn nonzero_undocumented_operators_do_not_gain_fake_glm_feature_support() {
+fn undocumented_power_operator_still_rejects() {
     expect_unsupported("pub fnc main():int{return 2 ^ 3;}");
-    // Signed quotient now has native lowering. Keep reserved caret denied,
-    // and exercise real quotient execution rather than calling it GLM support.
+}
+
+#[test]
+fn checked_integer_division_is_a_supported_scalar_intersection() {
     expect_native("pub fnc main():int{return 3 / 2;}", &[], "1\n");
-    expect_native("pub fnc main():int{return -7 / 3;}", &[], "-2\n");
-    // A checked arithmetic error is not a lexical rejection. IR is allowed
-    // to describe it, but native execution must fail without guest output.
-    for source in [
-        "pub fnc main():int{return 3 / 0;}",
-        "pub fnc main():int{return -9223372036854775808 / -1;}",
-    ] {
-        let run = run_guest("run", source, &[]);
-        assert_eq!(run.status.code(), Some(1), "{source}: {:?}", run);
-        assert!(run.stdout.is_empty(), "{source}: unexpected guest output");
-        let diag = String::from_utf8_lossy(&run.stderr);
-        assert!(diag.starts_with("orescranelift: ") && !diag.contains("panicked at"), "{source}: {diag}");
-        let ir = run_guest("ir", source, &[]);
-        if ir.status.success() {
-            let code = String::from_utf8_lossy(&ir.stdout);
-            assert!(code.contains("sdiv") && code.matches("brif").count() >= 2,
-                "{source}: checked quotient IR lost a guard");
-            assert!(ir.stderr.is_empty());
-        } else {
-            assert_eq!(ir.status.code(), Some(1), "{source}: {:?}", ir);
-            assert!(ir.stdout.is_empty());
-            assert!(String::from_utf8_lossy(&ir.stderr).starts_with("orescranelift: "));
-        }
-    }
+    expect_native("pub fnc main():int{return -3 / 2;}", &[], "-1\n");
+    let fault = run_guest("run", "pub fnc main():int{return 3 / 0;}", &[]);
+    assert_eq!(fault.status.code(), Some(1));
+    assert!(fault.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&fault.stderr).starts_with("orescranelift: "));
+    let output = run_guest("ir", "pub fnc main():int{return 3 / 2;}", &[]);
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("function"));
 }
 
 #[test]

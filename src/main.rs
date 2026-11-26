@@ -232,7 +232,11 @@ fn run() -> Result<(), String> {
     // memory. Reading at most five elements also avoids collecting an
     // unbounded attacker-supplied argument vector.
     let supplied: Vec<std::ffi::OsString> = argv.by_ref().take(5).collect();
-    if matches!(mode.as_str(), "ir" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object") && !supplied.is_empty() {
+    if matches!(
+        mode.as_str(),
+        "ir" | "check" | "emit-object" | "emit-object-strict" | "emit-durable-counter-object" | "emit-durable-scalar-object"
+    ) && !supplied.is_empty()
+    {
         return Err("ir/check mode does not accept runtime arguments".into());
     }
     if supplied.len() > 4 {
@@ -263,7 +267,10 @@ fn run() -> Result<(), String> {
     if mode == "emit-object-strict" {
         let parsed = frontend::parse_verified_strict_i64(source)?;
         let object = backend::emit_object(&parsed)?;
-        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
     }
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
