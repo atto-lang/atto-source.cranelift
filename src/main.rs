@@ -304,12 +304,13 @@ fn run() -> Result<(), String> {
     // it may never fall back to an inliner or a different semantic profile.
     // Keep explicit pipe/inline-arrow syntax on the existing pure pipeline lane.
     if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
-        && !source.contains("|>")
-        && !source.contains("<|")
-        && !source.contains(": int ->")
         && let Ok(functions) = functional_pipelines::parse_linked_native(source, &[])
-        && functions.len() > 1
+        && (functional_pipelines::requires_tuple_lowering(&functions) ||
+            (!source.contains("|>") && !source.contains("<|") &&
+             !source.contains(": int ->") && functions.len() > 1))
     {
+        // Tuple patterns need real SSA temporaries, never the legacy
+        // expression-substitution lane (which cannot preserve discards).
         return run_linked_native(&mode, &values, &functions);
     }
     let parsed = match frontend::parse(source) {
