@@ -221,3 +221,13 @@ fn named_scalar_reductions_reject_arity_types_and_shadowed_local() {
         "E_LINK_BOOLEAN_SHADOW",
     );
 }
+
+#[test]
+fn lexical_noncallable_gate_name_does_not_fall_through_to_declared_function() {
+    for name in ["And", "Or", "Xor"] {
+        rejects(
+            &format!("fnc {name}(bool a,bool b):bool{{return a;}} fnc bad(bool {name}):bool{{return {name}(true,false);}} pub fnc main():int{{return 42;}}"),
+            "E_LINK_BOOLEAN_SHADOW",
+        );
+    }
+}

@@ -143,11 +143,13 @@ fn inspect_expression(
             Ok(y)
         }
         Raw::Call(target, args) => {
+            // Non-callable lexical names must not fall through to an ordinary
+            // declaration or the intrinsic solely because the spelling matches.
+            if matches!(target.as_str(), "And" | "Or" | "Xor") && scope.contains_key(target) {
+                return Err("E_LINK_BOOLEAN_SHADOW".into());
+            }
             if !functions.contains_key(target) {
                 if let Some(expanded) = named_reduction(target, args)? {
-                    if scope.contains_key(target) {
-                        return Err("E_LINK_BOOLEAN_SHADOW".into());
-                    }
                     // Validate the expanded typed tree, including skipped operands,
                     // under the existing depth, node and call-graph budgets.
                     return inspect_expression(
@@ -388,11 +390,11 @@ fn emit_expr(
             Ok(value)
         }
         Raw::Call(name, arguments) => {
+            if matches!(name.as_str(), "And" | "Or" | "Xor") && scope.contains_key(name) {
+                return Err("E_LINK_BOOLEAN_SHADOW".into());
+            }
             if !refs.contains_key(name) {
                 if let Some(expanded) = named_reduction(name, arguments)? {
-                    if scope.contains_key(name) {
-                        return Err("E_LINK_BOOLEAN_SHADOW".into());
-                    }
                     return emit_expr(&expanded, builder, scope, refs, failure, depth);
                 }
             }
