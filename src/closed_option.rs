@@ -1,4 +1,4 @@
-//! Restricted nonescaping Option<int> + trap! + exhaustive scalar match.
+//! Restricted nonescaping Option<int> / Result<int,int> + trap! + exhaustive scalar match.
 //! No nominal Error allocation, general ADT ABI, or host evaluation.
 //! The unobservable tag/error envelope is erased only after full typed admission.
 use super::{Expr, Parser, Program, Token, MAX_DEPTH, integer_digits,
@@ -135,19 +135,37 @@ fn adjacent_pair(p: &mut Parser<'_>, first: u8, second: u8) -> Result<(), String
     p.expect(Token::Punct(second))
 }
 
-fn variant(p: &mut Parser<'_>) -> Result<Option<Expr>, String> {
-    if p.take(Token::Word("None"))? { return Ok(None); }
-    p.expect(Token::Word("Some"))?;
+enum Variant {
+    Success(Expr),
+    Failure(Option<Expr>),
+}
+impl Variant {
+    fn is_success(&self) -> bool { matches!(self, Self::Success(_)) }
+}
+fn variant(p: &mut Parser<'_>, result: bool) -> Result<Variant, String> {
+    if !result && p.take(Token::Word("None"))? { return Ok(Variant::Failure(None)); }
+    let success = if result {
+        if p.take(Token::Word("Ok"))? { true } else { p.expect(Token::Word("Err"))?; false }
+    } else { p.expect(Token::Word("Some"))?; true };
     p.expect(Token::Punct(b'('))?;
     let value = scalar(p, 0, 0)?;
     validate_ast_depth(&value)?;
     p.expect(Token::Punct(b')'))?;
-    Ok(Some(value))
+    Ok(if success { Variant::Success(value) } else { Variant::Failure(Some(value)) })
+}
+enum OptionValue {
+    Closed(Variant),
+    Conditional(Expr, Variant, Variant),
 }
 
-enum OptionValue {
-    Closed(Option<Expr>),
-    Conditional(Expr, Option<Expr>, Option<Expr>),
+// The initializer precedes trap and must execute even when an Err payload
+// is not observed. Seq preserves checked arithmetic faults and ordering.
+fn lower_variant(p: &mut Parser<'_>, variant: Variant, fallback: Expr) -> Result<Expr, String> {
+    match variant {
+        Variant::Success(value) => Ok(value),
+        Variant::Failure(None) => Ok(fallback),
+        Variant::Failure(Some(error)) => p.node(Expr::Seq(vec![error, fallback])),
+    }
 }
 
 pub(super) fn parse(text: &str) -> Result<Program, String> {
@@ -177,15 +195,20 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("int"))?;
     p.expect(Token::Punct(b'{'))?;
     p.expect(Token::Word("val"))?;
-    p.expect(Token::Word("Option"))?;
+    let is_result = p.take(Token::Word("Result"))?;
+    if !is_result { p.expect(Token::Word("Option"))?; }
     p.expect(Token::Punct(b'<'))?;
     p.expect(Token::Word("int"))?;
+    if is_result {
+        p.expect(Token::Punct(b','))?;
+        p.expect(Token::Word("int"))?;
+    }
     p.expect(Token::Punct(b'>'))?;
     let binding = identifier(&mut p)?;
     if p.parameters.contains(&binding) || declared.as_ref() == Some(&binding) { return Err("E_CLOSED_OPTION_SHADOW".into()); }
     p.expect(Token::Punct(b'='))?;
-    let option = if matches!(p.current, Token::Word("Some" | "None")) {
-        OptionValue::Closed(variant(&mut p)?)
+    let option = if matches!(p.current, Token::Word("Some" | "None" | "Ok" | "Err")) {
+        OptionValue::Closed(variant(&mut p, is_result)?)
     } else {
         let left = scalar(&mut p, 0, 0)?;
         p.expect(Token::Word("eq"))?;
@@ -193,10 +216,10 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
         let condition = p.node(Expr::Compare(0,Box::new(left),Box::new(right)))?;
         validate_ast_depth(&condition)?;
         p.expect(Token::Punct(b'?'))?;
-        let yes = variant(&mut p)?;
+        let yes = variant(&mut p, is_result)?;
         p.expect(Token::Punct(b':'))?;
-        let no = variant(&mut p)?;
-        if yes.is_some() == no.is_some() { return Err("E_CLOSED_OPTION_TAGS".into()); }
+        let no = variant(&mut p, is_result)?;
+        if yes.is_success() == no.is_success() { return Err("E_CLOSED_OPTION_TAGS".into()); }
         OptionValue::Conditional(condition, yes, no)
     };
     p.expect(Token::Punct(b';'))?;
@@ -244,13 +267,12 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     // nonescaping, unobservable sums. The existing checked native CFG handles
     // conditional laziness and arithmetic errors; trap! does not catch those.
     let result = match option {
-        OptionValue::Closed(Some(value)) => value,
-        OptionValue::Closed(None) => fallback,
-        OptionValue::Conditional(cond, Some(value), None) =>
-            p.node(Expr::Choose(Box::new(cond),Box::new(value),Box::new(fallback)))?,
-        OptionValue::Conditional(cond, None, Some(value)) =>
-            p.node(Expr::Choose(Box::new(cond),Box::new(fallback),Box::new(value)))?,
-        _ => return Err("E_CLOSED_OPTION_TAGS".into()),
+        OptionValue::Closed(value) => lower_variant(&mut p, value, fallback)?,
+        OptionValue::Conditional(cond, yes, no) => {
+            let yes = lower_variant(&mut p, yes, fallback.clone())?;
+            let no = lower_variant(&mut p, no, fallback)?;
+            p.node(Expr::Choose(Box::new(cond),Box::new(yes),Box::new(no)))?
+        }
     };
     validate_ast_depth(&result)?;
     Ok(Program {parameters:p.parameters,locals:vec![],result,trace_steps:vec![]})
