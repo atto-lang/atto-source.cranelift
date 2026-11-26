@@ -30,8 +30,12 @@ fn checked_refinement_native_objects_preserve_failure_status_and_output(){
  for expr in ["<Positive>42","42<Millis>::<Positive>","42<Meter> as Positive","42.<Positive>","42<Positive>","<Bounded>(42<Second>)","<Unknown>42","(42<Second>)::<Positive>","42::<Positive>.to_unit<Second>()"]{
   let out=compile(pre,expr);assert!(!out.status.success(),"{expr}");assert!(out.stdout.is_empty(),"{expr} emitted object");
  }
- for suffix in ["type Bad = int where self > 9223372036854775807;","type Bad = int where self < -9223372036854775808;","type Bad = int where self >= 3 and self <= 2;","type Bad = int where self > 0 and units in Missing;","type Bad = i32 where self > 0;","type Bad = int where self > 0 or self < -1;","type Positive = int where self > 1;","type Bad = int where self > = 0;","type Bad = int where self >/*split*/= 0;","type Bad = int where self > 0 units in Second;"] {
+ for suffix in ["type Bad = int where self > 9223372036854775807;","type Bad = int where self < -9223372036854775808;","type Bad = int where self >= 3 and self <= 2;","type Bad = int where self > 0 and units in Missing;","type Bad = i32 where self > 2147483647;","type Bad = int where self > 0 or self < -1;","type Positive = int where self > 1;","type Bad = int where self > = 0;","type Bad = int where self >/*split*/= 0;","type Bad = int where self > 0 units in Second;"] {
   let out=compile(&format!("{pre} {suffix}"),"42");assert!(!out.status.success(),"{suffix}");assert!(out.stdout.is_empty());
  }
+ // The old unsupported-carrier denial is now a real admitted carrier.
+ let out=compile("type Narrow = i32 where self > 0;","42 as Narrow");
+ assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+ assert!(!out.stdout.is_empty());
  fs::remove_dir_all(dir).unwrap();
 }

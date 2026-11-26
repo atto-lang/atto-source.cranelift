@@ -163,7 +163,10 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
+    Compare(u8, Box<Expr>, Box<Expr>),
+    Choose(Box<Expr>, Box<Expr>, Box<Expr>),
     RefinementCast(Box<Expr>,i64,i64),
+    I32Checked(Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -175,6 +178,8 @@ pub enum Expr {
     Seq(Vec<Expr>),
     InlineTask(Box<Expr>),
     Sequence(Vec<Expr>, Box<Expr>),
+    /// Eager arguments in the caller; callee locals and result in an isolated lexical slot frame.
+    ScopedCall(Vec<Expr>, Vec<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -399,6 +404,7 @@ impl<'a> Parser<'a> {
     fn next(&mut self) -> Result<(), String> {
         let b = self.input.as_bytes();
         let preceded_by_sync = self.current == Token::Word("sync");
+        let preceded_by_as = self.current == Token::Word("as");
         loop {
             while self.pos < b.len() {
                 let width = whitespace_width(b, self.pos);
@@ -623,10 +629,12 @@ impl<'a> Parser<'a> {
             ));
         } else if first == b'=' && b.get(self.pos) == Some(&b'>') {
             return Err("E_UNSUPPORTED_MAP_ENTRY: nominal Entry => requires typed key/value, ownership and guest lowering".into());
-        } else if first == b'!' {
+        } else if first == b'?' && preceded_by_as {
+            return Err("E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into());
+        } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if b"()+-*/{}[];:,><=.".contains(&first) {
+        } else if b"()+-*/{}[];:,><=.!&|".contains(&first) {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -1677,6 +1685,13 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((item, level + 1));
                 }
             }
+            Expr::ScopedCall(args, locals, body) => {
+                if args.len()>8 || args.len()+locals.len()>64 {
+                    return Err("E_UNIT_LIMIT: scoped helper frame".into());
+                }
+                pending.push((body.as_ref(),level+1));
+                for part in args.iter().chain(locals.iter()) { pending.push((part,level+1)); }
+            }
             Expr::Sequence(prefix, last) => {
                 if prefix.len() > MAX_NODES {
                     return Err("AST node budget exceeded".into());
@@ -1686,12 +1701,20 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((part, level + 1));
                 }
             }
+            Expr::I32Checked(inner) => pending.push((inner.as_ref(),level+1)),
             Expr::RefinementCast(inner,lo,hi) => {
                 if lo>hi{return Err("E_REFINEMENT_INTERVAL: invalid bounds".into());}
                 pending.push((inner.as_ref(),level+1));
             }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
+            }
+            Expr::Choose(c,y,n) => {
+                pending.push((c,level+1));pending.push((y,level+1));pending.push((n,level+1));
+            }
+            Expr::Compare(op,a,b) => {
+                if *op>5{return Err("invalid comparison opcode".into());}
+                pending.push((a,level+1));pending.push((b,level+1));
             }
             Expr::Add(left, right)
             | Expr::Sub(left, right)
@@ -1716,6 +1739,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
 // This evaluator deliberately refuses function calls, including Integer.*.
 fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
+        Expr::Choose(_,_,_) | Expr::Compare(_,_,_) => Err("E_NON_CONST_INITIALIZER: strict guard is not constexpr".into()),
         Expr::Literal(value) => Ok(*value),
         Expr::Seq(parts) => {
             // A constexpr sequence is permitted only when EVERY member is
@@ -1729,11 +1753,11 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
             }
             Ok(last)
         }
-        Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
+        Expr::ScopedCall(_,_,_) | Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
-        Expr::RefinementCast(_,_,_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        Expr::I32Checked(_) | Expr::RefinementCast(_,_,_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
             "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
@@ -2335,7 +2359,9 @@ end"#;
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
-            Expr::Local(_) => Err("test evaluator does not execute runtime local sequences"),
+            Expr::Local(_) | Expr::ScopedCall(_,_,_) => Err("test evaluator does not execute runtime local sequences"),
+            Expr::Choose(c,y,n) => if eval(c,args)?!=0{eval(y,args)}else{eval(n,args)},
+            Expr::Compare(op,a,b) => {let a=eval(a,args)?;let b=eval(b,args)?;Ok(match op{0=>a==b,1=>a!=b,2=>a<b,3=>a<=b,4=>a>b,5=>a>=b,_=>return Err("invalid comparison")} as i64)},
             Expr::InlineTask(body) => eval(body, args),
             Expr::Sequence(prefix, last) => {
                 for part in prefix {
@@ -2348,6 +2374,7 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::I32Checked(x)=>{let v=eval(x,args)?;i32::try_from(v).map(i64::from).map_err(|_|"i32 overflow")},
             Expr::RefinementCast(x,lo,hi)=>{let v=eval(x,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
             Expr::Div(a, b) => {
                 let left = eval(a, args)?;
