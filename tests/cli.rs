@@ -183,7 +183,7 @@ fn rate_limit_weighted_counter_scalar_native_execution() {
         false,
         "",
     );
-    fixture("fnc main():int{return 100/60;}", &[], false, "");
+    fixture("fnc main():int{return 100/60;}", &[], true, "1\n");
     fixture("fnc main():int{return 100>60;}", &[], false, "");
     fixture(
         "define module backpressure as pub fnc limit():int{return 42;} end",
@@ -304,7 +304,6 @@ fn forge_scalar_v1_intersection() {
     }
     for source in [
         "pub fnc main(): int { return undeclared_value; }",
-        "pub fnc main(): int { return 3 / 2; }",
         "define actor Worker as { pub fnc on_message(int n): int { return n; } } pub fnc main(): int { const worker = spawn Worker(); stop worker; return 43; }",
         "pub async fnc main(): int { return 42; }",
         "pub fnc main(): int { return match 2 over on 2 { 42; } end; }",
@@ -798,7 +797,6 @@ fn syntax_rejections_produce_no_guest_stdout() {
     for source in [
         "fnc main():int{return 4^1;}",
         "fnc main():int{return 4^^1;}",
-        "fnc main():int{return 4/2;}",
         "fnc main():int{return 4.0;}",
         "fnc main():float{return 4;}",
         "fnc main():int{return Integer.pow(3);}",
@@ -1397,7 +1395,6 @@ fn odb1_native_signed_shift8_scalar_gate() {
         "fnc main(x:int):int{return x>>>8;}",
         "fnc main(x:int):int{return x>8;}",
         "fnc main(x:int):int{return x<<8;}",
-        "fnc main(x:int):int{return x/256;}",
         "define module wal_frame as pub fnc main():int{return 256>>8;} end",
     ] {
         fixture(invalid, &["256"], false, "");
@@ -1663,12 +1660,7 @@ fn shared_five_backend_scalar_wave_native_jit() {
         );
         fixture(&source, &[], true, "42\n");
     }
-    for expression in [
-        "9223372036854775808",
-        "7 / 2",
-        "-(-9223372036854775808)",
-        "5 ^ 3",
-    ] {
+    for expression in ["9223372036854775808", "-(-9223372036854775808)", "5 ^ 3"] {
         fixture(
             &format!("pub fnc main(): int {{ return {expression}; }}"),
             &[],
@@ -2401,4 +2393,36 @@ fn actor_pubsub_words_inside_comments_do_not_change_scalar_programs() {
         true,
         "42\n",
     );
+}
+
+#[test]
+fn checked_division_jit_cli_values_and_traps() {
+    for (a, b, want) in [
+        ("84", "2", "42\n"),
+        ("-7", "2", "-3\n"),
+        ("7", "-2", "-3\n"),
+        ("-7", "-2", "3\n"),
+    ] {
+        fixture(
+            "fnc main(a:int,b:int):int{return a/b;}",
+            &[a, b],
+            true,
+            want,
+        );
+    }
+    fixture(
+        "fnc main(a:int,b:int):int{return a/b;}",
+        &["1", "0"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(a:int,b:int):int{return a/b;}",
+        &["-9223372036854775808", "-1"],
+        false,
+        "",
+    );
+    fixture("fnc main():int{return 2+84/2*3;}", &[], true, "128\n");
+    fixture("fnc main():int{return 84/2/2;}", &[], true, "21\n");
+    fixture("fnc main():int{return seq(1/0,42);}", &[], false, "");
 }

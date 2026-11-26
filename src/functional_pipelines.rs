@@ -13,19 +13,53 @@ const MAX_TOKENS: usize = 512;
 const MAX_DEPTH: usize = 32;
 const MAX_EXPANSION: usize = 2048;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScalarType { Int, Bool }
+
 #[derive(Clone)]
 pub(crate) enum Raw {
     Literal(i64),
+    Bool(bool),
+    Not(Box<Raw>),
+    Eq(Box<Raw>, Box<Raw>),
+    Ne(Box<Raw>, Box<Raw>),
+    And(Box<Raw>, Box<Raw>),
+    Or(Box<Raw>, Box<Raw>),
+    Xor(Box<Raw>, Box<Raw>),
+    If(Box<Raw>, Box<Raw>, Box<Raw>),
     Name(String),
     Add(Box<Raw>, Box<Raw>),
     Sub(Box<Raw>, Box<Raw>),
     Mul(Box<Raw>, Box<Raw>),
     Call(String, Vec<Raw>),
+    Tuple(Vec<Raw>),
+    TuplePattern(Vec<Raw>, Vec<Option<String>>, Box<Raw>),
+}
+impl Raw {
+    fn requires_tuple_lowering(&self) -> bool {
+        match self {
+            Self::Tuple(_) | Self::TuplePattern(_, _, _) => true,
+            Self::Literal(_) | Self::Bool(_) | Self::Name(_) => false,
+            Self::Not(v) => v.requires_tuple_lowering(),
+            Self::Add(a,b) | Self::Sub(a,b) | Self::Mul(a,b) | Self::Eq(a,b) |
+            Self::Ne(a,b) | Self::And(a,b) | Self::Or(a,b) | Self::Xor(a,b) =>
+                a.requires_tuple_lowering() || b.requires_tuple_lowering(),
+            Self::If(c,y,n) => c.requires_tuple_lowering() ||
+                y.requires_tuple_lowering() || n.requires_tuple_lowering(),
+            Self::Call(_, args) => args.iter().any(Self::requires_tuple_lowering),
+        }
+    }
+}
+pub(crate) fn requires_tuple_lowering(functions: &[Fn]) -> bool {
+    functions.iter().any(|f| f.result.requires_tuple_lowering() ||
+        f.locals.iter().any(|(_,v)| v.requires_tuple_lowering()))
 }
 pub(crate) struct Fn {
     pub(crate) public: bool,
     pub(crate) name: String,
     pub(crate) params: Vec<String>,
+    pub(crate) param_types: Vec<ScalarType>,
+    pub(crate) return_type: ScalarType,
     pub(crate) locals: Vec<(String, Raw)>,
     pub(crate) result: Raw,
 }
@@ -75,9 +109,13 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
         } else if bytes[i..].starts_with(b"|>")
             || bytes[i..].starts_with(b"<|")
             || bytes[i..].starts_with(b"->")
+            || bytes[i..].starts_with(b"&&")
+            || bytes[i..].starts_with(b"||")
+            || bytes[i..].starts_with(b"==")
+            || bytes[i..].starts_with(b"!=")
         {
             i += 2;
-        } else if b"(){}:,;+-*=".contains(&bytes[i]) {
+        } else if b"(){}:,;+-*=!|".contains(&bytes[i]) {
             i += 1;
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
@@ -132,6 +170,9 @@ impl Parser {
                     | "true"
                     | "false"
                     | "bool"
+                    | "boolean"
+                    | "and" | "or" | "xor" | "not" | "eq" | "neq"
+                    | "if" | "then" | "do" | "fi" | "else"
                     | "actor"
                     | "unsafe"
                     | "await"
@@ -209,9 +250,26 @@ impl Parser {
             return Err("E_PIPE_DEPTH".into());
         }
         let mut lhs = if self.eat("(") {
-            let inner = self.expr(0, depth + 1, None)?;
-            self.need(")")?;
-            inner
+            if self.eat(")") {
+                Raw::Tuple(Vec::new())
+            } else {
+                let inner = self.expr(0, depth + 1, None)?;
+                if self.eat(",") {
+                    let mut items = vec![inner];
+                    while self.peek() != ")" {
+                        if items.len() >= 8 { return Err("E_PIPE_TUPLE_LIMIT".into()); }
+                        items.push(self.expr(0, depth + 1, None)?);
+                        if !self.eat(",") { break; }
+                    }
+                    self.need(")")?;
+                    Raw::Tuple(items)
+                } else {
+                    self.need(")")?;
+                    inner
+                }
+            }
+        } else if self.eat("!") || self.eat("not") {
+            Raw::Not(Box::new(self.expr(30, depth + 1, direction)?))
         } else if self.eat("-") {
             // The signed i64 minimum is admitted as a negative literal.
             // Positive 2^63 must still fail, so it cannot be parsed first
@@ -234,8 +292,10 @@ impl Parser {
             let n = self.peek().parse::<i64>().map_err(|_| "E_PIPE_LITERAL")?;
             self.at += 1;
             Raw::Literal(n)
-        } else if self.peek() == "true" || self.peek() == "false" {
-            return Err("E_PIPE_TYPE: Boolean cannot inhabit int64".into());
+        } else if self.eat("true") {
+            Raw::Bool(true)
+        } else if self.eat("false") {
+            Raw::Bool(false)
         } else {
             let name = self.name()?;
             if self.peek() == "(" {
@@ -250,6 +310,10 @@ impl Parser {
             let bp = match op.as_str() {
                 "*" => 20,
                 "+" | "-" => 10,
+                "eq" | "neq" | "==" | "!=" => 9,
+                "and" | "&&" => 8,
+                "xor" => 7,
+                "or" | "||" => 6,
                 "|>" | "<|" => 5,
                 _ => 0,
             };
@@ -270,12 +334,53 @@ impl Parser {
                     Box::new(lhs),
                     Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
                 ),
+                "eq" | "==" => Raw::Eq(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
+                "neq" | "!=" => Raw::Ne(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
+                "and" | "&&" => Raw::And(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
+                "or" | "||" => Raw::Or(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
+                "xor" => Raw::Xor(Box::new(lhs), Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?)),
                 "|>" | "<|" => {
                     if pipe.as_deref().is_some_and(|existing| existing != op) {
                         return Err("E_PIPE_MIXED_DIRECTION".into());
                     }
                     pipe = Some(op.clone());
                     if op == "|>" {
+                        if self.eat("|") {
+                            let values = match lhs {
+                                Raw::Tuple(values) => values,
+                                _ => return Err("E_PIPE_PATTERN_SHAPE".into()),
+                            };
+                            self.need("(")?;
+                            let mut bindings = Vec::new();
+                            let mut names = std::collections::HashSet::new();
+                            if !self.eat(")") {
+                                loop {
+                                    let n = self.name()?;
+                                    if bindings.len() >= 8 { return Err("E_PIPE_TUPLE_LIMIT".into()); }
+                                    if n == "self" || n == "arguments" ||
+                                       (n != "_" && !names.insert(n.clone())) {
+                                        return Err("E_PIPE_DUP_PARAM".into());
+                                    }
+                                    if self.eat(":") {
+                                        if n == "_" { return Err("E_PIPE_PATTERN".into()); }
+                                        self.need("int")?;
+                                    }
+                                    bindings.push(if n == "_" { None } else { Some(n) });
+                                    if !self.eat(",") {
+                                        if bindings.len() == 1 { return Err("E_PIPE_PATTERN".into()); }
+                                        self.need(")")?;
+                                        break;
+                                    }
+                                    if self.eat(")") { break; }
+                                }
+                            }
+                            if values.len() != bindings.len() { return Err("E_PIPE_ARITY".into()); }
+                            self.need("|")?;
+                            self.need("->")?;
+                            let body = self.expr(bp + 1, depth + 1, None)?;
+                            lhs = Raw::TuplePattern(values, bindings, Box::new(body));
+                            continue;
+                        }
                         let target = self.name()?;
                         let mut args = if self.peek() == "(" {
                             self.args(depth + 1)?
@@ -317,11 +422,32 @@ impl Parser {
             }
             locals.push((n, value));
         }
+        // Restricted guarded-return sequence; every function still has a
+        // final return. Fold guards into typed conditional expressions.
+        let mut guards = Vec::new();
+        while self.eat("if") {
+            if guards.len() >= 16 { return Err("E_LINK_GUARD_LIMIT".into()); }
+            let condition = self.expr(0, 0, None)?;
+            if self.eat(";") { self.need("do")?; } else { self.need("then")?; }
+            self.need("return")?;
+            let value = self.expr(0, 0, None)?;
+            self.need(";")?;
+            self.need("fi")?;
+            guards.push((condition, value));
+        }
         self.need("return")?;
-        let result = self.expr(0, 0, None)?;
+        let mut result = self.expr(0, 0, None)?;
         self.need(";")?;
         self.need("}")?;
+        for (condition, value) in guards.into_iter().rev() {
+            result = Raw::If(Box::new(condition), Box::new(value), Box::new(result));
+        }
         Ok(result)
+    }
+    fn scalar_type(&mut self) -> Result<ScalarType, String> {
+        if self.eat("int") { Ok(ScalarType::Int) }
+        else if self.eat("bool") { Ok(ScalarType::Bool) }
+        else { Err("E_LINK_SCALAR_TYPE".into()) }
     }
     fn parse(mut self) -> Result<Vec<Fn>, String> {
         let mut fns = Vec::new();
@@ -331,23 +457,25 @@ impl Parser {
             let name = self.name()?;
             self.need("(")?;
             let mut params = Vec::new();
+            let mut param_types = Vec::new();
             if self.peek() != ")" {
                 loop {
                     // The normative scalar declaration allows both
                     // type-first `int x` and name-first `x: int` formals.
                     // Never infer an omitted type in this native i64 ABI.
-                    let n = if self.eat("int") {
-                        self.name()?
+                    let (n, ty) = if matches!(self.peek(), "int" | "bool") {
+                        let ty = self.scalar_type()?;
+                        (self.name()?, ty)
                     } else {
                         let n = self.name()?;
                         self.need(":")?;
-                        self.need("int")?;
-                        n
+                        (n, self.scalar_type()?)
                     };
                     if params.contains(&n) {
                         return Err("E_PIPE_DUP_PARAM".into());
                     }
                     params.push(n);
+                    param_types.push(ty);
                     if params.len() > 4 {
                         return Err("E_PIPE_ARITY_LIMIT".into());
                     }
@@ -361,7 +489,7 @@ impl Parser {
             if !colon {
                 self.need("->")?;
             }
-            self.need("int")?;
+            let return_type = self.scalar_type()?;
             let mut locals = Vec::new();
             let result = if self.eat("{") {
                 self.body(&mut locals)?
@@ -380,6 +508,8 @@ impl Parser {
                 public,
                 name,
                 params,
+                param_types,
+                return_type,
                 locals,
                 result,
             });
@@ -409,7 +539,11 @@ impl Lower<'_> {
         }
         self.budget -= 1;
         Ok(match raw {
+            Raw::Tuple(_) | Raw::TuplePattern(_, _, _) => return Err("E_PIPE_TUPLE_REQUIRES_LINKED_NATIVE".into()),
             Raw::Literal(v) => Expr::Literal(*v),
+            Raw::Bool(_) | Raw::Not(_) | Raw::Eq(_, _) | Raw::Ne(_, _) |
+            Raw::And(_, _) | Raw::Or(_, _) | Raw::Xor(_, _) | Raw::If(_, _, _) =>
+                return Err("E_PIPE_TYPE: typed Boolean/guard requires linked native lowering".into()),
             Raw::Name(n) => {
                 let value = env.get(n).ok_or("E_PIPE_SYMBOL")?;
                 *used.entry(n.clone()).or_default() += 1;
@@ -546,6 +680,9 @@ fn compile_functions(functions: Vec<Fn>) -> Result<Program, String> {
     }
     let mut names = HashMap::new();
     for f in functions {
+        if f.return_type != ScalarType::Int || f.param_types.iter().any(|t| *t != ScalarType::Int) {
+            return Err("E_PIPE_TYPE: typed callable requires linked native lowering".into());
+        }
         if names.insert(f.name.clone(), f).is_some() {
             return Err("E_PIPE_DUP_FUNCTION".into());
         }

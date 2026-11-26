@@ -164,3 +164,79 @@ fn pipeline_frontend_remains_native_and_mixed_profiles_fail_closed() {
         assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "));
     }
 }
+
+#[test]
+fn pure_string_key_pair_scalar_projection_runs_through_native_cli() {
+    for source in [
+        r#"fnc main():int{return Pair.of("count",42).second;}"#,
+        r#"fnc main():int{return Pair.of<int>("count",42).second;}"#,
+        r#"fnc main():int{return Pair.of<string,int>("count",42).second;}"#,
+        r#"fnc main():int{return (Pair.of("first-name",20).second+1)*2;}"#,
+        r#"fnc main():int{return Pair.of("",42).second;}"#,
+    ] {
+        admitted(source, &[], b"42\n");
+    }
+}
+
+#[test]
+fn pair_key_and_owned_product_boundaries_are_fail_closed() {
+    for (source, diagnostic) in [
+        (
+            "fnc main():int{return Pair.of(42,5).second;}",
+            "E_PAIR_KEY_TYPE",
+        ),
+        (
+            "fnc main():int{return Pair.of(true,5).second;}",
+            "E_PAIR_KEY_TYPE",
+        ),
+        (
+            "fnc main():int{return Pair.of<int,int>(42,5).second;}",
+            "E_PAIR_KEY_TYPE",
+        ),
+        (
+            r#"fnc main():int{return Pair.of("count",42);}"#,
+            "E_PAIR_ESCAPE_UNSUPPORTED",
+        ),
+        (
+            r#"fnc main():int{return Pair.of("count",42).first;}"#,
+            "E_PAIR_PROJECTION_UNSUPPORTED",
+        ),
+        (
+            r#"fnc main(Pair:int):int{return Pair.of("count",42).second;}"#,
+            "E_PAIR_SCOPE_UNSUPPORTED",
+        ),
+        (
+            r#"fnc main():int{return Pair.of("count",9223372036854775808).second;}"#,
+            "i64 literal out of range",
+        ),
+        (
+            r#"fnc main():int{return Pair.of("count",missing).second;}"#,
+            "unbound or unsupported identifier",
+        ),
+    ] {
+        rejected(source, diagnostic);
+    }
+}
+
+#[test]
+fn checked_pair_projection_preserves_parameter_arithmetic_and_traps() {
+    admitted(
+        r#"fnc main(a:int):int{return Pair.of<int>("key",a*2).second;}"#,
+        &["21"],
+        b"42\n",
+    );
+    admitted(
+        r#"fnc main(a:int):int{return Pair.of<int>("outer",Pair.of("inner",a+1).second).second;}"#,
+        &["41"],
+        b"42\n",
+    );
+    rejected(
+        r#"fnc main(a:int):int{val n=a;return Pair.of("key",n).second;}"#,
+        "E_PAIR_VALUE_UNSUPPORTED",
+    );
+    let source = r#"fnc main(a:int):int{return Pair.of("key",a+1).second;}"#;
+    let output = execute("run", source, &["9223372036854775807"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
+}

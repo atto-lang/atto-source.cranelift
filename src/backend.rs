@@ -181,8 +181,8 @@ fn validate_guest_expr(
     admitted_params: usize,
     nodes: &mut usize,
 ) -> Result<(), String> {
-    let mut work = vec![(root, 1_usize)];
-    while let Some((expr, depth)) = work.pop() {
+    let mut work = vec![(root, 1_usize, admitted_locals, admitted_params)];
+    while let Some((expr, depth, admitted_locals, admitted_params)) = work.pop() {
         *nodes += 1;
         if *nodes > 4096 {
             return Err("AST node budget exceeded before native codegen".into());
@@ -199,7 +199,7 @@ fn validate_guest_expr(
                     return Err("E_SEQ_LIMIT: forged scalar sequence before native codegen".into());
                 }
                 for item in items.iter().rev() {
-                    work.push((item, depth + 1));
+                    work.push((item, depth + 1, admitted_locals, admitted_params));
                 }
             }
             Expr::Param(_) => {
@@ -208,31 +208,255 @@ fn validate_guest_expr(
             Expr::Local(_) => {
                 return Err("invalid or forward local reference before native codegen".into());
             }
+            Expr::ScalarLoop(args, writable, condition, steps, tail, body) => {
+                if args.len() > 8 || args.len() + tail.len() > 64 {
+                    return Err("E_UNIT_LIMIT: invalid loop frame".into());
+                }
+                let mut allowed = std::collections::BTreeSet::new();
+                for i in writable {
+                    if *i >= args.len() || !allowed.insert(*i) {
+                        return Err("invalid loop writable slot".into());
+                    }
+                }
+                for x in args {
+                    work.push((x, depth + 1, admitted_locals, admitted_params));
+                }
+                work.push((condition, depth + 1, args.len(), 0));
+                work.push((body, depth + 1, args.len() + tail.len(), 0));
+                for (i, x) in tail.iter().enumerate() {
+                    work.push((x, depth + 1, args.len() + i, 0));
+                }
+                let mut blocks = vec![(steps.as_slice(), args.len(), allowed, depth + 1)];
+                while let Some((items, mut count, mut mutable, d)) = blocks.pop() {
+                    if d > 128 || items.len() > 64 {
+                        return Err("E_UNIT_LIMIT: loop statements".into());
+                    }
+                    for step in items {
+                        *nodes += 1;
+                        if *nodes > 4096 {
+                            return Err("AST node budget exceeded".into());
+                        }
+                        use crate::frontend::LoopStep;
+                        match step {
+                            LoopStep::Bind(x, m) => {
+                                if count >= 64 {
+                                    return Err("loop local limit".into());
+                                }
+                                work.push((x, d + 1, count, 0));
+                                if *m {
+                                    mutable.insert(count);
+                                }
+                                count += 1;
+                            }
+                            LoopStep::Set(i, x) => {
+                                if *i >= count || !mutable.contains(i) {
+                                    return Err("invalid loop assignment".into());
+                                }
+                                work.push((x, d + 1, count, 0));
+                            }
+                            LoopStep::Exit(c, _) => work.push((c, d + 1, count, 0)),
+                            LoopStep::Loop(c, ss) => {
+                                work.push((c, d + 1, count, 0));
+                                blocks.push((ss, count, mutable.clone(), d + 1));
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::ScopedCall(args, callee_locals, body) => {
+                if args.len() > 8 || args.len() + callee_locals.len() > 64 {
+                    return Err("E_UNIT_LIMIT: invalid scoped helper frame".into());
+                }
+                // Arguments may see the caller; the isolated callee may see only
+                // its own parameters and already initialized lexical slots.
+                work.push((body, depth + 1, args.len() + callee_locals.len(), 0));
+                for (index, init) in callee_locals.iter().enumerate().rev() {
+                    work.push((init, depth + 1, args.len() + index, 0));
+                }
+                for arg in args.iter().rev() {
+                    work.push((arg, depth + 1, admitted_locals, admitted_params));
+                }
+            }
             Expr::Sequence(prefix, last) => {
                 if prefix.len() > 4096 {
                     return Err("AST node budget exceeded before native codegen".into());
                 }
-                work.push((last, depth + 1));
+                work.push((last, depth + 1, admitted_locals, admitted_params));
                 for part in prefix.iter().rev() {
-                    work.push((part, depth + 1));
+                    work.push((part, depth + 1, admitted_locals, admitted_params));
                 }
             }
-            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
+            Expr::I32Checked(x) => work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::RefinementCast(x, lo, hi) => {
+                if lo > hi {
+                    return Err("E_REFINEMENT_INTERVAL: forged interval".into());
+                }
+                work.push((x, depth + 1, admitted_locals, admitted_params));
+            }
+            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => {
+                work.push((x, depth + 1, admitted_locals, admitted_params))
+            }
+            Expr::Choose(c, y, n) => {
+                work.push((c, depth + 1, admitted_locals, admitted_params));
+                work.push((y, depth + 1, admitted_locals, admitted_params));
+                work.push((n, depth + 1, admitted_locals, admitted_params));
+            }
+            Expr::Compare(op, a, b) => {
+                if *op > 5 {
+                    return Err("invalid comparison opcode before native codegen".into());
+                }
+                work.push((a, depth + 1, admitted_locals, admitted_params));
+                work.push((b, depth + 1, admitted_locals, admitted_params));
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
+            | Expr::Div(a, b)
             | Expr::BitXor(a, b)
             | Expr::BitAnd(a, b)
             | Expr::BitOr(a, b)
             | Expr::NamedRem(a, b)
             | Expr::NamedMod(a, b)
             | Expr::NamedPow(a, b) => {
-                work.push((b, depth + 1));
-                work.push((a, depth + 1));
+                work.push((b, depth + 1, admitted_locals, admitted_params));
+                work.push((a, depth + 1, admitted_locals, admitted_params));
             }
         }
     }
     Ok(())
+}
+
+fn emit_scalar_loop(
+    condition: &Expr,
+    steps: &[crate::frontend::LoopStep],
+    b: &mut FunctionBuilder<'_>,
+    frame: &mut Vec<Value>,
+    error: Block,
+    divisor_error: Block,
+    negative_exponent_error: Block,
+    refinement_error: Block,
+    i32_error: Block,
+) {
+    use crate::frontend::LoopStep;
+    let count = frame.len();
+    let header = b.create_block();
+    let body = b.create_block();
+    let exit = b.create_block();
+    for _ in 0..count {
+        b.append_block_param(header, types::I64);
+        b.append_block_param(exit, types::I64);
+    }
+    let entry = frame
+        .iter()
+        .copied()
+        .map(BlockArg::Value)
+        .collect::<Vec<_>>();
+    b.ins().jump(header, &entry);
+    b.switch_to_block(header);
+    let header_values = b.block_params(header).to_vec();
+    let test = emit(
+        condition,
+        b,
+        &[],
+        &header_values,
+        error,
+        divisor_error,
+        negative_exponent_error,
+        refinement_error,
+        i32_error,
+    );
+    let truth = b.ins().icmp_imm(IntCC::NotEqual, test, 0);
+    let false_args = header_values
+        .iter()
+        .copied()
+        .map(BlockArg::Value)
+        .collect::<Vec<_>>();
+    b.ins().brif(truth, body, &[], exit, &false_args);
+    b.switch_to_block(body);
+    b.seal_block(body);
+    let mut current = header_values.clone();
+    for step in steps {
+        match step {
+            LoopStep::Bind(x, _) => {
+                let value = emit(
+                    x,
+                    b,
+                    &[],
+                    &current,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                    refinement_error,
+                    i32_error,
+                );
+                current.push(value);
+            }
+            LoopStep::Set(i, x) => {
+                let value = emit(
+                    x,
+                    b,
+                    &[],
+                    &current,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                    refinement_error,
+                    i32_error,
+                );
+                current[*i] = value;
+            }
+            LoopStep::Loop(c, ss) => emit_scalar_loop(
+                c,
+                ss,
+                b,
+                &mut current,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            ),
+            LoopStep::Exit(c, breaking) => {
+                let test = emit(
+                    c,
+                    b,
+                    &[],
+                    &current,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                    refinement_error,
+                    i32_error,
+                );
+                let truth = b.ins().icmp_imm(IntCC::NotEqual, test, 0);
+                let next = b.create_block();
+                let values = current[..count]
+                    .iter()
+                    .copied()
+                    .map(BlockArg::Value)
+                    .collect::<Vec<_>>();
+                b.ins().brif(
+                    truth,
+                    if *breaking { exit } else { header },
+                    &values,
+                    next,
+                    &[],
+                );
+                b.switch_to_block(next);
+                b.seal_block(next);
+            }
+        }
+    }
+    let back = current[..count]
+        .iter()
+        .copied()
+        .map(BlockArg::Value)
+        .collect::<Vec<_>>();
+    b.ins().jump(header, &back);
+    b.seal_block(header);
+    b.switch_to_block(exit);
+    b.seal_block(exit);
+    *frame = b.block_params(exit).to_vec();
 }
 
 fn emit(
@@ -243,12 +467,197 @@ fn emit(
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
+    refinement_error: Block,
+    i32_error: Block,
 ) -> Value {
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         Local(i) => locals[*i],
+        Compare(op, x, y) => {
+            let a = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let z = emit(
+                y,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let cc = match op {
+                0 => IntCC::Equal,
+                1 => IntCC::NotEqual,
+                2 => IntCC::SignedLessThan,
+                3 => IntCC::SignedLessThanOrEqual,
+                4 => IntCC::SignedGreaterThan,
+                5 => IntCC::SignedGreaterThanOrEqual,
+                _ => unreachable!(),
+            };
+            let cmp = b.ins().icmp(cc, a, z);
+            b.ins().uextend(types::I64, cmp)
+        }
+        Choose(c, y, n) => {
+            let test = emit(
+                c,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let yes = b.create_block();
+            let no = b.create_block();
+            let done = b.create_block();
+            b.append_block_param(done, types::I64);
+            let truth = b.ins().icmp_imm(IntCC::NotEqual, test, 0);
+            b.ins().brif(truth, yes, &[], no, &[]);
+            b.switch_to_block(yes);
+            b.seal_block(yes);
+            let a = emit(
+                y,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            b.ins().jump(done, &[BlockArg::Value(a)]);
+            b.switch_to_block(no);
+            b.seal_block(no);
+            let z = emit(
+                n,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            b.ins().jump(done, &[BlockArg::Value(z)]);
+            b.switch_to_block(done);
+            b.seal_block(done);
+            b.block_params(done)[0]
+        }
+        ScalarLoop(args, _, condition, steps, tail, body) => {
+            let mut frame = args
+                .iter()
+                .map(|x| {
+                    emit(
+                        x,
+                        b,
+                        params,
+                        locals,
+                        error,
+                        divisor_error,
+                        negative_exponent_error,
+                        refinement_error,
+                        i32_error,
+                    )
+                })
+                .collect::<Vec<_>>();
+            emit_scalar_loop(
+                condition,
+                steps,
+                b,
+                &mut frame,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            for x in tail {
+                let value = emit(
+                    x,
+                    b,
+                    &[],
+                    &frame,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                    refinement_error,
+                    i32_error,
+                );
+                frame.push(value);
+            }
+            emit(
+                body,
+                b,
+                &[],
+                &frame,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            )
+        }
+        ScopedCall(args, initializers, body) => {
+            // The caller evaluates arguments exactly once, left-to-right.
+            // A new SSA vector contains only the callee's slots and is discarded
+            // at the call result. Branch-local emission occurs in the current CFG block.
+            let mut frame = Vec::with_capacity(args.len() + initializers.len());
+            for arg in args {
+                frame.push(emit(
+                    arg,
+                    b,
+                    params,
+                    locals,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                    refinement_error,
+                    i32_error,
+                ));
+            }
+            for init in initializers {
+                let value = emit(
+                    init,
+                    b,
+                    &[],
+                    &frame,
+                    error,
+                    divisor_error,
+                    negative_exponent_error,
+                    refinement_error,
+                    i32_error,
+                );
+                frame.push(value);
+            }
+            emit(
+                body,
+                b,
+                &[],
+                &frame,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            )
+        }
         InlineTask(body) => emit(
             body,
             b,
@@ -257,6 +666,8 @@ fn emit(
             error,
             divisor_error,
             negative_exponent_error,
+            refinement_error,
+            i32_error,
         ),
         Sequence(prefix, last) => {
             for part in prefix {
@@ -268,6 +679,8 @@ fn emit(
                     error,
                     divisor_error,
                     negative_exponent_error,
+                    refinement_error,
+                    i32_error,
                 );
             }
             emit(
@@ -278,6 +691,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             )
         }
         Seq(parts) => {
@@ -293,6 +708,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             for part in rest {
                 value = emit(
@@ -303,6 +720,8 @@ fn emit(
                     error,
                     divisor_error,
                     negative_exponent_error,
+                    refinement_error,
+                    i32_error,
                 );
             }
             value
@@ -319,6 +738,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
@@ -335,6 +756,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             let rhs = emit(
                 y,
@@ -344,6 +767,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
@@ -351,6 +776,89 @@ fn emit(
                 BitOr(_, _) => b.ins().bor(lhs, rhs),
                 _ => unreachable!(),
             }
+        }
+        I32Checked(x) => {
+            let value = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let below = b
+                .ins()
+                .icmp_imm_s(IntCC::SignedLessThan, value, i32::MIN as i64);
+            let above = b
+                .ins()
+                .icmp_imm_s(IntCC::SignedGreaterThan, value, i32::MAX as i64);
+            let invalid = b.ins().bor(below, above);
+            let valid = b.create_block();
+            b.ins().brif(invalid, i32_error, &[], valid, &[]);
+            b.switch_to_block(valid);
+            b.seal_block(valid);
+            value
+        }
+        RefinementCast(x, lo, hi) => {
+            let value = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let below = b.ins().icmp_imm_s(IntCC::SignedLessThan, value, *lo);
+            let above = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, value, *hi);
+            let invalid = b.ins().bor(below, above);
+            let valid = b.create_block();
+            b.ins().brif(invalid, refinement_error, &[], valid, &[]);
+            b.switch_to_block(valid);
+            b.seal_block(valid);
+            value
+        }
+        Div(x, y) => {
+            let left = emit(
+                x,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let right = emit(
+                y,
+                b,
+                params,
+                locals,
+                error,
+                divisor_error,
+                negative_exponent_error,
+                refinement_error,
+                i32_error,
+            );
+            let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
+            let nonzero = b.create_block();
+            b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
+            b.switch_to_block(nonzero);
+            b.seal_block(nonzero);
+            let minimum = b.ins().icmp_imm_s(IntCC::Equal, left, i64::MIN);
+            let minus_one = b.ins().icmp_imm_s(IntCC::Equal, right, -1);
+            let overflow = b.ins().band(minimum, minus_one);
+            let safe = b.create_block();
+            b.ins().brif(overflow, error, &[], safe, &[]);
+            b.switch_to_block(safe);
+            b.seal_block(safe);
+            b.ins().sdiv(left, right)
         }
         NamedRem(x, y) | NamedMod(x, y) => {
             let left = emit(
@@ -361,6 +869,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             let right = emit(
                 y,
@@ -370,6 +880,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
@@ -394,6 +906,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             let exponent = emit(
                 y,
@@ -403,6 +917,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+                refinement_error,
+                i32_error,
             );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
@@ -417,6 +933,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
@@ -430,6 +948,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -439,6 +959,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
@@ -451,6 +973,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -460,6 +984,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
@@ -472,6 +998,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -481,6 +1009,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+                        refinement_error,
+                        i32_error,
                     );
                     b.ins().smul_overflow(lhs, rhs)
                 }
@@ -607,6 +1137,8 @@ fn prepare_ir(
     let failure = b.create_block();
     let divisor_error = b.create_block();
     let negative_exponent_error = b.create_block();
+    let refinement_error = b.create_block();
+    let i32_error = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
@@ -645,6 +1177,8 @@ fn prepare_ir(
             failure,
             divisor_error,
             negative_exponent_error,
+            refinement_error,
+            i32_error,
         );
         locals.push(value);
     }
@@ -656,6 +1190,8 @@ fn prepare_ir(
         failure,
         divisor_error,
         negative_exponent_error,
+        refinement_error,
+        i32_error,
     );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
@@ -663,6 +1199,8 @@ fn prepare_ir(
         (failure, 1),
         (divisor_error, 2),
         (negative_exponent_error, 3),
+        (refinement_error, 7),
+        (i32_error, 8),
     ] {
         b.switch_to_block(block);
         return_status(&mut b, status, cleanup);
@@ -795,6 +1333,10 @@ impl Compiled {
             Err("integer divisor zero".into())
         } else if status == 3 {
             Err("negative integer exponent".into())
+        } else if status == 7 {
+            Err("E_REFINEMENT_VIOLATION".into())
+        } else if status == 8 {
+            Err("E_I32_OVERFLOW".into())
         } else {
             Err("invalid generated native status".into())
         }
@@ -1309,4 +1851,263 @@ mod integrated_local_sequence_native_tests {
             Err("i64 arithmetic overflow".into())
         );
     }
+}
+
+#[cfg(test)]
+mod scoped_helper_frame_tests {
+    use super::*;
+    #[test]
+    fn scoped_frames_do_not_admit_caller_or_forward_slot_references() {
+        let valid = Expr::ScopedCall(
+            vec![Expr::Local(0)],
+            vec![Expr::Local(0)],
+            Box::new(Expr::Local(1)),
+        );
+        assert!(validate_guest_expr(&valid, 1, 0, &mut 0).is_ok());
+        for bad in [
+            Expr::ScopedCall(vec![], vec![], Box::new(Expr::Local(0))),
+            Expr::ScopedCall(
+                vec![Expr::Literal(1)],
+                vec![Expr::Local(1)],
+                Box::new(Expr::Local(0)),
+            ),
+            Expr::ScopedCall(vec![], vec![], Box::new(Expr::Param(0))),
+            Expr::ScopedCall(vec![Expr::Literal(1); 9], vec![], Box::new(Expr::Local(0))),
+        ] {
+            assert!(validate_guest_expr(&bad, 2, 1, &mut 0).is_err());
+        }
+    }
+}
+
+// Native object only. No JIT allocation or guest storage capability.
+pub fn emit_durable_counter_object(source: &str) -> Result<Vec<u8>, String> {
+    let descriptor = crate::frontend::durable_counter_descriptor(source)?;
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_durable_counter", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    let id = module.declare_data("atto_durable_descriptor_v1", Linkage::Export, false, false)
+        .map_err(|e| e.to_string())?;
+    let mut data = DataDescription::new();
+    data.define(descriptor.into_boxed_slice());
+    module.define_data(id, &data).map_err(|e| e.to_string())?;
+    let mut sig = module.make_signature();
+    for _ in 0..3 { sig.params.push(AbiParam::new(types::I64)); }
+    sig.returns.push(AbiParam::new(types::I64));
+    let id = module.declare_function("atto_durable_transition_v1", Linkage::Export, &sig)
+        .map_err(|e| e.to_string())?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+    let entry = b.create_block();
+    let dispatch = b.create_block();
+    let read = b.create_block();
+    let increment = b.create_block();
+    let bounds = b.create_block();
+    let add = b.create_block();
+    let reject = b.create_block();
+    let read_ok = b.create_block();
+    b.append_block_params_for_function_params(entry);
+    b.switch_to_block(entry);
+    let args = b.block_params(entry).to_vec();
+    let (s, op, d) = (args[0], args[1], args[2]);
+    let low = b.ins().icmp_imm_s(IntCC::SignedLessThan, s, 0);
+    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, s, 1_000_000_000);
+    let bad = b.ins().bor(low, high);
+    b.ins().brif(bad, reject, &[], dispatch, &[]);
+    b.switch_to_block(dispatch);
+    let is_read = b.ins().icmp_imm_s(IntCC::Equal, op, 2);
+    b.ins().brif(is_read, read, &[], increment, &[]);
+    b.switch_to_block(read);
+    let zero = b.ins().icmp_imm_s(IntCC::Equal, d, 0);
+    b.ins().brif(zero, read_ok, &[], reject, &[]);
+    b.switch_to_block(read_ok);
+    b.ins().return_(&[s]);
+    b.switch_to_block(increment);
+    let wrong = b.ins().icmp_imm_s(IntCC::NotEqual, op, 1);
+    let low = b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, d, 0);
+    let high = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 1_000_000_000);
+    let bad = b.ins().bor(low, high);
+    let bad = b.ins().bor(bad, wrong);
+    b.ins().brif(bad, reject, &[], bounds, &[]);
+    b.switch_to_block(bounds);
+    let max = b.ins().iconst(types::I64, 1_000_000_000);
+    let remaining = b.ins().isub(max, s);
+    let overflow = b.ins().icmp(IntCC::SignedGreaterThan, d, remaining);
+    b.ins().brif(overflow, reject, &[], add, &[]);
+    b.switch_to_block(add);
+    let next = b.ins().iadd(s, d);
+    b.ins().return_(&[next]);
+    b.switch_to_block(reject);
+    let denied = b.ins().iconst(types::I64, -1);
+    b.ins().return_(&[denied]);
+    b.seal_all_blocks();
+    b.finalize(module.target_config());
+    validate_ir(&ctx.func, module.isa())?;
+    module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    module.finish().emit().map_err(|e| e.to_string())
+}
+
+// Native schema-specialized codecs. Every input byte/value is staged in SSA
+// before the first output write. ABI requires trusted, valid, quiescent
+// caller-owned ranges, including non-null dummy pointers for empty schemas.
+pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
+    let (initial, tags) = crate::frontend::durable_scalar_schema(source)?;
+    let mut flags = settings::builder();
+    flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    let isa = cranelift_native::builder().map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags)).map_err(|e| e.to_string())?;
+    let builder = ObjectBuilder::new(isa, "atto_durable_scalar", default_libcall_names())
+        .map_err(|e| e.to_string())?;
+    let mut module = ObjectModule::new(builder);
+    if module.target_config().pointer_type() != types::I64 {
+        return Err("E_DURABLE_SCALAR_SCHEMA_V1: 64-bit native target required".into());
+    }
+    let size = initial.len() as i64;
+    let count = tags.len() as i64;
+    fn hash(b: &mut FunctionBuilder, bytes: &[Value]) -> Value {
+        let mut h = b.ins().iconst(types::I64, 0xcbf29ce484222325_u64 as i64);
+        let prime = b.ins().iconst(types::I64, 0x100000001b3);
+        for &byte in bytes {
+            let xor = b.ins().bxor(h, byte);
+            h = b.ins().imul(xor, prime);
+        }
+        h
+    }
+    fn byte_at(b: &mut FunctionBuilder, value: Value, i: usize) -> Value {
+        let shift = b.ins().iconst(types::I64, (i * 8) as i64);
+        let shifted = b.ins().ushr(value, shift);
+        b.ins().band_imm_u(shifted, 255)
+    }
+    fn word_at(b: &mut FunctionBuilder, bytes: &[Value]) -> Value {
+        let mut word = b.ins().iconst(types::I64, 0);
+        for (i, &byte) in bytes.iter().enumerate() {
+            let shift = b.ins().iconst(types::I64, (i * 8) as i64);
+            let part = b.ins().ishl(byte, shift);
+            word = b.ins().bor(word, part);
+        }
+        word
+    }
+    fn require(b: &mut FunctionBuilder, ok: Value, reject: Block) {
+        let next = b.create_block();
+        b.ins().brif(ok, next, &[], reject, &[]);
+        b.switch_to_block(next);
+    }
+    fn output_bytes(b: &mut FunctionBuilder, dst: Value, bytes: &[Value]) {
+        for (i, &byte) in bytes.iter().enumerate() {
+            let v = b.ins().ireduce(types::I8, byte);
+            b.ins().store(MemFlagsData::new(), v, dst, i as i32);
+        }
+    }
+    for (name, arity, mode) in [
+        ("atto_scalar_size_v1", 0, 0),
+        ("atto_scalar_fields_v1", 0, 1),
+        ("atto_scalar_initial_v1", 2, 2),
+        ("atto_scalar_encode_v1", 4, 3),
+        ("atto_scalar_decode_v1", 4, 4),
+    ] {
+        let mut sig = module.make_signature();
+        for _ in 0..arity { sig.params.push(AbiParam::new(types::I64)); }
+        sig.returns.push(AbiParam::new(types::I64));
+        let id = module.declare_function(name, Linkage::Export, &sig).map_err(|e| e.to_string())?;
+        let mut ctx = module.make_context();
+        ctx.func.signature = sig;
+        let mut fbctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let args = b.block_params(entry).to_vec();
+        if mode < 2 {
+            let v = b.ins().iconst(types::I64, if mode == 0 { size } else { count });
+            b.ins().return_(&[v]);
+        } else {
+            let reject = b.create_block();
+            let dst = if mode == 2 { args[0] } else { args[2] };
+            let cap = if mode == 2 { args[1] } else { args[3] };
+            let needed = if mode == 4 { count } else { size };
+            let nonnull = b.ins().icmp_imm_s(IntCC::NotEqual, dst, 0);
+            require(&mut b, nonnull, reject);
+            let enough = b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, cap, needed);
+            require(&mut b, enough, reject);
+            if mode == 2 {
+                let bytes: Vec<Value> = initial.iter().map(|&x| b.ins().iconst(types::I64, i64::from(x))).collect();
+                output_bytes(&mut b, dst, &bytes);
+            } else {
+                let src = args[0];
+                let nonnull = b.ins().icmp_imm_s(IntCC::NotEqual, src, 0);
+                require(&mut b, nonnull, reject);
+                let len = b.ins().icmp_imm_s(IntCC::Equal, args[1], if mode == 3 { count } else { size });
+                require(&mut b, len, reject);
+                if mode == 3 {
+                    let mut bytes: Vec<Value> = initial[..19].iter().map(|&x| b.ins().iconst(types::I64, i64::from(x))).collect();
+                    for (i, &tag) in tags.iter().enumerate() {
+                        let value = b.ins().load(types::I64, MemFlagsData::new(), src, (i * 8) as i32);
+                        bytes.push(b.ins().iconst(types::I64, i64::from(tag)));
+                        if tag == 1 {
+                            for j in 0..8 { bytes.push(byte_at(&mut b, value, j)); }
+                        } else {
+                            let ok = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, value, 1);
+                            require(&mut b, ok, reject);
+                            bytes.push(value);
+                        }
+                    }
+                    let checksum = hash(&mut b, &bytes);
+                    for j in 0..8 { bytes.push(byte_at(&mut b, checksum, j)); }
+                    output_bytes(&mut b, dst, &bytes);
+                } else {
+                    let mut bytes = Vec::with_capacity(size as usize);
+                    for i in 0..size {
+                        let byte = b.ins().load(types::I8, MemFlagsData::new(), src, i as i32);
+                        bytes.push(b.ins().uextend(types::I64, byte));
+                    }
+                    let end = bytes.len() - 8;
+                    let checksum = hash(&mut b, &bytes[..end]);
+                    let stored = word_at(&mut b, &bytes[end..]);
+                    let ok = b.ins().icmp(IntCC::Equal, stored, checksum);
+                    require(&mut b, ok, reject);
+                    for (i, &x) in initial[..19].iter().enumerate() {
+                        let ok = b.ins().icmp_imm_s(IntCC::Equal, bytes[i], i64::from(x));
+                        require(&mut b, ok, reject);
+                    }
+                    let mut pos = 19;
+                    let mut values = Vec::with_capacity(tags.len());
+                    for &tag in &tags {
+                        let ok = b.ins().icmp_imm_s(IntCC::Equal, bytes[pos], i64::from(tag));
+                        require(&mut b, ok, reject);
+                        pos += 1;
+                        if tag == 1 {
+                            values.push(word_at(&mut b, &bytes[pos..pos + 8]));
+                            pos += 8;
+                        } else {
+                            let value = bytes[pos];
+                            let ok = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, value, 1);
+                            require(&mut b, ok, reject);
+                            values.push(value);
+                            pos += 1;
+                        }
+                    }
+                    for (i, value) in values.into_iter().enumerate() {
+                        b.ins().store(MemFlagsData::new(), value, dst, (i * 8) as i32);
+                    }
+                }
+            }
+            let v = b.ins().iconst(types::I64, needed);
+            b.ins().return_(&[v]);
+            b.switch_to_block(reject);
+            let v = b.ins().iconst(types::I64, -1);
+            b.ins().return_(&[v]);
+        }
+        b.seal_all_blocks();
+        b.finalize(module.target_config());
+        validate_ir(&ctx.func, module.isa())?;
+        module.define_function(id, &mut ctx).map_err(|e| e.to_string())?;
+    }
+    module.finish().emit().map_err(|e| e.to_string())
 }
