@@ -178,6 +178,8 @@ pub enum Expr {
     Seq(Vec<Expr>),
     InlineTask(Box<Expr>),
     Sequence(Vec<Expr>, Box<Expr>),
+    /// Eager arguments in the caller; callee locals and result in an isolated lexical slot frame.
+    ScopedCall(Vec<Expr>, Vec<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -1683,6 +1685,13 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((item, level + 1));
                 }
             }
+            Expr::ScopedCall(args, locals, body) => {
+                if args.len()>8 || args.len()+locals.len()>64 {
+                    return Err("E_UNIT_LIMIT: scoped helper frame".into());
+                }
+                pending.push((body.as_ref(),level+1));
+                for part in args.iter().chain(locals.iter()) { pending.push((part,level+1)); }
+            }
             Expr::Sequence(prefix, last) => {
                 if prefix.len() > MAX_NODES {
                     return Err("AST node budget exceeded".into());
@@ -1744,7 +1753,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
             }
             Ok(last)
         }
-        Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
+        Expr::ScopedCall(_,_,_) | Expr::InlineTask(_) | Expr::Sequence(_, _) => Err("E_NON_CONST_INITIALIZER: task execution is not constexpr".into()),
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
@@ -2350,7 +2359,7 @@ end"#;
         match e {
             Expr::Literal(x) => Ok(*x),
             Expr::Param(i) => Ok(args[*i]),
-            Expr::Local(_) => Err("test evaluator does not execute runtime local sequences"),
+            Expr::Local(_) | Expr::ScopedCall(_,_,_) => Err("test evaluator does not execute runtime local sequences"),
             Expr::Choose(c,y,n) => if eval(c,args)?!=0{eval(y,args)}else{eval(n,args)},
             Expr::Compare(op,a,b) => {let a=eval(a,args)?;let b=eval(b,args)?;Ok(match op{0=>a==b,1=>a!=b,2=>a<b,3=>a<=b,4=>a>b,5=>a>=b,_=>return Err("invalid comparison")} as i64)},
             Expr::InlineTask(body) => eval(body, args),

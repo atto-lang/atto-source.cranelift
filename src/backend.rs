@@ -181,8 +181,8 @@ fn validate_guest_expr(
     admitted_params: usize,
     nodes: &mut usize,
 ) -> Result<(), String> {
-    let mut work = vec![(root, 1_usize)];
-    while let Some((expr, depth)) = work.pop() {
+    let mut work = vec![(root, 1_usize, admitted_locals, admitted_params)];
+    while let Some((expr, depth, admitted_locals, admitted_params)) = work.pop() {
         *nodes += 1;
         if *nodes > 4096 {
             return Err("AST node budget exceeded before native codegen".into());
@@ -199,7 +199,7 @@ fn validate_guest_expr(
                     return Err("E_SEQ_LIMIT: forged scalar sequence before native codegen".into());
                 }
                 for item in items.iter().rev() {
-                    work.push((item, depth + 1));
+                    work.push((item, depth + 1, admitted_locals, admitted_params));
                 }
             }
             Expr::Param(_) => {
@@ -208,22 +208,36 @@ fn validate_guest_expr(
             Expr::Local(_) => {
                 return Err("invalid or forward local reference before native codegen".into());
             }
+            Expr::ScopedCall(args, callee_locals, body) => {
+                if args.len()>8 || args.len()+callee_locals.len()>64 {
+                    return Err("E_UNIT_LIMIT: invalid scoped helper frame".into());
+                }
+                // Arguments may see the caller; the isolated callee may see only
+                // its own parameters and already initialized lexical slots.
+                work.push((body, depth + 1, args.len()+callee_locals.len(), 0));
+                for (index, init) in callee_locals.iter().enumerate().rev() {
+                    work.push((init, depth + 1, args.len()+index, 0));
+                }
+                for arg in args.iter().rev() {
+                    work.push((arg, depth + 1, admitted_locals, admitted_params));
+                }
+            }
             Expr::Sequence(prefix, last) => {
                 if prefix.len() > 4096 {
                     return Err("AST node budget exceeded before native codegen".into());
                 }
-                work.push((last, depth + 1));
+                work.push((last, depth + 1, admitted_locals, admitted_params));
                 for part in prefix.iter().rev() {
-                    work.push((part, depth + 1));
+                    work.push((part, depth + 1, admitted_locals, admitted_params));
                 }
             }
-            Expr::I32Checked(x)=>work.push((x,depth+1)),
-            Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x,depth+1));}
-            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
-            Expr::Choose(c,y,n) => {work.push((c,depth+1));work.push((y,depth+1));work.push((n,depth+1));}
+            Expr::I32Checked(x)=>work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x, depth + 1, admitted_locals, admitted_params));}
+            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::Choose(c,y,n) => {work.push((c, depth + 1, admitted_locals, admitted_params));work.push((y, depth + 1, admitted_locals, admitted_params));work.push((n, depth + 1, admitted_locals, admitted_params));}
             Expr::Compare(op,a,b) => {
                 if *op>5{return Err("invalid comparison opcode before native codegen".into());}
-                work.push((a,depth+1));work.push((b,depth+1));
+                work.push((a, depth + 1, admitted_locals, admitted_params));work.push((b, depth + 1, admitted_locals, admitted_params));
             }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
@@ -235,8 +249,8 @@ fn validate_guest_expr(
             | Expr::NamedRem(a, b)
             | Expr::NamedMod(a, b)
             | Expr::NamedPow(a, b) => {
-                work.push((b, depth + 1));
-                work.push((a, depth + 1));
+                work.push((b, depth + 1, admitted_locals, admitted_params));
+                work.push((a, depth + 1, admitted_locals, admitted_params));
             }
         }
     }
@@ -279,6 +293,20 @@ fn emit(
             b.ins().jump(done,&[BlockArg::Value(z)]);
             b.switch_to_block(done);b.seal_block(done);
             b.block_params(done)[0]
+        }
+        ScopedCall(args, initializers, body) => {
+            // The caller evaluates arguments exactly once, left-to-right.
+            // A new SSA vector contains only the callee's slots and is discarded
+            // at the call result. Branch-local emission occurs in the current CFG block.
+            let mut frame=Vec::with_capacity(args.len()+initializers.len());
+            for arg in args {
+                frame.push(emit(arg,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error));
+            }
+            for init in initializers {
+                let value=emit(init,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+                frame.push(value);
+            }
+            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error)
         }
         InlineTask(body) => emit(
             body,
@@ -1422,5 +1450,21 @@ mod integrated_local_sequence_native_tests {
             native.run(&[i64::MAX]),
             Err("i64 arithmetic overflow".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod scoped_helper_frame_tests {
+    use super::*;
+    #[test]
+    fn scoped_frames_do_not_admit_caller_or_forward_slot_references() {
+        let valid=Expr::ScopedCall(vec![Expr::Local(0)],vec![Expr::Local(0)],Box::new(Expr::Local(1)));
+        assert!(validate_guest_expr(&valid,1,0,&mut 0).is_ok());
+        for bad in [
+            Expr::ScopedCall(vec![],vec![],Box::new(Expr::Local(0))),
+            Expr::ScopedCall(vec![Expr::Literal(1)],vec![Expr::Local(1)],Box::new(Expr::Local(0))),
+            Expr::ScopedCall(vec![],vec![],Box::new(Expr::Param(0))),
+            Expr::ScopedCall(vec![Expr::Literal(1);9],vec![],Box::new(Expr::Local(0))),
+        ] { assert!(validate_guest_expr(&bad,2,1,&mut 0).is_err()); }
     }
 }

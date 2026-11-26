@@ -94,6 +94,8 @@ fn remap(expr:&Expr,slots:&[usize])->Result<Expr,String>{
         Expr::Div(a,b)=>Expr::Div(one(a)?,one(b)?),
         Expr::Compare(op,a,b)=>Expr::Compare(*op,one(a)?,one(b)?),
         Expr::Choose(c,y,n)=>Expr::Choose(one(c)?,one(y)?,one(n)?),
+        // Only call-site arguments refer to the outer helper's slots.
+        Expr::ScopedCall(args,locals,body)=>Expr::ScopedCall(args.iter().map(|a|remap(a,slots)).collect::<Result<Vec<_>,_>>()?,locals.clone(),body.clone()),
         Expr::I32Checked(x)=>Expr::I32Checked(one(x)?),
         Expr::RefinementCast(x,l,h)=>Expr::RefinementCast(one(x)?,*l,*h),
         _=>return Err("E_UNIT_CALL: unsupported helper expression".into())
@@ -311,7 +313,6 @@ impl<'a> Quantities<'a> {
         }
         if let Token::Word(name)=self.p.current{
             if let Some((_,helper))=self.helpers.iter().find(|(n,_)|n==name){
-                if self.guarded{return Err("E_VERIFY_UNSUPPORTED: helper call in lazy branch requires scoped local lowering".into());}
                 let helper=helper.clone();self.p.next()?;
                 return self.call(helper,depth+1);
             }
@@ -342,6 +343,22 @@ impl<'a> Quantities<'a> {
     // Eager arguments and helper locals get fresh slots; never substitute an
     // effectful expression at multiple uses of a parameter.
     fn call(&mut self,h:Helper,depth:usize)->Result<Typed,String>{
+        if self.guarded {
+            self.p.expect(Token::Punct(b'('))?;
+            let mut args=Vec::new();
+            for (i,want) in h.params.iter().enumerate(){
+                if i>0{self.p.expect(Token::Punct(b','))?;}
+                if self.p.current==Token::Punct(b')'){return Err("E_REFINEMENT_CALL: missing argument".into());}
+                let value=self.expr(0,depth+1)?;
+                Self::boundary(*want,&value,"E_REFINEMENT_PRECONDITION")?;
+                args.push(value.expr);
+            }
+            self.p.expect(Token::Punct(b')'))?;
+            let inits=h.locals.into_iter().skip(h.params.len()).collect::<Vec<_>>();
+            let expr=self.p.node(Expr::ScopedCall(args,inits,Box::new(h.body)))?;
+            validate_ast_depth(&expr)?;
+            return self.postfix(Typed{expr,dim:h.result.dim,scale:h.result.scale,range:Range{lo:h.result.lo,hi:h.result.hi,holes:0},width:h.result.width},false,false);
+        }
         self.p.expect(Token::Punct(b'('))?;
         let mut slots=Vec::new();
         for (i,want) in h.params.iter().enumerate(){
