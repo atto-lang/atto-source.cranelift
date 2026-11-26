@@ -166,6 +166,7 @@ pub enum Expr {
     Compare(u8, Box<Expr>, Box<Expr>),
     Choose(Box<Expr>, Box<Expr>, Box<Expr>),
     RefinementCast(Box<Expr>,i64,i64),
+    I32Checked(Box<Expr>),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -1688,6 +1689,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((part, level + 1));
                 }
             }
+            Expr::I32Checked(inner) => pending.push((inner.as_ref(),level+1)),
             Expr::RefinementCast(inner,lo,hi) => {
                 if lo>hi{return Err("E_REFINEMENT_INTERVAL: invalid bounds".into());}
                 pending.push((inner.as_ref(),level+1));
@@ -1743,7 +1745,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
-        Expr::RefinementCast(_,_,_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        Expr::I32Checked(_) | Expr::RefinementCast(_,_,_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
             "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
@@ -2360,6 +2362,7 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::I32Checked(x)=>{let v=eval(x,args)?;i32::try_from(v).map(i64::from).map_err(|_|"i32 overflow")},
             Expr::RefinementCast(x,lo,hi)=>{let v=eval(x,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
             Expr::Div(a, b) => {
                 let left = eval(a, args)?;
