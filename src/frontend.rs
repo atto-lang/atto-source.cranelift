@@ -1272,6 +1272,19 @@ mod tests {
     }
 
     #[test]
+    fn move_bang_requires_checked_ownership_and_spacing() {
+        for (source, expected) in [
+            ("fnc main():int{return move! value;}", "OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
+            ("fnc main():int{return move!value;}", "E_BANG_KEYWORD_WHITESPACE"),
+            ("fnc main():int{return move!! value;}", "E_BANG_KEYWORD_WHITESPACE"),
+        ] {
+            let error = parse(source).expect_err("unsupported transfer entered scalar IR");
+            assert!(error.contains(expected), "{error}");
+        }
+        assert!(parse("fnc main(move:int):int{return move;}").is_ok());
+    }
+
+    #[test]
     fn pin_and_drop_bang_are_owned_operations_not_scalar_intrinsics() {
         for operation in ["pin!", "drop!", "copy!!"] {
             for expression in [
