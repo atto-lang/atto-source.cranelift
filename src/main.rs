@@ -179,9 +179,9 @@ fn run_linked_native(
     if mode == "isolate" {
         return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
     }
-    if !matches!(mode, "check" | "ir" | "run") {
+    if !matches!(mode, "check" | "ir" | "run" | "emit-object") {
         return Err(
-            "E_LINK_MODE_UNSUPPORTED: linked scalar graphs support check, ir, and run only".into(),
+            "E_LINK_MODE_UNSUPPORTED: linked scalar graphs support check, ir, run and standalone emit-object only".into(),
         );
     }
     linked_native::validate(functions)?;
@@ -190,6 +190,10 @@ fn run_linked_native(
     }
     if mode == "run" && !values.is_empty() {
         return Err("runtime argument count mismatch".into());
+    }
+    if mode == "emit-object" {
+        let object = linked_native::emit_object(functions)?;
+        return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
     }
     if mode == "ir" {
         print!("{}", linked_native::render_ir(functions)?);
@@ -289,6 +293,10 @@ fn run() -> Result<(), String> {
         // TenantVM isolate lane, even before reading imported source files.
         if mode == "isolate" {
             return Err("E_LINK_ISOLATE_UNSUPPORTED".into());
+        }
+        // Cross-file object publication requires a separate module provenance gate.
+        if mode == "emit-object" {
+            return Err("E_LINK_MODE_UNSUPPORTED: imported linked scalar graphs support check, ir, and run only".into());
         }
         let functions = module_link::parse(&path, source)?;
         return run_linked_native(&mode, &values, &functions);

@@ -351,6 +351,9 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
+    // Closed ordinary helpers, in declaration order; charge expansion before cloning.
+    ordinary_helpers: Vec<(String, Expr, usize)>,
+    ordinary_bools: Vec<String>,
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -414,6 +417,8 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
+            ordinary_helpers: Vec::new(),
+            ordinary_bools: Vec::new(),
         };
         p.next()?;
         Ok(p)
@@ -1058,7 +1063,21 @@ impl<'a> Parser<'a> {
                 Err("process print is outside the Cranelift stage-0 scalar profile; no implicit console fallback is permitted".into())
             }
             Token::Word(s) => {
+                if self.ordinary_bools.iter().any(|name| name == s) {
+                    return Err("E_BOOL_TYPE: bool is not an int".into());
+                }
                 self.next()?;
+                if self.current == Token::Punct(b'(') {
+                    if let Some(index) = self.ordinary_helpers.iter().position(|(name, _, _)| name == s) {
+                        self.next()?;
+                        self.expect(Token::Punct(b')'))?;
+                        let cost = self.ordinary_helpers[index].2;
+                        self.nodes = self.nodes.checked_add(cost).ok_or("AST node budget exceeded")?;
+                        if self.nodes >= MAX_NODES { return Err("AST node budget exceeded".into()); }
+                        let body = self.ordinary_helpers[index].1.clone();
+                        return self.node(Expr::ScopedCall(Vec::new(), Vec::new(), Box::new(body)));
+                    }
+                }
                 let value = if let Some(index) = self.parameters.iter().position(|p| p == s) {
                     Expr::Param(index)
                 } else if let Some((_, constant, runtime_slot)) =
@@ -1155,6 +1174,57 @@ impl<'a> Parser<'a> {
     }
     // Separate bounded quantity profile; every admitted quantity is typed
     // before erasure into the existing checked scalar IR.
+    fn ordinary_bool_value(&mut self) -> Result<Expr, String> {
+        let value = match self.current {
+            Token::Word("true") => Expr::Literal(1),
+            Token::Word("false") => Expr::Literal(0),
+            Token::Word(name) if self.ordinary_bools.iter().any(|known| known == name) => {
+                let (_, constant, slot) = self.bindings.iter().find(|(known, _, _)| known == name).ok_or("E_BOOL_TYPE: missing binding")?;
+                match constant { Some(n) => Expr::Literal(*n), None => Expr::Local(*slot) }
+            }
+            _ => return Err("E_BOOL_TYPE: expected bool literal or typed bool binding".into()),
+        };
+        self.next()?;
+        self.node(value)
+    }
+
+    fn ordinary_bool_return(&mut self, depth: usize) -> Result<Expr, String> {
+        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+        if self.take(Token::Word("if"))? {
+            let condition = self.ordinary_bool_value()?;
+            self.expect(Token::Punct(b'{'))?;
+            let yes = self.ordinary_bool_return(depth + 1)?;
+            self.expect(Token::Punct(b'}'))?;
+            self.expect(Token::Word("else"))?;
+            self.expect(Token::Punct(b'{'))?;
+            let no = self.ordinary_bool_return(depth + 1)?;
+            self.expect(Token::Punct(b'}'))?;
+            self.node(Expr::Choose(Box::new(condition), Box::new(yes), Box::new(no)))
+        } else {
+            self.expect(Token::Word("return"))?;
+            let value = self.expr(0, depth)?;
+            self.expect(Token::Punct(b';'))?;
+            Ok(value)
+        }
+    }
+
+    fn missing_primitive_initializer(&self) -> bool {
+        let qualified=matches!(self.current,Token::Word("let"|"val"|"const"));
+        let mut scan=match Parser::new(&self.input[self.pos..]){Ok(p)=>p,Err(_)=>return false};
+        let first=if qualified{
+            let first=scan.current;
+            if scan.next().is_err(){return false;}
+            first
+        }else{self.current};
+        let primitive=|token|matches!(token,Token::Word("int"|"bool"|"string"|"String"));
+        if primitive(first)&&matches!(scan.current,Token::Word(_)){
+            return scan.next().is_ok()&&scan.current==Token::Punct(b';');
+        }
+        qualified&&matches!(first,Token::Word(_))&&scan.current==Token::Punct(b':')&&
+            scan.next().is_ok()&&primitive(scan.current)&&scan.next().is_ok()&&
+            scan.current==Token::Punct(b';')
+    }
+
     fn program(mut self) -> Result<Program, String> {
         if self.current == Token::Word("type")
             || (self.current == Token::Word("define")
@@ -1188,6 +1258,41 @@ impl<'a> Parser<'a> {
             }
             self.file_export()?;
             seen_export = true;
+        }
+        // Admit only public zero-argument int helpers before main, using the
+        // same lexer, checked expressions and native scoped-call lowering.
+        // Publish only after a complete body: self/forward cycles fail closed.
+        while self.current == Token::Word("pub") {
+            let mut scan = Parser::new(&self.input[self.pos..])?;
+            if !scan.take(Token::Word("fnc"))? { break; }
+            let Token::Word(candidate) = scan.current else { break; };
+            if candidate == "main" { break; }
+            if self.ordinary_helpers.len() >= 16 { return Err("E_HELPER_LIMIT: too many helpers".into()); }
+            self.next()?;
+            self.expect(Token::Word("fnc"))?;
+            let name = self.name()?;
+            if !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                || is_java_v1_reserved_parameter_name(&name)
+                || matches!(name.as_str(), "main" | "int" | "infer" | "seq" | "sync" | "task" | "rt" | "io" | "stdio" | "print")
+                || self.ordinary_helpers.iter().any(|(known, _, _)| known == &name) {
+                return Err("E_HELPER_NAME: invalid or duplicate helper".into());
+            }
+            self.expect(Token::Punct(b'('))?;
+            self.expect(Token::Punct(b')'))?;
+            if !self.take(Token::Punct(b':'))? {
+                self.expect(Token::Punct(b'-'))?;
+                self.expect(Token::Punct(b'>'))?;
+            }
+            self.expect(Token::Word("int"))?;
+            self.expect(Token::Punct(b'{'))?;
+            self.expect(Token::Word("return"))?;
+            let before = self.nodes;
+            let body = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            self.expect(Token::Punct(b'}'))?;
+            validate_ast_depth(&body)?;
+            let cost = self.nodes - before;
+            self.ordinary_helpers.push((name, body, cost));
         }
         let mut seen_define = false;
         let mut seen_pub = false;
@@ -1404,8 +1509,29 @@ impl<'a> Parser<'a> {
         // This is deliberately a bounded, flat scalar subset. Local const
         // and type-first int require constexpr; val may be runtime-dependent.
         // The file/module define-const environment exception is not local.
+        // Rebindable int locals use fresh, eagerly evaluated SSA slots; prior
+        // references retain their old slot. No branch/loop/borrow lowering here.
+        let mut mutable_locals: Vec<String> = Vec::new();
         loop {
+            if self.missing_primitive_initializer(){return Err("E_MISSING_INITIALIZER: explicit initializer required".into());}
+            if let Token::Word(name) = self.current {
+                if mutable_locals.iter().any(|known| known == name) {
+                    let binding = self.bindings.iter().position(|(known, _, _)| known == name).ok_or("missing mutable binding")?;
+                    self.next()?;
+                    self.expect(Token::Punct(b'='))?;
+                    let value = if self.ordinary_bools.iter().any(|known| known == name) {
+                        self.ordinary_bool_value()?
+                    } else { self.expr(0, 0)? };
+                    self.expect(Token::Punct(b';'))?;
+                    validate_ast_depth(&value)?;
+                    if self.local_initializers.len() >= MAX_LOCALS { return Err("local SSA slot count exceeds 64".into()); }
+                    self.bindings[binding].2 = self.local_initializers.len();
+                    self.local_initializers.push(value);
+                    continue;
+                }
+            }
             let kind = match self.current {
+                Token::Word("let") if self.next_significant_word_is("int") || self.next_significant_word_is("bool") => "let",
                 Token::Word("const") => "const",
                 Token::Word("int") => "int",
                 Token::Word("val") => "val",
@@ -1421,7 +1547,8 @@ impl<'a> Parser<'a> {
                     Err("E_CONST_MUT_UNSUPPORTED: scalar const mut requires a non-scalar owned referent".into())
                 };
             }
-            let typed = kind == "int" || self.take(Token::Word("int"))?;
+            let mut boolean = kind != "int" && self.take(Token::Word("bool"))?;
+            let typed = boolean || kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if matches!(name.as_str(), "sync" | "task" | "yield") {
                 return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
@@ -1430,20 +1557,22 @@ impl<'a> Parser<'a> {
                 || matches!(name.as_str(), "Integer" | "main" | "int" | "seq")
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
+                || self.ordinary_helpers.iter().any(|(known, _, _)| known == &name)
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
             if !typed && self.take(Token::Punct(b':'))? {
-                self.expect(Token::Word("int"))?;
+                boolean = self.take(Token::Word("bool"))?;
+                if !boolean { self.expect(Token::Word("int"))?; }
             }
-            if self.bindings.len() >= MAX_LOCALS {
+            if self.bindings.len() >= MAX_LOCALS || self.local_initializers.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
-            let initializer = self.expr(0, 0)?;
+            let initializer = if boolean { self.ordinary_bool_value()? } else { self.expr(0, 0)? };
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
-            let constant = if kind == "val" {
+            let constant = if kind == "val" || kind == "let" {
                 None
             } else {
                 Some(eval_const_i64(&initializer)?)
@@ -1454,6 +1583,8 @@ impl<'a> Parser<'a> {
             }
             // Bind only after the initializer passes admission, preventing
             // self and forward references and any hidden shadowing.
+            if kind == "let" { mutable_locals.push(name.clone()); }
+            if boolean { self.ordinary_bools.push(name.clone()); }
             self.bindings.push((name, constant, runtime_slot));
         }
         if self.current == Token::Word("let") {
@@ -1498,14 +1629,17 @@ impl<'a> Parser<'a> {
                 .ok_or("scalar main requires a return")?
         } else {
             let inline_effects = self.inline_statements(0)?;
-            self.expect(Token::Word("return"))?;
-            let value = self.expr(0, 0)?;
+            let boolean_terminal = !self.ordinary_bools.is_empty() && self.current == Token::Word("if");
+            let value = if boolean_terminal { self.ordinary_bool_return(0)? } else {
+                self.expect(Token::Word("return"))?;
+                self.expr(0, 0)?
+            };
             let result = if inline_effects.is_empty() {
                 value
             } else {
                 self.node(Expr::Sequence(inline_effects, Box::new(value)))?
             };
-            self.expect(Token::Punct(b';'))?;
+            if !boolean_terminal { self.expect(Token::Punct(b';'))?; }
             self.expect(Token::Punct(b'}'))?;
             result
         };
