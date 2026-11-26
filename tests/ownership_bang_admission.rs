@@ -87,7 +87,10 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
-                stderr.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
+                stderr.contains(if ["copy!42","take!42","borrow!mut value","mut borrow!value","share!value",
+                    "copy!!value","borrow!/* checked loan */mut value"].contains(&expression) {
+                    "E_BANG_KEYWORD_WHITESPACE"
+                } else { "OWNERSHIP_BANG_BACKEND_UNSUPPORTED" }),
                 "{mode} wrong diagnostic for {expression}: {stderr}"
             );
         }
@@ -198,4 +201,25 @@ fn exclusive_fixture_is_removed_on_scope_exit() {
         fixture.path.clone()
     };
     assert!(!path.exists(), "exclusive fixture leaked after use");
+}
+
+#[test]
+fn exact_separator_matrix_denies_before_check_run_or_ir() {
+    for keyword in ["trap!","throw!","raise!","panic!","copy!","copy!!",
+        "take!","move!","borrow!","share!","pin!","drop!","pipe!","rpipe!","stop!","expand!"] {
+        for tail in ["value","(42)","/*comment*/ value","","\u{a0}value"] {
+            for mode in ["check","run","ir"] {
+                let source=format!("fnc main():int{{return {keyword}{tail};}}");
+                let out=run_source(&source,mode);
+                assert!(!out.status.success() && out.stdout.is_empty(),"{mode}: {source}");
+                let err=String::from_utf8_lossy(&out.stderr);
+                assert!(err.contains("E_BANG_KEYWORD_WHITESPACE"),"{mode}: {source}: {err}");
+            }
+        }
+    }
+    for gap in [" ","\t","\r","\n","\x0b","\x0c"] {
+        let out=run_source(&format!("fnc main():int{{return move!{gap}value;}}"),"check");
+        assert!(!out.status.success() && out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"));
+    }
 }

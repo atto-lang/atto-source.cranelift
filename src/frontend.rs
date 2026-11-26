@@ -434,11 +434,24 @@ impl<'a> Parser<'a> {
             // Distinguish contextual bangs from comparisons.
             let suffix = &self.input[self.pos..];
             let comparison = is_comparison_bang(suffix);
+            // Enforce the complete contextual suffix before semantic denial.
+            if matches!(self.current, Token::Word("trap" | "throw" | "raise" | "panic"
+                | "copy" | "take" | "move" | "borrow" | "share" | "pin" | "drop"
+                | "pipe" | "rpipe" | "stop" | "expand"))
+                && b.get(self.pos) == Some(&b'!') && !comparison
+            {
+                let after = self.pos + if self.current == Token::Word("copy")
+                    && b.get(self.pos+1) == Some(&b'!') { 2 } else { 1 };
+                if !b.get(after).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
+                    return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
+                }
+            }
             if matches!(
                 self.current,
                 Token::Word(
                     "copy"
                         | "take"
+                        | "move"
                         | "borrow"
                         | "share"
                         | "pin"
@@ -470,6 +483,9 @@ impl<'a> Parser<'a> {
                 if b.get(at..at.saturating_add(7)) == Some(&b"borrow!"[..])
                     && !is_comparison_bang(&self.input[at + 6..])
                 {
+                    if !b.get(at+7).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
+                        return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
+                    }
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
             }
@@ -2145,7 +2161,7 @@ end"#;
                 let error =
                     parse(&source).expect_err("unsupported owner instruction entered scalar IR");
                 assert!(
-                    error.contains("OWNERSHIP_BANG_BACKEND_UNSUPPORTED"),
+                    error.contains(if expression.starts_with(&format!("{operation} ")) { "OWNERSHIP_BANG_BACKEND_UNSUPPORTED" } else { "E_BANG_KEYWORD_WHITESPACE" }),
                     "wrong error for {source}: {error}"
                 );
             }
