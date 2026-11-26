@@ -1,6 +1,8 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
 #[path = "quoted_source.rs"]
 mod quoted_source;
+#[path = "quantity_scalar.rs"]
+mod quantity_scalar;
 // Use the same line boundaries as the Java/Rust source lexer and the
 // quoted-template scanner. Keep byte offsets stable for all diagnostics.
 fn line_break_width(bytes: &[u8], at: usize) -> usize {
@@ -161,6 +163,7 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
+    RefinementCast(Box<Expr>,i64,i64),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -251,10 +254,6 @@ impl QuantityScale {
         Ok(if v<0{-(m as i64)}else{m as i64})
     }
 }
-type QuantityDim=([i8;8],QuantityScale);
-const SCALAR_QUANTITY:QuantityDim=([0;8],QuantityScale::ONE);
-type QuantityUnit=(String,usize,QuantityScale);
-
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -1009,206 +1008,9 @@ impl<'a> Parser<'a> {
     }
     // Separate bounded quantity profile; every admitted quantity is typed
     // before erasure into the existing checked scalar IR.
-    fn quantity_program(mut self) -> Result<Program, String> {
-        let mut dimensions: Vec<String> = Vec::new();
-        let mut units: Vec<QuantityUnit> = Vec::new();
-        while self.current == Token::Word("define")
-            && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit")) {
-            self.next()?;
-            let dimension = self.take(Token::Word("dimension"))?;
-            if !dimension { self.expect(Token::Word("unit"))?; }
-            let name = self.name()?;
-            if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
-                return Err("E_UNIT_NAME: expected nominal name".into());
-            }
-            if dimensions.contains(&name) || units.iter().any(|(n,_,_)| *n == name) {
-                return Err("E_UNIT_DUPLICATE: duplicate nominal name".into());
-            }
-            if dimension {
-                if dimensions.len() >= 8 { return Err("E_UNIT_LIMIT: dimensions".into()); }
-                dimensions.push(name);
-            } else {
-                if units.len() >= 32 { return Err("E_UNIT_LIMIT: units".into()); }
-                self.expect(Token::Punct(b':'))?;
-                let dim_name = self.name()?;
-                let index = dimensions.iter().position(|n| *n == dim_name).ok_or("E_UNIT_NAME: unknown dimension")?;
-                let mut scale=QuantityScale::ONE;
-                if self.take(Token::Punct(b'='))? {
-                    let prefix=matches!(self.current,Token::Number(_));
-                    let mut factor=QuantityScale::ONE;
-                    if prefix{factor.0=ScaleUInt::from_u64(self.quantity_factor()? as u64);self.expect(Token::Punct(b'*'))?;}
-                    let base=self.name()?;
-                    let (_,base_dim,b)=units.iter().find(|(n,_,_)| *n==base).ok_or("E_UNIT_NAME: unknown alias")?;
-                    if *base_dim!=index{return Err("E_UNIT_DIMENSION: incompatible alias".into());}
-                    let b=*b;
-                    if !prefix{
-                        if self.take(Token::Punct(b'*'))?{factor.0=ScaleUInt::from_u64(self.quantity_factor()? as u64);}
-                        else if self.take(Token::Punct(b'/'))?{factor.1=ScaleUInt::from_u64(self.quantity_factor()? as u64);}
-                    }
-                    scale=b.mul(factor)?;
-                } else if units.iter().any(|(_,d,_)| *d == index) {
-                    return Err("E_UNIT_DUPLICATE: duplicate base unit".into());
-                }
-                units.push((name,index,scale));
-            }
-            self.expect(Token::Punct(b';'))?;
-        }
-        self.take(Token::Word("pub"))?;
-        self.expect(Token::Word("fnc"))?;
-        self.expect(Token::Word("main"))?;
-        self.expect(Token::Punct(b'('))?;
-        self.expect(Token::Punct(b')'))?;
-        if !self.take(Token::Punct(b':'))? {
-            self.expect(Token::Punct(b'-'))?;
-            self.expect(Token::Punct(b'>'))?;
-        }
-        self.expect(Token::Word("int"))?;
-        self.expect(Token::Punct(b'{'))?;
-        let mut bindings: Vec<(String,QuantityDim)> = Vec::new();
-        while self.take(Token::Word("val"))? {
-            let name = self.name()?;
-            if bindings.len() >= 64 || bindings.iter().any(|(n,_)| *n == name)
-                || units.iter().any(|(n,_,_)| *n == name) || dimensions.contains(&name)
-                || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-                || matches!(name.as_str(),"val"|"int"|"return"|"main"|"as"|"i64"|"define"|"unit"|"dimension") {
-                return Err("E_UNIT_BINDING: invalid or duplicate local".into());
-            }
-            self.expect(Token::Punct(b'='))?;
-            let (value,dim) = self.quantity_expr(0,0,&units,&bindings)?;
-            self.expect(Token::Punct(b';'))?;
-            validate_ast_depth(&value)?;
-            bindings.push((name,dim));
-            self.local_initializers.push(value);
-        }
-        self.expect(Token::Word("return"))?;
-        let (result,dim) = self.quantity_expr(0,0,&units,&bindings)?;
-        if dim != SCALAR_QUANTITY { return Err("E_UNIT_ERASURE: scalar return".into()); }
-        self.expect(Token::Punct(b';'))?;
-        self.expect(Token::Punct(b'}'))?;
-        self.expect(Token::End)?;
-        validate_ast_depth(&result)?;
-        Ok(Program { parameters: vec![], locals: self.local_initializers, result, trace_steps: vec![] })
-    }
-
-    fn quantity_factor(&mut self)->Result<i64,String>{
-        let Token::Number(n)=self.current else{return Err("E_UNIT_SCALE: positive integer factor required".into());};
-        let n=integer_digits(n)?.parse::<i64>().map_err(|_|"E_UNIT_LIMIT: factor")?;
-        if n<=0{return Err("E_UNIT_SCALE: nonpositive factor".into());}
-        self.next()?;Ok(n)
-    }
-    fn quantity_target(&mut self, dim: &mut QuantityDim, units: &[QuantityUnit], cast: bool) -> Result<(), String> {
-        let name = self.name()?;
-        if cast && matches!(name.as_str(),"int"|"i64") {
-            if *dim != SCALAR_QUANTITY { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
-            return Ok(());
-        }
-        let (_,index,scale)=units.iter().find(|(n,_,_)| *n==name).ok_or("E_UNIT_NAME: unknown unit")?;
-        if *dim != SCALAR_QUANTITY { return Err("E_UNIT_ATTACHMENT: repeated unit attachment".into()); }
-        dim.0[*index]=1;dim.1=*scale;
-        Ok(())
-    }
-
-    fn quantity_atom(&mut self, depth: usize, units: &[QuantityUnit], locals: &[(String,QuantityDim)]) -> Result<(Expr,QuantityDim),String> {
-        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
-        if self.take(Token::Punct(b'<'))? {
-            self.checked_i64_cast_target()?;
-            self.expect(Token::Punct(b'>'))?;
-            let (value,dim) = self.quantity_atom(depth+1,units,locals)?;
-            if dim != SCALAR_QUANTITY { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
-            return Ok((value,dim));
-        }
-        let negative = self.take(Token::Punct(b'-'))?;
-        if negative {
-            if !matches!(self.current,Token::Number(n) if integer_digits(n).is_ok_and(|v| v=="9223372036854775808")) {
-                let (value,dim)=self.quantity_atom(depth+1,units,locals)?;
-                return Ok((self.node(Expr::Neg(Box::new(value)))?,dim));
-            }
-        } else if self.take(Token::Punct(b'+'))? {
-            return self.quantity_atom(depth+1,units,locals);
-        }
-        let mut compact=false;
-        let (mut value,mut dim)=match self.current {
-            Token::Number(n) => {
-                let v=if negative { i64::MIN } else { integer_digits(n)?.parse::<i64>().map_err(|_| "i64 literal out of range")? };
-                compact=self.input.as_bytes().get(self.pos)==Some(&b'<');
-                self.next()?;
-                (self.node(Expr::Literal(v))?,SCALAR_QUANTITY)
-            },
-            Token::Punct(b'(') => {
-                self.next()?;
-                let result=self.quantity_expr(0,depth+1,units,locals)?;
-                self.expect(Token::Punct(b')'))?;
-                result
-            },
-            Token::Word(n) => {
-                let (index,(_,d))=locals.iter().enumerate().find(|(_, (name,_))| name==n).ok_or("E_UNIT_NAME: unbound local")?;
-                let d=*d; self.next()?;
-                (self.node(Expr::Local(index))?,d)
-            },
-            _=>return Err("expected quantity expression".into()),
-        };
-        loop {
-            let cast= self.current==Token::Punct(b':') && self.input.as_bytes().get(self.pos)==Some(&b':');
-            if cast { self.next()?; self.expect(Token::Punct(b':'))?; }
-            else if self.take(Token::Punct(b'.'))? {
-                if self.take(Token::Word("to_unit"))?{
-                    self.expect(Token::Punct(b'<'))?;
-                    let name=self.name()?;
-                    let (_,index,scale)=units.iter().find(|(n,_,_)| *n==name).ok_or("E_UNIT_NAME: unknown conversion target")?;
-                    let mut target=[0;8];target[*index]=1;
-                    if dim.0!=target{return Err("E_UNIT_DIMENSION: conversion target".into());}
-                    self.expect(Token::Punct(b'>'))?;
-                    self.expect(Token::Punct(b'('))?;
-                    self.expect(Token::Punct(b')'))?;
-                    let Expr::Literal(v)=value else{return Err("E_UNIT_CONVERSION_UNSUPPORTED: requires literal".into());};
-                    value=Expr::Literal(dim.1.convert(v,*scale)?);dim.1=*scale;
-                    compact=false;continue;
-                }
-            } else if !(compact && self.current==Token::Punct(b'<')) {break;}
-            self.expect(Token::Punct(b'<'))?;
-            self.quantity_target(&mut dim,units,cast)?;
-            self.expect(Token::Punct(b'>'))?;
-            compact=false;
-        }
-        Ok((value,dim))
-    }
-
-    fn quantity_expr(&mut self, min_bp:u8, depth:usize, units:&[QuantityUnit], locals:&[(String,QuantityDim)]) -> Result<(Expr,QuantityDim),String> {
-        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
-        let (mut lhs,mut dim)=self.quantity_atom(depth+1,units,locals)?;
-        loop {
-            if self.current==Token::Word("as") && min_bp<=5 {
-                self.next()?; self.quantity_target(&mut dim,units,true)?; continue;
-            }
-            let (l,r,op)=match self.current {
-                Token::Punct(b'+')=>(1,2,b'+'),Token::Punct(b'-')=>(1,2,b'-'),
-                Token::Punct(b'*')=>(3,4,b'*'),Token::Punct(b'/')=>(3,4,b'/'),_=>break,
-            };
-            if l<min_bp { break; }
-            self.next()?;
-            let (rhs,rd)=self.quantity_expr(r,depth+1,units,locals)?;
-            if op==b'+' || op==b'-' {
-                if dim.0!=rd.0{return Err("E_UNIT_DIMENSION: incompatible additive operands".into());}
-                if dim.1!=rd.1{return Err("E_UNIT_SCALE: incompatible additive scales".into());}
-            } else {
-                dim.1=dim.1.mul(if op==b'*'{rd.1}else{rd.1.inv()})?;
-                for i in 0..8 {
-                    let e=i16::from(dim.0[i])+if op==b'*' {i16::from(rd.0[i])} else {-i16::from(rd.0[i])};
-                    if !(-32..=32).contains(&e) { return Err("E_UNIT_LIMIT: exponent".into()); }
-                    dim.0[i]=e as i8;
-                }
-            }
-            lhs=self.node(match op {
-                b'+'=>Expr::Add(Box::new(lhs),Box::new(rhs)),b'-'=>Expr::Sub(Box::new(lhs),Box::new(rhs)),
-                b'*'=>Expr::Mul(Box::new(lhs),Box::new(rhs)),b'/'=>Expr::Div(Box::new(lhs),Box::new(rhs)),_=>unreachable!(),
-            })?;
-        }
-        Ok((lhs,dim))
-    }
-
     fn program(mut self) -> Result<Program, String> {
-        if self.current==Token::Word("define") && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit")) {
-            return self.quantity_program();
+        if self.current==Token::Word("type") || (self.current==Token::Word("define") && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit"))) {
+            return quantity_scalar::parse_mode(self,false);
         }
         // File-scoped namespace is metadata only. Stage-0 still requires one
         // scalar main, and no implicit cross-file or nominal type resolution.
@@ -1884,6 +1686,10 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((part, level + 1));
                 }
             }
+            Expr::RefinementCast(inner,lo,hi) => {
+                if lo>hi{return Err("E_REFINEMENT_INTERVAL: invalid bounds".into());}
+                pending.push((inner.as_ref(),level+1));
+            }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
             }
@@ -1927,7 +1733,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
-        Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        Expr::RefinementCast(_,_,_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
             "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
@@ -2036,6 +1842,9 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
+pub fn parse_verified_strict_i64(text:&str)->Result<Program,String>{validate_source_envelope(text)?;quantity_scalar::parse_mode(Parser::new(text)?,true)}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
     let original = Parser::new(text)?.program();
@@ -2076,6 +1885,12 @@ pub fn parse(text: &str) -> Result<Program, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn strict_refinement_admission(){
+      let pre="type Bounded = int where self >= 1 and self <= 42;";
+      for expr in ["40+2","84/2","42 as Bounded"] {assert!(super::parse_verified_strict_i64(&format!("{pre} pub fnc main()->int {{return {expr};}}")).is_ok(),"{expr}");}
+      for expr in ["42/0","-9223372036854775808 / -1","9223372036854775807+1","(9223372036854775807+1)*0","43 as Bounded"]{assert!(super::parse_verified_strict_i64(&format!("{pre} pub fnc main()->int {{return {expr};}}")).unwrap_err().contains("E_VERIFY_UNPROVEN"),"{expr}");}
+    }
     use super::*;
     #[test]
     fn mutex_new_constructor_is_required_but_not_yet_runtime_supported() {
@@ -2533,6 +2348,7 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
+            Expr::RefinementCast(x,lo,hi)=>{let v=eval(x,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
             Expr::Div(a, b) => {
                 let left = eval(a, args)?;
                 let right = eval(b, args)?;
