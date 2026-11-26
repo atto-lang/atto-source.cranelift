@@ -332,3 +332,67 @@ fn reconciled_signed_division_native_values_and_distinct_errors() {
         );
     }
 }
+
+
+// Keep this separate from the immutable historical v5 manifest. Runtime
+// parameters prevent the literal-only corpus from hiding broken JIT lowering.
+#[test]
+fn canonical_xor_runtime_parameters_match_named_intrinsic() {
+    let fixture = Fixture::new();
+    let punctuation = fixture.0.join("runtime-xor.atto");
+    let named = fixture.0.join("runtime-named-xor.atto");
+    fs::write(&punctuation, "pub fnc main(a:int,b:int):int{^ a ^^ b;}\n").unwrap();
+    fs::write(&named, "pub fnc main(a:int,b:int):int{return Integer.bitXor(a,b);}\n").unwrap();
+    for (a, b, expected) in [
+        (12i64, 10i64, 6i64),
+        (i64::MIN, -1, i64::MAX),
+        (i64::MAX, -1, i64::MIN),
+        (i64::MIN, i64::MIN, 0),
+        (i64::MIN, i64::MAX, -1),
+        (i64::MAX, i64::MIN, -1),
+        (0, i64::MIN, i64::MIN),
+        (-1, 0, -1),
+        (4_294_967_296, 1, 4_294_967_297),
+        (9_007_199_254_740_993, 9_007_199_254_740_992, 1),
+    ] {
+        for path in [&punctuation, &named] {
+            let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+                .arg("run")
+                .arg(path)
+                .args([a.to_string(), b.to_string()])
+                .output()
+                .expect("real Cranelift CLI must execute");
+            assert_eq!(output.status.code(), Some(0), "{path:?} {a} ^^ {b}: {:?}", output.stderr);
+            assert!(output.stderr.is_empty(), "{path:?} unexpected diagnostic");
+            assert_eq!(output.stdout, format!("{expected}\n").as_bytes(),
+                "{path:?} {a} ^^ {b}: wrong native value");
+        }
+    }
+}
+
+// Stage-0 does not yet have writable lexical slots or Bool. Explicitly
+// preserve rejection before IR instead of claiming compound parity.
+#[test]
+fn unsupported_compound_xor_and_boolean_caret_never_emit_native_ir() {
+    let fixture = Fixture::new();
+    for (index, body) in [
+        "let int x = 12; x ^^= 10; return x;",
+        "val int x = 12; x ^^= 10; return x;",
+        "return true ^^ false;",
+        "return 12 ^^ true;",
+        "return 12 ^^= 10;",
+        "return 12 ^^ = 10;",
+    ].into_iter().enumerate() {
+        let path = fixture.0.join(format!("unsupported-xor-{index}.atto"));
+        fs::write(&path, format!("pub fnc main():int{{{body}}}\n")).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("ir")
+            .arg(&path)
+            .output()
+            .expect("real Cranelift CLI must report source rejection");
+        assert_eq!(output.status.code(), Some(1), "{body}: {:?}", output.stderr);
+        assert!(output.stdout.is_empty(), "{body} emitted forbidden native IR");
+        assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "),
+            "{body} missing compiler diagnostic");
+    }
+}
