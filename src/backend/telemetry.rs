@@ -3,7 +3,7 @@ use std::cell::RefCell;
 pub(super) const BEGIN: &str = "ores_native_telemetry_span_begin";
 pub(super) const END: &str = "ores_native_telemetry_span_end";
 
-pub(crate) struct Span {
+pub struct Span {
     pub id: u64,
     pub parent: u64,
     pub operation: String,
