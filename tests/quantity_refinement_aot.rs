@@ -192,3 +192,140 @@ fn contracted_delimiters_native_guests() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("source_unicode_control"));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn annotated_contract_native_guests() {
+    let dir = std::env::temp_dir().join(format!("atto-annotation-native-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let input = dir.join("guest.atto");
+    let object = dir.join("guest.o");
+    let harness = dir.join("host.c");
+    let binary = dir.join("guest");
+    let header = "type R = int where self >= 1 and self <= 42; @requires(x >= 1)\n@ensures(result <= 84)\nfnc f(int x) -> int requires x <= 42";
+    let tail = " pub fnc main() -> int { return f(2); }";
+    fs::write(&harness,"#include <stdint.h>\n#include <assert.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=0;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}\n").unwrap();
+    for body in [
+        " { return 84/x; }",
+        "\nbegin return 84/x; end",
+        " :: return 84/x; end",
+        "\n:: return 84/x; end",
+    ] {
+        fs::write(&input, format!("{header}{body}{tail}")).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object")
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        fs::write(&object, out.stdout).unwrap();
+        assert!(
+            Command::new("cc")
+                .args(["-std=c11", "-Wall", "-Werror"])
+                .arg(&harness)
+                .arg(&object)
+                .arg("-o")
+                .arg(&binary)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(Command::new(&binary).status().unwrap().success());
+    }
+    for body in [
+        " begin return 84/x; end",
+        " :: return 84/x; }",
+        " :: return 84/x;",
+        " :: begin return 84/x; end",
+    ] {
+        fs::write(&input, format!("{header}{body}{tail}")).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object")
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(!out.status.success() && out.stdout.is_empty(), "{body}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn exclusion_contract_native_guests() {
+    let dir = std::env::temp_dir().join(format!("atto-exclusion-native-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let input = dir.join("guest.atto");
+    let object = dir.join("guest.o");
+    let harness = dir.join("host.c");
+    let binary = dir.join("guest");
+    let header = "type R = int where self >= 1 and self <= 42; @requires(x != 0)\nfnc f(int x) -> int requires x != -1";
+    let tail = " pub fnc main() -> int { return f(2); }";
+    fs::write(&harness,"#include <stdint.h>\n#include <assert.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=0;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}\n").unwrap();
+    for body in [
+        " { return 84/x; }",
+        "\nbegin return 84/x; end",
+        " :: return 84/x; end",
+        "\n:: return 84/x; end",
+    ] {
+        fs::write(&input, format!("{header}{body}{tail}")).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object")
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        fs::write(&object, out.stdout).unwrap();
+        assert!(
+            Command::new("cc")
+                .args(["-std=c11", "-Wall", "-Werror"])
+                .arg(&harness)
+                .arg(&object)
+                .arg("-o")
+                .arg(&binary)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(Command::new(&binary).status().unwrap().success());
+    }
+    for body in [
+        " begin return 84/x; end",
+        " :: return 84/x; }",
+        " :: return 84/x;",
+        " :: begin return 84/x; end",
+    ] {
+        fs::write(&input, format!("{header}{body}{tail}")).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object")
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(!out.status.success() && out.stdout.is_empty(), "{body}");
+    }
+    for bad in [
+        header.replace("requires x != -1", "requires x eq 0"),
+        header.replace("requires x != -1", "requires x eq -1"),
+        header.to_string() + " requires x >= -2 requires x <= 2",
+    ] {
+        fs::write(
+            &input,
+            format!("{bad} :: return 84/x; end pub fnc main() -> int {{ return f(0); }}"),
+        )
+        .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object")
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(!out.status.success() && out.stdout.is_empty());
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
