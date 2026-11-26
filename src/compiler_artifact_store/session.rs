@@ -6,19 +6,19 @@ use super::{ArtifactStore, authority::Authority, receipt};
 use crate::{compiler_cache_key as key, sha256::hex_digest};
 use std::path::Path;
 
-pub(crate) struct NativeSession {
+pub struct NativeSession {
     store: ArtifactStore,
     authority: Authority,
     scope: String,
     compiler: String,
     toolchain: String,
 }
-pub(crate) struct Build {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) reused: bool,
+pub struct Build {
+    pub bytes: Vec<u8>,
+    pub reused: bool,
 }
 impl NativeSession {
-    pub(crate) fn open(
+    pub fn open(
         cache: &Path,
         authority: &Path,
         scope: &str,
@@ -85,7 +85,7 @@ impl NativeSession {
         }
         Ok(out)
     }
-    pub(crate) fn build(
+    pub fn build(
         &self,
         source: &str,
         current_pin: &[u8; 32],
