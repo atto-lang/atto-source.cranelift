@@ -764,3 +764,79 @@ fn genuine_import_after_unsupported_block_comment_still_fails_closed() {
         );
     }
 }
+
+#[test]
+fn shared_atto_xo_debit_corpus_executes_unchanged_linked_native_guests() {
+    const CORPUS: &str = include_str!("../contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let corpus_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let digest = Command::new("git")
+        .arg("hash-object")
+        .arg(&corpus_path)
+        .output()
+        .expect("hash exact shared source corpus");
+    assert!(digest.status.success());
+    assert_eq!(
+        String::from_utf8(digest.stdout).unwrap().trim(),
+        "6831dbd0c18eeaa2078fa5f3e324d0f88b40771e"
+    );
+    let project = Project::new();
+    fs::remove_file(project.base.join(".ores.pkg.toml")).expect("remove unused marker");
+    let mut seen = std::collections::HashSet::new();
+    let mut values = 0;
+    let mut overflows = 0;
+    for line in CORPUS.lines() {
+        let fields: Vec<_> = line.split('|').collect();
+        let [id, expected, _, _, _, _, _, source]: [&str; 8] =
+            fields.try_into().expect("eight reviewed corpus columns");
+        assert!(seen.insert(id), "duplicate case {id}");
+        let entry = project.write(&format!("src/debit-{id}.atto"), &format!("{source}\n"));
+        let check = invoke("check", &entry);
+        assert_eq!(
+            (check.status.code(), check.stdout.as_slice()),
+            (Some(0), b"".as_slice()),
+            "{id} admission: {}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        assert!(check.stderr.is_empty());
+        let ir = invoke("ir", &entry);
+        assert_eq!(ir.status.code(), Some(0), "{id} IR");
+        assert!(ir.stderr.is_empty());
+        let clif = String::from_utf8(ir.stdout).expect("CLIF UTF-8");
+        assert!(
+            clif.contains("linked function debit"),
+            "{id} missing helper"
+        );
+        assert!(clif.contains("linked function main"), "{id} missing entry");
+        assert!(clif.contains("call "), "{id} missing native call");
+
+        let run = invoke("run", &entry);
+        if expected == "overflow" {
+            assert_eq!(run.status.code(), Some(1), "{id} overflow wrapped");
+            assert!(run.stdout.is_empty(), "{id} emitted a partial value");
+            let diagnostic = String::from_utf8_lossy(&run.stderr);
+            assert!(
+                diagnostic.starts_with("orescranelift: ")
+                    && diagnostic.contains("i64 arithmetic overflow")
+                    && !diagnostic.contains("panicked at"),
+                "{id} unexpected failure: {diagnostic}"
+            );
+            overflows += 1;
+        } else {
+            assert!(
+                matches!(expected, "42" | "43"),
+                "{id} invalid expected value"
+            );
+            assert_eq!(
+                run.status.code(),
+                Some(0),
+                "{id}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert_eq!(run.stdout, format!("{expected}\n").as_bytes(), "{id}");
+            assert!(run.stderr.is_empty());
+            values += 1;
+        }
+    }
+    assert_eq!((seen.len(), values, overflows), (7, 3, 4));
+}
