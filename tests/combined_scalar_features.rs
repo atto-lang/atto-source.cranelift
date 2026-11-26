@@ -164,3 +164,33 @@ fn pipeline_frontend_remains_native_and_mixed_profiles_fail_closed() {
         assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "));
     }
 }
+
+
+#[test]
+fn pure_string_key_pair_scalar_projection_runs_through_native_cli() {
+    for source in [
+        r#"fnc main():int{return Pair.of("count",42).second;}"#,
+        r#"fnc main():int{return Pair.of<int>("count",42).second;}"#,
+        r#"fnc main():int{return Pair.of<string,int>("count",42).second;}"#,
+        r#"fnc main():int{return (Pair.of("first-name",20).second+1)*2;}"#,
+        r#"fnc main():int{return Pair.of("",42).second;}"#,
+    ] {
+        admitted(source, &[], b"42\n");
+    }
+}
+
+#[test]
+fn pair_key_and_owned_product_boundaries_are_fail_closed() {
+    for (source, diagnostic) in [
+        ("fnc main():int{return Pair.of(42,5).second;}", "E_PAIR_KEY_TYPE"),
+        ("fnc main():int{return Pair.of(true,5).second;}", "E_PAIR_KEY_TYPE"),
+        ("fnc main():int{return Pair.of<int,int>(42,5).second;}", "E_PAIR_KEY_TYPE"),
+        (r#"fnc main():int{return Pair.of("count",42);}"#, "E_PAIR_ESCAPE_UNSUPPORTED"),
+        (r#"fnc main():int{return Pair.of("count",42).first;}"#, "E_PAIR_PROJECTION_UNSUPPORTED"),
+        (r#"fnc main(Pair:int):int{return Pair.of("count",42).second;}"#, "E_PAIR_SCOPE_UNSUPPORTED"),
+        (r#"fnc main():int{return Pair.of("count",9223372036854775808).second;}"#, "i64 literal out of range"),
+        (r#"fnc main():int{return Pair.of("count",1+2).second;}"#, "unexpected token"),
+    ] {
+        rejected(source, diagnostic);
+    }
+}
