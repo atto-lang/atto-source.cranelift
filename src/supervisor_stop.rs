@@ -345,6 +345,64 @@ mod tests {
         assert_eq!(current.snapshot(replacement).unwrap(), Phase::Stopped);
     }
 
+    // Exercise the actual native scalar entry ABI while a physical lease is
+    // held. This is a trusted host composition test, not an actor scheduler.
+    #[test]
+    fn native_jit_completion_precedes_supervisor_stop_settlement() {
+        use crate::{backend, frontend, select_continuation_fence::Fence};
+        use std::{sync::mpsc, thread, time::Duration};
+
+        for (input, expected) in [
+            (41_i64, Ok(42_i64)),
+            (i64::MAX, Err("i64 arithmetic overflow".to_owned())),
+        ] {
+            let fence = Fence::new(5, 2).unwrap();
+            let active = fence.register(5).unwrap();
+            let replay = active.clone();
+            let pending = fence.register(5).unwrap();
+            let mut ledger = SupervisorStopLedger::new(2, 3, 1).unwrap();
+            let child = ledger.register(actor(4, 5)).unwrap();
+            let (claimed_tx, claimed_rx) = mpsc::channel();
+            let (invoke_tx, invoke_rx) = mpsc::channel();
+            let timeout = Duration::from_secs(20);
+            thread::scope(|scope| {
+                let fence_ref = &fence;
+                let worker = scope.spawn(move || {
+                    let program = frontend::parse("pub fnc main(int x):int{return x+1;}").unwrap();
+                    let code = backend::compile(&program).unwrap();
+                    let lease = fence_ref.claim(&active).unwrap();
+                    claimed_tx.send(lease.generation()).unwrap();
+                    invoke_rx.recv_timeout(timeout).unwrap();
+                    let result = code.run(&[input]);
+                    drop(lease);
+                    result
+                });
+                assert_eq!(claimed_rx.recv_timeout(timeout).unwrap(), 5);
+                assert_eq!(fence.counts(), (1, 1));
+                assert!(fence.close());
+                assert!(!fence.retirement_ready());
+                assert!(fence.claim(&pending).is_none());
+                assert!(!fence.advance(5).unwrap());
+                assert!(ledger.reserve_stop(child).is_err());
+                invoke_tx.send(()).unwrap();
+                assert_eq!(worker.join().unwrap(), expected);
+            });
+            assert!(fence.retirement_ready());
+            assert_eq!(fence.counts(), (0, 0));
+            assert!(fence.claim(&replay).is_none());
+            ledger.assert_physically_finalized(child).unwrap();
+            let stop = ledger.reserve_stop(child).unwrap();
+            ledger.claim_host_invocation(stop).unwrap();
+            ledger.mark_uncertain(stop).unwrap();
+            assert!(ledger.acknowledge_applied(stop).is_err());
+            assert_eq!(ledger.snapshot(child).unwrap(), Phase::Stopping);
+            // A trusted host reconciliation receipt is still required.
+            ledger.reconcile_verified(stop).unwrap();
+            assert_eq!(ledger.snapshot(child).unwrap(), Phase::Stopped);
+            assert!(ledger.reconcile_verified(stop).is_err());
+        }
+    }
+
     #[test]
     fn foreign_authority_stale_actor_and_capacity_fail_closed() {
         let mut l = SupervisorStopLedger::new(8, 9, 1).unwrap();
