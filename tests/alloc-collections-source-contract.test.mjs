@@ -81,3 +81,15 @@ test('strict UTF-8 reference decoder vectors',()=>{
  for(const b of mustReject)assert.equal(dec(b),false);
  for(const b of mustAccept)assert.equal(dec(b),true);
 });
+
+test('owned storage and UTF-8 loop state explicitly declare mutability',()=>{
+ const b=source('box'),s=source('string');
+ assert.match(b,/\blet mut Option<T> slot = None;/);
+ assert.doesNotMatch(b,/\blet Option<T> slot = None;/);
+ for(const [name,count] of [['i',3],['count',1],['width',1]]) {
+  const mutable=new RegExp('\\blet mut int '+name+' = [01];','g');
+  const immutable=new RegExp('\\blet int '+name+' = [01];','g');
+  assert.equal([...s.matchAll(mutable)].length,count,name+' mutable declaration count');
+  assert.equal([...s.matchAll(immutable)].length,0,name+' must not be immutable');
+ }
+});
