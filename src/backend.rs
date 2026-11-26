@@ -181,8 +181,8 @@ fn validate_guest_expr(
     admitted_params: usize,
     nodes: &mut usize,
 ) -> Result<(), String> {
-    let mut work = vec![(root, 1_usize)];
-    while let Some((expr, depth)) = work.pop() {
+    let mut work = vec![(root, 1_usize, admitted_locals, admitted_params)];
+    while let Some((expr, depth, admitted_locals, admitted_params)) = work.pop() {
         *nodes += 1;
         if *nodes > 4096 {
             return Err("AST node budget exceeded before native codegen".into());
@@ -199,7 +199,7 @@ fn validate_guest_expr(
                     return Err("E_SEQ_LIMIT: forged scalar sequence before native codegen".into());
                 }
                 for item in items.iter().rev() {
-                    work.push((item, depth + 1));
+                    work.push((item, depth + 1, admitted_locals, admitted_params));
                 }
             }
             Expr::Param(_) => {
@@ -208,16 +208,37 @@ fn validate_guest_expr(
             Expr::Local(_) => {
                 return Err("invalid or forward local reference before native codegen".into());
             }
+            Expr::ScopedCall(args, callee_locals, body) => {
+                if args.len()>8 || args.len()+callee_locals.len()>64 {
+                    return Err("E_UNIT_LIMIT: invalid scoped helper frame".into());
+                }
+                // Arguments may see the caller; the isolated callee may see only
+                // its own parameters and already initialized lexical slots.
+                work.push((body, depth + 1, args.len()+callee_locals.len(), 0));
+                for (index, init) in callee_locals.iter().enumerate().rev() {
+                    work.push((init, depth + 1, args.len()+index, 0));
+                }
+                for arg in args.iter().rev() {
+                    work.push((arg, depth + 1, admitted_locals, admitted_params));
+                }
+            }
             Expr::Sequence(prefix, last) => {
                 if prefix.len() > 4096 {
                     return Err("AST node budget exceeded before native codegen".into());
                 }
-                work.push((last, depth + 1));
+                work.push((last, depth + 1, admitted_locals, admitted_params));
                 for part in prefix.iter().rev() {
-                    work.push((part, depth + 1));
+                    work.push((part, depth + 1, admitted_locals, admitted_params));
                 }
             }
-            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1)),
+            Expr::I32Checked(x)=>work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x, depth + 1, admitted_locals, admitted_params));}
+            Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::Choose(c,y,n) => {work.push((c, depth + 1, admitted_locals, admitted_params));work.push((y, depth + 1, admitted_locals, admitted_params));work.push((n, depth + 1, admitted_locals, admitted_params));}
+            Expr::Compare(op,a,b) => {
+                if *op>5{return Err("invalid comparison opcode before native codegen".into());}
+                work.push((a, depth + 1, admitted_locals, admitted_params));work.push((b, depth + 1, admitted_locals, admitted_params));
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -228,8 +249,8 @@ fn validate_guest_expr(
             | Expr::NamedRem(a, b)
             | Expr::NamedMod(a, b)
             | Expr::NamedPow(a, b) => {
-                work.push((b, depth + 1));
-                work.push((a, depth + 1));
+                work.push((b, depth + 1, admitted_locals, admitted_params));
+                work.push((a, depth + 1, admitted_locals, admitted_params));
             }
         }
     }
@@ -244,12 +265,49 @@ fn emit(
     error: Block,
     divisor_error: Block,
     negative_exponent_error: Block,
+    refinement_error: Block,
+    i32_error: Block,
 ) -> Value {
     use Expr::*;
     match e {
         Literal(v) => b.ins().iconst(types::I64, *v),
         Param(i) => params[*i],
         Local(i) => locals[*i],
+        Compare(op,x,y) => {
+            let a=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let z=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let cc=match op{0=>IntCC::Equal,1=>IntCC::NotEqual,2=>IntCC::SignedLessThan,3=>IntCC::SignedLessThanOrEqual,4=>IntCC::SignedGreaterThan,5=>IntCC::SignedGreaterThanOrEqual,_=>unreachable!()};
+            let cmp=b.ins().icmp(cc,a,z);b.ins().uextend(types::I64,cmp)
+        }
+        Choose(c,y,n) => {
+            let test=emit(c,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let yes=b.create_block();let no=b.create_block();let done=b.create_block();
+            b.append_block_param(done,types::I64);
+            let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
+            b.ins().brif(truth,yes,&[],no,&[]);
+            b.switch_to_block(yes);b.seal_block(yes);
+            let a=emit(y,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            b.ins().jump(done,&[BlockArg::Value(a)]);
+            b.switch_to_block(no);b.seal_block(no);
+            let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            b.ins().jump(done,&[BlockArg::Value(z)]);
+            b.switch_to_block(done);b.seal_block(done);
+            b.block_params(done)[0]
+        }
+        ScopedCall(args, initializers, body) => {
+            // The caller evaluates arguments exactly once, left-to-right.
+            // A new SSA vector contains only the callee's slots and is discarded
+            // at the call result. Branch-local emission occurs in the current CFG block.
+            let mut frame=Vec::with_capacity(args.len()+initializers.len());
+            for arg in args {
+                frame.push(emit(arg,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error));
+            }
+            for init in initializers {
+                let value=emit(init,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+                frame.push(value);
+            }
+            emit(body,b,&[],&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error)
+        }
         InlineTask(body) => emit(
             body,
             b,
@@ -258,6 +316,8 @@ fn emit(
             error,
             divisor_error,
             negative_exponent_error,
+            refinement_error,
+            i32_error,
         ),
         Sequence(prefix, last) => {
             for part in prefix {
@@ -269,6 +329,8 @@ fn emit(
                     error,
                     divisor_error,
                     negative_exponent_error,
+            refinement_error,
+            i32_error,
                 );
             }
             emit(
@@ -279,6 +341,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             )
         }
         Seq(parts) => {
@@ -294,6 +358,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             for part in rest {
                 value = emit(
@@ -304,6 +370,8 @@ fn emit(
                     error,
                     divisor_error,
                     negative_exponent_error,
+            refinement_error,
+            i32_error,
                 );
             }
             value
@@ -320,6 +388,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             let eight = b.ins().iconst(types::I64, 8);
             b.ins().sshr(input, eight)
@@ -336,6 +406,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             let rhs = emit(
                 y,
@@ -345,6 +417,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             match e {
                 BitXor(_, _) => b.ins().bxor(lhs, rhs),
@@ -353,9 +427,25 @@ fn emit(
                 _ => unreachable!(),
             }
         }
+        I32Checked(x)=>{
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,i32::MIN as i64);
+            let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,i32::MAX as i64);
+            let invalid=b.ins().bor(below,above);
+            let valid=b.create_block();b.ins().brif(invalid,i32_error,&[],valid,&[]);
+            b.switch_to_block(valid);b.seal_block(valid);value
+        }
+        RefinementCast(x,lo,hi)=>{
+            let value=emit(x,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,value,*lo);
+            let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,value,*hi);
+            let invalid=b.ins().bor(below,above);
+            let valid=b.create_block();b.ins().brif(invalid,refinement_error,&[],valid,&[]);
+            b.switch_to_block(valid);b.seal_block(valid);value
+        }
         Div(x, y) => {
-            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error);
-            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error);
+            let left = emit(x, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error);
+            let right = emit(y, b, params, locals, error, divisor_error, negative_exponent_error, refinement_error, i32_error);
             let zero = b.ins().icmp_imm_s(IntCC::Equal, right, 0);
             let nonzero = b.create_block();
             b.ins().brif(zero, divisor_error, &[], nonzero, &[]);
@@ -379,6 +469,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             let right = emit(
                 y,
@@ -388,6 +480,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             let rem = checked_rem_values(left, right, b, divisor_error);
             if matches!(e, NamedRem(_, _)) {
@@ -412,6 +506,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             let exponent = emit(
                 y,
@@ -421,6 +517,8 @@ fn emit(
                 error,
                 divisor_error,
                 negative_exponent_error,
+            refinement_error,
+            i32_error,
             );
             checked_pow_values(base, exponent, b, error, negative_exponent_error)
         }
@@ -435,6 +533,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().ssub_overflow(zero, rhs)
@@ -448,6 +548,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -457,6 +559,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     b.ins().sadd_overflow(lhs, rhs)
                 }
@@ -469,6 +573,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -478,6 +584,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     b.ins().ssub_overflow(lhs, rhs)
                 }
@@ -490,6 +598,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     let rhs = emit(
                         y,
@@ -499,6 +609,8 @@ fn emit(
                         error,
                         divisor_error,
                         negative_exponent_error,
+            refinement_error,
+            i32_error,
                     );
                     b.ins().smul_overflow(lhs, rhs)
                 }
@@ -625,6 +737,8 @@ fn prepare_ir(
     let failure = b.create_block();
     let divisor_error = b.create_block();
     let negative_exponent_error = b.create_block();
+    let refinement_error=b.create_block();
+    let i32_error=b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
     b.seal_block(entry);
@@ -663,6 +777,8 @@ fn prepare_ir(
             failure,
             divisor_error,
             negative_exponent_error,
+        refinement_error,
+            i32_error,
         );
         locals.push(value);
     }
@@ -674,6 +790,8 @@ fn prepare_ir(
         failure,
         divisor_error,
         negative_exponent_error,
+        refinement_error,
+            i32_error,
     );
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
@@ -681,6 +799,8 @@ fn prepare_ir(
         (failure, 1),
         (divisor_error, 2),
         (negative_exponent_error, 3),
+        (refinement_error,7),
+        (i32_error,8),
     ] {
         b.switch_to_block(block);
         return_status(&mut b, status, cleanup);
@@ -813,6 +933,10 @@ impl Compiled {
             Err("integer divisor zero".into())
         } else if status == 3 {
             Err("negative integer exponent".into())
+        } else if status == 7 {
+            Err("E_REFINEMENT_VIOLATION".into())
+        } else if status == 8 {
+            Err("E_I32_OVERFLOW".into())
         } else {
             Err("invalid generated native status".into())
         }
@@ -1326,6 +1450,22 @@ mod integrated_local_sequence_native_tests {
             native.run(&[i64::MAX]),
             Err("i64 arithmetic overflow".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod scoped_helper_frame_tests {
+    use super::*;
+    #[test]
+    fn scoped_frames_do_not_admit_caller_or_forward_slot_references() {
+        let valid=Expr::ScopedCall(vec![Expr::Local(0)],vec![Expr::Local(0)],Box::new(Expr::Local(1)));
+        assert!(validate_guest_expr(&valid,1,0,&mut 0).is_ok());
+        for bad in [
+            Expr::ScopedCall(vec![],vec![],Box::new(Expr::Local(0))),
+            Expr::ScopedCall(vec![Expr::Literal(1)],vec![Expr::Local(1)],Box::new(Expr::Local(0))),
+            Expr::ScopedCall(vec![],vec![],Box::new(Expr::Param(0))),
+            Expr::ScopedCall(vec![Expr::Literal(1);9],vec![],Box::new(Expr::Local(0))),
+        ] { assert!(validate_guest_expr(&bad,2,1,&mut 0).is_err()); }
     }
 }
 
