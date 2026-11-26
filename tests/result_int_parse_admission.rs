@@ -88,7 +88,17 @@ fn checked_unwrap_guest_remains_unsupported_without_verified_tagged_abi() {
         "fnc main():int{val Result<int,Error> x=Err(Error(\"bad\"));return x.unwrap();}",
         "fnc main():int{val Result<int,Error> x=trap! None.unwrap();return 42;}",
     ];
-    for source in cases {
+    for source in cases.into_iter().chain([r#"declare type Bounded = int where self >= 1 and self <= 42;
+
+pub fnc main() -> int {
+    val Option<int> x = None;
+
+    return trap! x.unwrap() |> match<int>  over
+        on Ok(n): int -> n,
+        on Err(): int -> 42,
+    end;
+}
+"#]) {
         for mode in ["check", "run", "ir", "emit-object", "emit-object-strict"] {
             let output = compile(mode, source.as_bytes());
             assert_eq!(output.status.code(), Some(1), "{mode}: {source}");
