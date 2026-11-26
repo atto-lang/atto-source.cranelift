@@ -827,7 +827,15 @@ impl<'a> Parser<'a> {
                 "Result" | "Future" | "Channel" | "ActorId" | "ActorRef" | "Mutex" |
                 "MutexGuard" | "SharedMutex" | "Generator" | "Iterator" | "Function" |
                 "Fnc" | "string" | "bool" | "float" | "int" | "i64" | "void" | "self" |
-                "seq" | "sync" | "task" | "yield") {
+                "seq" | "sync" | "task" | "yield" | "unsafe" | "pipe" | "rpipe" |
+                "using" | "pure" | "begin" | "maybe" | "persistent" | "durable" |
+                "guard" | "boolean" | "Pointer" | "ActorMail" | "ReadLoan" | "WriteLoan" |
+                "Atomic" | "AtomicRef" | "AtomicBool" | "AtomicInt" | "AtomicLong" |
+                "AtomicI8" | "AtomicI16" | "AtomicI32" | "AtomicI64" | "AtomicU8" |
+                "AtomicU16" | "AtomicU32" | "AtomicU64" | "Arc" | "Weak" | "Box" | "Rc" |
+                "RwLock" | "RwLockReadGuard" | "RwLockWriteGuard" | "UnsafeCell" |
+                "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" |
+                "f32" | "f64" | "uint" | "decimal" | "bigint") {
             return Err("E_TYPE_NAME: reserved or oversized aggregate identifier".into());
         }
         Ok(name)
