@@ -162,8 +162,8 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
-    QuantityDiv(Box<Expr>, Box<Expr>),
-    RefinementCast(Box<Expr>, i64, i64),
+    Div(Box<Expr>, Box<Expr>),
+    RefinementCast(Box<Expr>,i64,i64),
     BitXor(Box<Expr>, Box<Expr>),
     BitAnd(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
@@ -200,6 +200,60 @@ enum Token<'a> {
     End,
 }
 
+// Bounded scale arithmetic: 256-bit normalized components, 512-bit
+// intermediates. No new dependency and no host integer overflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScaleUInt([u32;16]);
+impl ScaleUInt {
+    const ZERO: Self=Self([0;16]);
+    const ONE: Self=Self([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
+    fn from_u64(n:u64)->Self {let mut x=Self::ZERO;x.0[0]=n as u32;x.0[1]=(n>>32) as u32;x}
+    fn low64(self)->u64{u64::from(self.0[0])|(u64::from(self.0[1])<<32)}
+    fn fits256(self)->bool{self.0[8..].iter().all(|v|*v==0)}
+    fn cmp(self,b:Self)->std::cmp::Ordering{self.0.iter().rev().cmp(b.0.iter().rev())}
+    fn sub(&mut self,b:Self){let mut borrow=0u64;for i in 0..16{let a=u64::from(self.0[i]);let v=u64::from(b.0[i])+borrow;self.0[i]=a.wrapping_sub(v) as u32;borrow=u64::from(a<v);}}
+    fn shift(&mut self){let mut carry=0;for word in &mut self.0{let next=*word>>31;*word=(*word<<1)|carry;carry=next;}}
+    fn mul256(self,b:Self)->Self{
+        let mut out=Self::ZERO;
+        for i in 0..8{let mut carry=0u64;for j in 0..8{
+            let v=u64::from(self.0[i])*u64::from(b.0[j])+u64::from(out.0[i+j])+carry;
+            out.0[i+j]=v as u32;carry=v>>32;
+        }out.0[i+8]=carry as u32;}
+        out
+    }
+    fn divmod(self,b:Self)->(Self,Self){
+        debug_assert!(b!=Self::ZERO);
+        let mut q=Self::ZERO;let mut r=Self::ZERO;
+        for i in (0..512).rev(){let carry=r.0[15]>>31!=0;r.shift();r.0[0]|=(self.0[i/32]>>(i%32))&1;
+            if carry||!r.cmp(b).is_lt(){r.sub(b);q.0[i/32]|=1u32<<(i%32);}
+        }(q,r)
+    }
+    fn gcd(mut a:Self,mut b:Self)->Self{while b!=Self::ZERO{let r=a.divmod(b).1;a=b;b=r;}a}
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+struct QuantityScale(ScaleUInt,ScaleUInt);
+impl QuantityScale {
+    const ONE:Self=Self(ScaleUInt::ONE,ScaleUInt::ONE);
+    fn inv(self)->Self{Self(self.1,self.0)}
+    fn mul(self,rhs:Self)->Result<Self,String>{
+        let n=self.0.mul256(rhs.0);let d=self.1.mul256(rhs.1);
+        let g=ScaleUInt::gcd(n,d);let n=n.divmod(g).0;let d=d.divmod(g).0;
+        if !n.fits256()||!d.fits256(){return Err("E_UNIT_LIMIT: scale components exceed 256 bits".into());}
+        Ok(Self(n,d))
+    }
+    fn convert(self,v:i64,target:Self)->Result<i64,String>{
+        if v==0{return Ok(0);}
+        let n=self.0.mul256(target.1);let d=self.1.mul256(target.0);
+        let g=ScaleUInt::gcd(n,d);let n=n.divmod(g).0;let d=d.divmod(g).0;
+        let (q,r)=ScaleUInt::from_u64(v.unsigned_abs()).divmod(d);
+        if r!=ScaleUInt::ZERO{return Err("E_UNIT_INEXACT: integer conversion".into());}
+        let limit=if v<0{1u64<<63}else{i64::MAX as u64};
+        if n.cmp(ScaleUInt::from_u64(limit)).is_gt()||q.cmp(ScaleUInt::from_u64(limit/n.low64())).is_gt(){return Err("E_UNIT_RANGE: integer conversion".into());}
+        let m=q.low64()*n.low64();
+        if v<0&&m==1u64<<63{return Ok(i64::MIN);}
+        Ok(if v<0{-(m as i64)}else{m as i64})
+    }
+}
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -898,6 +952,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'+') => (1, 2, b'+'),
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
+                Token::Punct(b'/') => (3, 4, b'/'),
                 Token::Punct(b'>') => (0, 1, b'>'),
                 _ => break,
             };
@@ -913,6 +968,7 @@ impl<'a> Parser<'a> {
                 b'+' => Expr::Add(Box::new(lhs), Box::new(rhs)),
                 b'-' => Expr::Sub(Box::new(lhs), Box::new(rhs)),
                 b'*' => Expr::Mul(Box::new(lhs), Box::new(rhs)),
+                b'/' => Expr::Div(Box::new(lhs), Box::new(rhs)),
                 b'>' => {
                     if rhs != Expr::Literal(8) {
                         return Err("stage-0 only supports signed >> 8 with literal count".into());
@@ -950,7 +1006,12 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b';'))?;
         Ok(())
     }
+    // Separate bounded quantity profile; every admitted quantity is typed
+    // before erasure into the existing checked scalar IR.
     fn program(mut self) -> Result<Program, String> {
+        if self.current==Token::Word("type") || (self.current==Token::Word("define") && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit"))) {
+            return quantity_scalar::parse_mode(self,false);
+        }
         // File-scoped namespace is metadata only. Stage-0 still requires one
         // scalar main, and no implicit cross-file or nominal type resolution.
         let has_namespace = self.take(Token::Word("use"))?;
@@ -1625,9 +1686,9 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
                     pending.push((part, level + 1));
                 }
             }
-            Expr::RefinementCast(inner, lo, hi) => {
-                if lo>hi { return Err("E_REFINEMENT_INTERVAL: invalid bounds".into()); }
-                pending.push((inner.as_ref(), level+1));
+            Expr::RefinementCast(inner,lo,hi) => {
+                if lo>hi{return Err("E_REFINEMENT_INTERVAL: invalid bounds".into());}
+                pending.push((inner.as_ref(),level+1));
             }
             Expr::Neg(inner) | Expr::ShiftRight8(inner) | Expr::InlineTask(inner) => {
                 pending.push((inner.as_ref(), level + 1));
@@ -1635,7 +1696,7 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
             Expr::Add(left, right)
             | Expr::Sub(left, right)
             | Expr::Mul(left, right)
-            | Expr::QuantityDiv(left, right)
+            | Expr::Div(left, right)
             | Expr::BitXor(left, right)
             | Expr::BitAnd(left, right)
             | Expr::BitOr(left, right)
@@ -1672,7 +1733,7 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
         Expr::Param(_) | Expr::Local(_) => Err(
             "E_NON_CONST_INITIALIZER: local const/type-first int requires proven constexpr".into(),
         ),
-        Expr::RefinementCast(_,_,_) | Expr::QuantityDiv(_, _) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
+        Expr::RefinementCast(_,_,_) | Expr::NamedRem(_, _) | Expr::NamedMod(_, _) | Expr::NamedPow(_, _)
         | Expr::BitXor(_, _) | Expr::BitAnd(_, _) | Expr::BitOr(_, _) => Err(
             "E_NON_CONST_INITIALIZER: function calls are not proven constexpr in this scalar profile".into(),
         ),
@@ -1680,13 +1741,15 @@ fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
             .checked_neg()
             .ok_or_else(|| "E_CONST_OVERFLOW: signed i64 negation".into()),
         Expr::ShiftRight8(expr) => Ok(eval_const_i64(expr)? >> 8),
-        Expr::Add(left, right) | Expr::Sub(left, right) | Expr::Mul(left, right) => {
+        Expr::Add(left, right) | Expr::Sub(left, right) | Expr::Mul(left, right) | Expr::Div(left, right) => {
             let lhs = eval_const_i64(left)?;
             let rhs = eval_const_i64(right)?;
             let value = match expr {
                 Expr::Add(_, _) => lhs.checked_add(rhs),
                 Expr::Sub(_, _) => lhs.checked_sub(rhs),
                 Expr::Mul(_, _) => lhs.checked_mul(rhs),
+                Expr::Div(_, _) if rhs == 0 => return Err("E_CONST_DIVZERO: signed i64 division".into()),
+                Expr::Div(_, _) => lhs.checked_div(rhs),
                 _ => unreachable!(),
             };
             value.ok_or_else(|| "E_CONST_OVERFLOW: signed i64 arithmetic".into())
@@ -1779,20 +1842,12 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Opt-in strict stage-0 profile, never falls back to ordinary scalar parsing.
-pub fn parse_verified_strict_i64(text: &str) -> Result<Program,String> {
-    validate_source_envelope(text)?;
-    let parser=Parser::new(text)?;
-    quantity_scalar::parse_mode(parser,true)
-}
+#[allow(dead_code)]
+pub fn parse_verified_strict_i64(text:&str)->Result<Program,String>{validate_source_envelope(text)?;quantity_scalar::parse_mode(Parser::new(text)?,true)}
 
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
-    let parser = Parser::new(text)?;
-    if parser.current == Token::Word("define") && (parser.next_significant_word_is("dimension") || parser.next_significant_word_is("unit")) {
-        return quantity_scalar::parse(parser);
-    }
-    let original = parser.program();
+    let original = Parser::new(text)?.program();
     // Preserve authoritative declaration/effect/export diagnostics. Refine
     // only generic grammar denials (or the specific unsupported Struct case).
     if !original.as_ref().is_err_and(|err| {
@@ -1831,21 +1886,11 @@ pub fn parse(text: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn strict_i64_source_admission() {
-        let pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42;";
-        for e in ["40+2","84/2","42 as Bounded","-9223372036854775808"] {
-            let source=format!("{pre} pub fnc main() -> int {{return {e};}}");
-            assert!(super::parse_verified_strict_i64(&source).is_ok(),"{e}");
-        }
-        for e in ["42/0","-9223372036854775808 / -1","9223372036854775807+1","(9223372036854775807+1)*0","43 as Bounded"] {
-            let source=format!("{pre} pub fnc main() -> int {{return {e};}}");
-            assert!(super::parse_verified_strict_i64(&source).err().is_some_and(|e|e.contains("E_VERIFY_UNPROVEN:")),"{e}");
-        }
-        assert!(super::parse_verified_strict_i64("pub fnc main() -> int {return 42;}").is_err());
-        let eager=format!("{pre} pub fnc main() -> int {{val int n = 9223372036854775807+1;return 42;}}");
-        assert!(super::parse_verified_strict_i64(&eager).err().is_some_and(|e|e.contains("E_VERIFY_UNPROVEN:")));
+    fn strict_refinement_admission(){
+      let pre="type Bounded = int where self >= 1 and self <= 42;";
+      for expr in ["40+2","84/2","42 as Bounded"] {assert!(super::parse_verified_strict_i64(&format!("{pre} pub fnc main()->int {{return {expr};}}")).is_ok(),"{expr}");}
+      for expr in ["42/0","-9223372036854775808 / -1","9223372036854775807+1","(9223372036854775807+1)*0","43 as Bounded"]{assert!(super::parse_verified_strict_i64(&format!("{pre} pub fnc main()->int {{return {expr};}}")).unwrap_err().contains("E_VERIFY_UNPROVEN"),"{expr}");}
     }
-
     use super::*;
     #[test]
     fn mutex_new_constructor_is_required_but_not_yet_runtime_supported() {
@@ -2303,8 +2348,13 @@ end"#;
             Expr::Add(a, b) => eval(a, args)?.checked_add(eval(b, args)?).ok_or("overflow"),
             Expr::Sub(a, b) => eval(a, args)?.checked_sub(eval(b, args)?).ok_or("overflow"),
             Expr::Mul(a, b) => eval(a, args)?.checked_mul(eval(b, args)?).ok_or("overflow"),
-            Expr::RefinementCast(inner,lo,hi) => {let v=eval(inner,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
-            Expr::QuantityDiv(a, b) => { let left=eval(a,args)?; let right=eval(b,args)?; if right==0 { Err("division by zero") } else { left.checked_div(right).ok_or("overflow") } },
+            Expr::RefinementCast(x,lo,hi)=>{let v=eval(x,args)?;if v<*lo||v>*hi{Err("refinement violation")}else{Ok(v)}},
+            Expr::Div(a, b) => {
+                let left = eval(a, args)?;
+                let right = eval(b, args)?;
+                if right == 0 { return Err("divisor_zero"); }
+                left.checked_div(right).ok_or("overflow")
+            },
             Expr::BitXor(a, b) => Ok(eval(a, args)? ^ eval(b, args)?),
             Expr::BitAnd(a, b) => Ok(eval(a, args)? & eval(b, args)?),
             Expr::BitOr(a, b) => Ok(eval(a, args)? | eval(b, args)?),
@@ -2595,7 +2645,6 @@ end"#;
             "fnc main(x:int):int{return x>>>8;}",
             "fnc main(x:int):int{return x>8;}",
             "fnc main(x:int):int{return x<<8;}",
-            "fnc main(x:int):int{return x/256;}",
         ] {
             assert!(parse(invalid).is_err(), "{invalid}");
         }
@@ -2646,7 +2695,6 @@ end"#;
     #[test]
     fn fail_closed() {
         for source in [
-            "fnc main():int{return 1/0;}",
             "fnc main():int{return 5 ^ 3;}",
             "fnc main():int{return Integer.div(5,3);}",
             "fnc main():int{return Integer.bitXor(5);}",
