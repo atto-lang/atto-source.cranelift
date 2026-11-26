@@ -234,6 +234,11 @@ fn validate_guest_expr(
             Expr::I32Checked(x)=>work.push((x, depth + 1, admitted_locals, admitted_params)),
             Expr::RefinementCast(x,lo,hi)=>{if lo>hi{return Err("E_REFINEMENT_INTERVAL: forged interval".into());}work.push((x, depth + 1, admitted_locals, admitted_params));}
             Expr::Neg(x) | Expr::ShiftRight8(x) | Expr::InlineTask(x) => work.push((x, depth + 1, admitted_locals, admitted_params)),
+            Expr::InductiveWhile(slot,c,step) => {
+                if *slot>=admitted_locals{return Err("invalid inductive loop state slot before native codegen".into());}
+                work.push((c, depth + 1, admitted_locals, admitted_params));
+                work.push((step, depth + 1, admitted_locals, admitted_params));
+            }
             Expr::Choose(c,y,n) => {work.push((c, depth + 1, admitted_locals, admitted_params));work.push((y, depth + 1, admitted_locals, admitted_params));work.push((n, depth + 1, admitted_locals, admitted_params));}
             Expr::Compare(op,a,b) => {
                 if *op>5{return Err("invalid comparison opcode before native codegen".into());}
@@ -291,6 +296,29 @@ fn emit(
             b.switch_to_block(no);b.seal_block(no);
             let z=emit(n,b,params,locals,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
             b.ins().jump(done,&[BlockArg::Value(z)]);
+            b.switch_to_block(done);b.seal_block(done);
+            b.block_params(done)[0]
+        }
+        InductiveWhile(slot, condition, step) => {
+            // The loop value is an explicit block parameter. Other lexical
+            // slots remain immutable snapshots, even when they copied the counter.
+            let header=b.create_block();
+            let body=b.create_block();
+            let done=b.create_block();
+            b.append_block_param(header,types::I64);
+            b.append_block_param(done,types::I64);
+            b.ins().jump(header,&[BlockArg::Value(locals[*slot])]);
+            b.switch_to_block(header);
+            let state=b.block_params(header)[0];
+            let mut frame=locals.to_vec();
+            frame[*slot]=state;
+            let test=emit(condition,b,params,&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
+            b.ins().brif(truth,body,&[],done,&[BlockArg::Value(state)]);
+            b.switch_to_block(body);b.seal_block(body);
+            let next=emit(step,b,params,&frame,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+            b.ins().jump(header,&[BlockArg::Value(next)]);
+            b.seal_block(header);
             b.switch_to_block(done);b.seal_block(done);
             b.block_params(done)[0]
         }
