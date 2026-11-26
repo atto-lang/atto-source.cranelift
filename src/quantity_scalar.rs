@@ -390,7 +390,29 @@ impl<'a> Quantities<'a> {
         Ok(())
     }
     fn bindings(&mut self)->Result<(),String>{
-        while self.p.take(Token::Word("val"))?{
+        let mut mutable_types:Vec<(String,Refinement)>=Vec::new();
+        loop {
+            let immutable=self.p.take(Token::Word("val"))?;
+            let mutable=!immutable&&self.strict&&self.p.take(Token::Word("let"))?;
+            if !immutable&&!mutable {
+                let assignment=if let Token::Word(n)=self.p.current {
+                    let tail=self.p.input.as_bytes().get(self.p.pos..).unwrap_or_default();
+                    let tail=tail.iter().copied().skip_while(|c|c.is_ascii_whitespace()).collect::<Vec<_>>();
+                    if tail.first()==Some(&b'=')&&tail.get(1)!=Some(&b'='){Some(n.to_owned())}else{None}
+                }else{None};
+                if !self.strict||assignment.is_none(){break;}
+                let name=assignment.unwrap();
+                let want=mutable_types.iter().find(|(n,_)|n==&name).map(|(_,w)|*w).ok_or("E_VERIFY_UNSUPPORTED: assignment requires mutable scalar")?;
+                let index=self.bindings.iter().position(|(n,_)|n==&name).ok_or("E_VERIFY_UNSUPPORTED: assignment outside scope")?;
+                self.p.next()?;self.p.expect(Token::Punct(b'='))?;
+                let value=self.expr(0,0)?;self.p.expect(Token::Punct(b';'))?;
+                Self::boundary(want,&value,"E_REFINEMENT_BINDING")?;
+                let slot=self.push_local(value.expr)?;
+                // A new SSA identity replaces the fact; old slots remain available
+                // to existing immutable snapshots and ordered eager initializers.
+                self.bindings[index].1=Binding{dim:value.dim,scale:value.scale,range:value.range,slot,width:want.width};
+                continue;
+            }
             if self.locals.len()==64{return Err("E_UNIT_LIMIT: local bindings".into());}
             let first=self.p.name()?;
             let (name,want)=if self.p.take(Token::Punct(b':'))?{
@@ -400,6 +422,7 @@ impl<'a> Quantities<'a> {
             }else{
                 let want=self.annotation(&first)?;(self.p.name()?,Some(want))
             };
+            if mutable&&want.is_none(){return Err("E_VERIFY_UNSUPPORTED: mutable binding requires explicit type".into());}
             self.binding_name(&name)?;
             self.p.expect(Token::Punct(b'='))?;
             let mut value=self.expr(0,0)?;
@@ -409,6 +432,7 @@ impl<'a> Quantities<'a> {
                 value.width=w.width;
             }else if value.width==Width::Literal{value.width=Width::I64;}
             let slot=self.push_local(value.expr)?;
+            if mutable{mutable_types.push((name.clone(),want.unwrap()));}
             self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot,width:value.width}));
         }
         Ok(())
