@@ -1027,6 +1027,18 @@ impl<'a> Parser<'a> {
     }
     // Separate bounded quantity profile; every admitted quantity is typed
     // before erasure into the existing checked scalar IR.
+    fn missing_primitive_initializer(&self) -> bool {
+        let qualified=matches!(self.current,Token::Word("let"|"val"|"const"));
+        let mut scan=match Parser::new(&self.input[self.pos..]){Ok(p)=>p,Err(_)=>return false};
+        let ty=if qualified{
+            let ty=scan.current;
+            if scan.next().is_err(){return false;}
+            ty
+        }else{self.current};
+        if !matches!(ty,Token::Word("int"|"bool"|"string"|"String")){return false;}
+        matches!(scan.current,Token::Word(_))&&scan.next().is_ok()&&scan.current==Token::Punct(b';')
+    }
+
     fn program(mut self) -> Result<Program, String> {
         if self.current==Token::Word("type") || (self.current==Token::Word("define") && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit"))) {
             return quantity_scalar::parse_mode(self,false);
@@ -1273,6 +1285,7 @@ impl<'a> Parser<'a> {
         // and type-first int require constexpr; val may be runtime-dependent.
         // The file/module define-const environment exception is not local.
         loop {
+            if self.missing_primitive_initializer(){return Err("E_MISSING_INITIALIZER: explicit initializer required".into());}
             let kind = match self.current {
                 Token::Word("const") => "const",
                 Token::Word("int") => "int",
