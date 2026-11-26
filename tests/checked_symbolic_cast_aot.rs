@@ -33,7 +33,7 @@ int main(void) {
         assert!(Command::new(&binary).status().unwrap().success(), "{expr}");
     }
     for expr in ["<bool>42","42::<bool>","42 as bool","42::<i32>","<Second>42",
-                 "42.<Second>","42::<i64","<i64 42","42 as? i64"] {
+                 "42.<Second>","42::<i64","<i64 42","42 as? i64", "42 : : <i64>", "42:/*split*/:<i64>", "42:\n:<i64>"] {
         fs::write(&source, format!("pub fnc main():int{{return {expr};}}")).unwrap();
         let out=Command::new(env!("CARGO_BIN_EXE_orescranelift"))
             .arg("emit-object").arg(&source).output().unwrap();
