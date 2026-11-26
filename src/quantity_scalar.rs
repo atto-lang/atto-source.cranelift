@@ -107,6 +107,7 @@ struct Quantities<'a> {
     units: Vec<(String, usize, Scale)>,
     refinements: Vec<(String,Refinement)>,
     bindings: Vec<(String,Binding)>,
+    mutable: Vec<(String,Refinement)>,
     strict: bool,
     guarded: bool,
     locals:Vec<Expr>,
@@ -343,7 +344,7 @@ impl<'a> Quantities<'a> {
     // Eager arguments and helper locals get fresh slots; never substitute an
     // effectful expression at multiple uses of a parameter.
     fn call(&mut self,h:Helper,depth:usize)->Result<Typed,String>{
-        if self.guarded {
+        if self.guarded||self.strict {
             self.p.expect(Token::Punct(b'('))?;
             let mut args=Vec::new();
             for (i,want) in h.params.iter().enumerate(){
@@ -390,7 +391,9 @@ impl<'a> Quantities<'a> {
         Ok(())
     }
     fn bindings(&mut self)->Result<(),String>{
-        while self.p.take(Token::Word("val"))?{
+        loop{
+            let is_mut=self.strict&&self.p.take(Token::Word("let"))?;
+            if !is_mut&&!self.p.take(Token::Word("val"))?{break;}
             if self.locals.len()==64{return Err("E_UNIT_LIMIT: local bindings".into());}
             let first=self.p.name()?;
             let (name,want)=if self.p.take(Token::Punct(b':'))?{
@@ -401,6 +404,7 @@ impl<'a> Quantities<'a> {
                 let want=self.annotation(&first)?;(self.p.name()?,Some(want))
             };
             self.binding_name(&name)?;
+            if is_mut&&want.is_none(){return Err("E_VERIFY_UNSUPPORTED: mutable binding requires declared invariant".into());}
             self.p.expect(Token::Punct(b'='))?;
             let mut value=self.expr(0,0)?;
             self.p.expect(Token::Punct(b';'))?;
@@ -409,9 +413,50 @@ impl<'a> Quantities<'a> {
                 value.width=w.width;
             }else if value.width==Width::Literal{value.width=Width::I64;}
             let slot=self.push_local(value.expr)?;
+            if is_mut{self.mutable.push((name.clone(),want.unwrap()));}
             self.bindings.push((name,Binding{dim:value.dim,scale:value.scale,range:value.range,slot,width:value.width}));
         }
         Ok(())
+    }
+    // Restricted sequential CFG: fresh slot per assignment; one directly
+    // updated scalar per loop. No aliasing, break/continue or branch writes.
+    fn strict_updates(&mut self)->Result<(),String>{
+        if !self.strict{return Ok(());}
+        loop{
+            // Declarations may follow an assignment or a completed loop. Each
+            // snapshot still gets a new eager slot, never the mutable slot.
+            self.bindings()?;
+            if self.p.take(Token::Word("while"))?{
+                if self.mutable.len()!=1{return Err("E_VERIFY_UNSUPPORTED: single declared mutable loop state required".into());}
+                let (key,want)=self.mutable[0].clone();
+                let index=self.bindings.iter().position(|(n,_)|n==&key).ok_or("E_VERIFY_UNSUPPORTED: loop binding")?;
+                let before=self.bindings[index].1.clone();
+                if before.dim!=want.dim||before.scale!=want.scale||!before.range.contained(want.lo,want.hi){return Err("E_VERIFY_UNPROVEN: invariant not established".into());}
+                if self.locals.len()>=64{return Err("E_UNIT_LIMIT: loop local budget".into());}
+                let slot=self.locals.len();
+                let mut header=self.bindings.clone();header[index].1=Binding{dim:want.dim,scale:want.scale,range:Range{lo:want.lo,hi:want.hi,holes:0},slot,width:want.width};
+                let old=self.guarded;self.guarded=true;
+                let (condition,yes,no)=self.guard_or(&header,0)?;
+                self.p.expect(Token::Punct(b'{'))?;
+                if self.p.name()?!=key{return Err("E_VERIFY_UNSUPPORTED: loop update must target its state".into());}
+                self.p.expect(Token::Punct(b'='))?;self.bindings=yes;
+                let update=self.expr(0,0)?;
+                Self::boundary(want,&update,"E_REFINEMENT_BINDING")?;
+                self.p.expect(Token::Punct(b';'))?;self.p.expect(Token::Punct(b'}'))?;
+                self.guarded=old;self.bindings=no;
+                if self.locals.len()!=slot{return Err("E_VERIFY_UNSUPPORTED: loop lowering introduced eager locals".into());}
+                let expr=self.p.node(Expr::LoopValue(Box::new(Expr::Local(before.slot)),Box::new(condition),Box::new(update.expr)))?;
+                let actual=self.push_local(expr)?;if actual!=slot{return Err("E_VERIFY_UNSUPPORTED: loop slot mismatch".into());}
+                continue;
+            }
+            let Token::Word(n)=self.p.current else{break;};
+            let Some((key,want))=self.mutable.iter().find(|(k,_)|k==n).cloned() else{break;};
+            self.p.next()?;self.p.expect(Token::Punct(b'='))?;
+            let value=self.expr(0,0)?;Self::boundary(want,&value,"E_REFINEMENT_BINDING")?;
+            self.p.expect(Token::Punct(b';'))?;let slot=self.push_local(value.expr)?;
+            let index=self.bindings.iter().position(|(k,_)|k==&key).ok_or("E_VERIFY_UNSUPPORTED: assignment binding")?;
+            self.bindings[index].1=Binding{dim:want.dim,scale:want.scale,range:value.range,slot,width:want.width};
+        }Ok(())
     }
     fn contract_op(&mut self)->Result<u8,String>{
         if self.p.take(Token::Word("eq"))?{return Ok(0);}
@@ -606,11 +651,11 @@ impl<'a> Quantities<'a> {
     }
 }
 pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
-    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new()};
+    let mut q=Quantities{p,dimensions:Vec::new(),units:Vec::new(),refinements:Vec::new(),bindings:Vec::new(),mutable:Vec::new(),strict,guarded:false,locals:Vec::new(),helpers:Vec::new()};
     q.declarations()?;q.refinement_declarations()?;
     if strict&&q.refinements.is_empty(){return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());}
     loop{
-        q.bindings.clear();q.locals.clear();
+        q.bindings.clear();q.locals.clear();q.mutable.clear();
         let public=q.p.take(Token::Word("pub"))?;
         q.p.expect(Token::Word("fnc"))?;
         let name=q.p.name()?;
@@ -640,7 +685,7 @@ pub(super) fn parse_mode(p:Parser<'_>,strict:bool)->Result<Program,String>{
         let result=q.annotation(&ty)?;
         let contracts=q.contracts(&mut params,result,main)?;
         q.p.expect(Token::Punct(b'{'))?;
-        q.bindings()?;
+        q.bindings()?;q.strict_updates()?;
         if q.p.current==Token::Word("let"){return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());}
         let value=q.returning(0)?;
         if main{Quantities::scalar(&value)?;}
