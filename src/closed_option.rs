@@ -227,16 +227,12 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     let result = match option {
         OptionValue::Closed(Some(value)) => value,
         OptionValue::Closed(None) => fallback,
-        OptionValue::Conditional(cond, Some(value), None) => p.node(Expr::Choose(
-            cond,
-            value,
-            Box::new(fallback),
-        ))?,
-        OptionValue::Conditional(cond, None, Some(value)) => p.node(Expr::Choose(
-            cond,
-            Box::new(fallback),
-            value,
-        ))?,
+        OptionValue::Conditional(cond, Some(value), None) => {
+            p.node(Expr::Choose(cond, value, Box::new(fallback)))?
+        }
+        OptionValue::Conditional(cond, None, Some(value)) => {
+            p.node(Expr::Choose(cond, Box::new(fallback), value))?
+        }
         _ => return Err("E_CLOSED_OPTION_TAGS".into()),
     };
     validate_ast_depth(&result)?;
