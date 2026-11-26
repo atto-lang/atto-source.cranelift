@@ -344,6 +344,7 @@ impl QuantityScale {
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
+    newline_before_current: bool,
     current: Token<'a>,
     nodes: usize,
     parameters: Vec<String>,
@@ -407,6 +408,7 @@ impl<'a> Parser<'a> {
         let mut p = Self {
             input,
             pos: 0,
+            newline_before_current: false,
             current: Token::End,
             nodes: 0,
             parameters: Vec::new(),
@@ -486,6 +488,7 @@ impl<'a> Parser<'a> {
     }
 
     fn next(&mut self) -> Result<(), String> {
+        let previous_end = self.pos;
         let b = self.input.as_bytes();
         let preceded_by_sync = self.current == Token::Word("sync");
         let preceded_by_as = self.current == Token::Word("as");
@@ -512,6 +515,7 @@ impl<'a> Parser<'a> {
             }
             break;
         }
+        self.newline_before_current = b[previous_end..self.pos].contains(&b'\n');
         if self.pos == b.len() {
             self.current = Token::End;
             return Ok(());
