@@ -3587,5 +3587,154 @@ end"#;
     }
 }
 
+ 
+// Opt-in restricted durable Counter source admission. Use the existing
+// lexer, not the scalar program parser, and consume the complete source.
+// Reject comments/directives in this initial profile to avoid divergence.
+pub fn durable_counter_descriptor(source: &str) -> Result<Vec<u8>, String> {
+    let deny = || "E_DURABLE_COUNTER_ACTOR_ABI".to_owned();
+    if source.len() > 16384
+        || source.bytes().any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b)))
+        || source.contains('/')
+    {
+        return Err(deny());
+    }
+    validate_source_envelope(source)?;
+    let mut p = Parser::new(source)?;
+    fn expect<'a>(p: &mut Parser<'a>, tokens: &[Token<'a>]) -> Result<(), String> {
+        for &token in tokens {
+            if !p.take(token)? {
+                return Err("E_DURABLE_COUNTER_ACTOR_ABI".into());
+            }
+        }
+        Ok(())
+    }
+    use Token::{End, Number, Punct, Word};
+    expect(&mut p, &[Word("define"), Word("durable"), Word("actor"), Word("Counter"), Word("as"), Word("state")])?;
+    let field = match p.current {
+        Word(v @ ("count" | "balance")) => v,
+        _ => return Err(deny()),
+    };
+    expect(&mut p, &[Word(field), Punct(b':'), Word("int"), Punct(b'='), Number("0"), Punct(b';'), Word("receive"), Punct(b'('), Word("ActorMail"), Punct(b'<'), Word("int"), Punct(b'>')])?;
+    let mail = match p.current {
+        Word(v @ ("mail" | "event")) => v,
+        _ => return Err(deny()),
+    };
+    expect(&mut p, &[Word(mail), Punct(b')')])?;
+    // The existing lexer represents the arrow as two punctuators. Require
+    // contiguity before consuming them, not subtraction followed by >.
+    if p.current != Punct(b'-') || source.as_bytes().get(p.pos) != Some(&b'>') {
+        return Err(deny());
+    }
+    expect(&mut p, &[Punct(b'-'), Punct(b'>'), Word("void"), Punct(b'{'), Word("self"), Punct(b'.'), Word(field), Punct(b'='), Word("self"), Punct(b'.'), Word(field), Punct(b'+'), Word(mail), Punct(b'.'), Word("value"), Punct(b';'), Punct(b'}'), Word("end")])?;
+    if p.current != End {
+        return Err(deny());
+    }
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+        })
+    }
+    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
+    for name in ["Counter", field] {
+        sig.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        sig.extend_from_slice(name.as_bytes());
+    }
+    sig.push(1);
+    let mut snapshot = b"ATTOST01\x01".to_vec();
+    snapshot.extend_from_slice(&fnv(&sig).to_le_bytes());
+    snapshot.extend_from_slice(&1u16.to_le_bytes());
+    snapshot.push(1);
+    snapshot.extend_from_slice(&0u64.to_le_bytes());
+    snapshot.extend_from_slice(&fnv(&snapshot).to_le_bytes());
+    let mut descriptor = vec![1, 7];
+    descriptor.extend_from_slice(b"Counter");
+    descriptor.push(field.len() as u8);
+    descriptor.extend_from_slice(field.as_bytes());
+    descriptor.extend_from_slice(&[1, 36]);
+    descriptor.extend_from_slice(&snapshot);
+    Ok(descriptor)
+}
+
+// Restricted schema-only profile, separate from executable actor lowering.
+// Exact ASCII token stream, no comments/directives, bounded signed literals.
+pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let deny = || "E_DURABLE_SCALAR_SCHEMA_V1".to_owned();
+    if source.len() > 16384 || source.bytes().any(|b| b >= 127 || (b < 32 && !b"\t\r\n".contains(&b))) || source.contains('/') {
+        return Err(deny());
+    }
+    validate_source_envelope(source)?;
+    let mut p = Parser::new(source)?;
+    use Token::{End, Number, Punct, Word};
+    fn take<'a>(p: &mut Parser<'a>, token: Token<'a>) -> Result<(), String> {
+        if p.take(token)? { Ok(()) } else { Err("E_DURABLE_SCALAR_SCHEMA_V1".into()) }
+    }
+    fn name<'a>(p: &mut Parser<'a>) -> Result<&'a str, String> {
+        const RESERVED: &str = " define pub private durable persistent actor as state end int bool true false self receive init fnc mtd let val mut const return await suspends susp async critical using with import namespace module class struct contract enum new spawn stop if else match on default void ";
+        if let Word(n) = p.current {
+            if !n.is_empty() && n.len() <= 128 && n.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                && !RESERVED.contains(&format!(" {n} ")) {
+                take(p, Word(n))?;
+                return Ok(n);
+            }
+        }
+        Err("E_DURABLE_SCALAR_SCHEMA_V1".into())
+    }
+    fn sized(sig: &mut Vec<u8>, n: &str) {
+        sig.extend_from_slice(&(n.len() as u32).to_le_bytes());
+        sig.extend_from_slice(n.as_bytes());
+    }
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))
+    }
+    for word in ["define", "durable", "actor"] { take(&mut p, Word(word))?; }
+    let mut sig = b"atto.actor.state.schema.v1\0".to_vec();
+    sized(&mut sig, name(&mut p)?);
+    take(&mut p, Word("as"))?;
+    let mut names = std::collections::BTreeSet::new();
+    let mut tags = Vec::new();
+    let mut payload = Vec::new();
+    while p.current == Word("state") {
+        if tags.len() >= 256 { return Err(deny()); }
+        take(&mut p, Word("state"))?;
+        let field = name(&mut p)?;
+        if !names.insert(field) { return Err(deny()); }
+        sized(&mut sig, field);
+        take(&mut p, Punct(b':'))?;
+        let tag = match p.current {
+            Word("int") => { take(&mut p, Word("int"))?; 1u8 }
+            Word("bool") => { take(&mut p, Word("bool"))?; 2u8 }
+            _ => return Err(deny()),
+        };
+        take(&mut p, Punct(b'='))?;
+        tags.push(tag); sig.push(tag); payload.push(tag);
+        if tag == 1 {
+            let neg = p.take(Punct(b'-'))?;
+            let lit = match p.current { Number(n) => n, _ => return Err(deny()) };
+            if lit.is_empty() || lit.len() > 19 || (lit.len() > 1 && lit.starts_with('0')) || !lit.bytes().all(|b| b.is_ascii_digit()) { return Err(deny()); }
+            take(&mut p, Number(lit))?;
+            let text = if neg { format!("-{lit}") } else { lit.to_owned() };
+            let value = text.parse::<i64>().map_err(|_| deny())?;
+            payload.extend_from_slice(&value.to_le_bytes());
+        } else {
+            let value = match p.current { Word("true") => 1, Word("false") => 0, _ => return Err(deny()) };
+            let token = p.current;
+            take(&mut p, token)?;
+            payload.push(value);
+        }
+        take(&mut p, Punct(b';'))?;
+    }
+    take(&mut p, Word("end"))?;
+    if p.current != End { return Err(deny()); }
+    let mut initial = b"ATTOST01\x01".to_vec();
+    initial.extend_from_slice(&fnv(&sig).to_le_bytes());
+    initial.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+    initial.extend_from_slice(&payload);
+    let checksum = fnv(&initial);
+    initial.extend_from_slice(&checksum.to_le_bytes());
+    Ok((initial, tags))
+}
+
 #[path = "scalar_library.rs"]
 pub mod scalar_library;
