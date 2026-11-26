@@ -263,4 +263,31 @@ mod tests {
         assert_eq!(fence.counts(), (0, 0));
         assert_eq!(fence.advance(1), Ok(true));
     }
+    #[test]
+    fn million_generation_reuse_and_mixed_capacity() {
+        let fence = Fence::new(1, 4).unwrap();
+        let mut stale: Option<Ticket> = None;
+        for generation in 1..=1_000_000 {
+            let ticket = fence.register(generation).unwrap();
+            let execution = fence.claim(&ticket).unwrap();
+            let pending: Vec<_> = (0..3).map(|_| fence.register(generation).unwrap()).collect();
+            assert_eq!(fence.counts(), (3, 1));
+            assert!(matches!(fence.register(generation), Err(AdmissionError::Capacity)));
+            assert_eq!(fence.advance(generation), Ok(false));
+            if let Some(previous) = stale.as_ref() {
+                assert!(!previous.close());
+                assert!(fence.claim(previous).is_none());
+            }
+            for item in pending {
+                assert!(item.close());
+                assert!(!item.close());
+            }
+            drop(execution);
+            assert_eq!(fence.counts(), (0, 0));
+            assert_eq!(fence.advance(generation), Ok(true));
+            stale = Some(ticket);
+        }
+        assert!(fence.close());
+        assert!(fence.retirement_ready());
+    }
 }
