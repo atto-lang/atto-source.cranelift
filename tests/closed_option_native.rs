@@ -61,7 +61,8 @@ fn errors_before_trap_and_in_selected_arm_are_not_caught() {
         assert_eq!(out.status.code(), Some(1));
         assert!(out.stdout.is_empty());
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("division") || err.contains("overflow"), "{err}");
+        let expected = if arg == "0" { "orescranelift: integer divisor zero\n" } else { "orescranelift: i64 arithmetic overflow\n" };
+        assert_eq!(err, expected);
     }
 }
 #[test]
