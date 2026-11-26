@@ -93,6 +93,7 @@ fn awaited_words_inside_comments_do_not_block_scalar_guest_execution() {
 #[test]
 fn exact_mixed_counted_sources_and_contextual_headers_fail_closed() {
     let sources = [
+        include_str!("fixtures/select-source-v2/counted-distinct-alias-projection.atto"),
         include_str!("fixtures/select-source-v2/counted-mixed-future-alias.atto"),
         include_str!("fixtures/select-source-v2/counted-multi-channel-fair.atto"),
         include_str!("fixtures/select-source-v2/counted-mixed-zero.atto"),
