@@ -65,6 +65,10 @@ fn atom(p: &mut Parser<'_>, params: &[(String, Ty)], depth: usize)
     if depth > 32 {
         return Err("E_LIBRARY_DEPTH".into());
     }
+    p.nodes += 1;
+    if p.nodes > 128 {
+        return Err("E_LIBRARY_EXPRESSION_BUDGET".into());
+    }
     if p.take(Token::Punct(b'('))? {
         let value = expression(p, params, depth + 1)?;
         p.expect(Token::Punct(b')'))?;
@@ -225,6 +229,7 @@ pub fn parse_if_library(source: &str) -> Result<Option<Library>, String> {
         let ret = ty(&mut p)?;
         p.expect(Token::Punct(b'{'))?;
         p.expect(Token::Word("return"))?;
+        p.nodes = 0;
         let body = expression(&mut p, &params, 0)?;
         if body.ty() != ret {
             return Err("E_LIBRARY_RETURN_TYPE".into());
