@@ -220,6 +220,7 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    UnicodeNot,
     End,
 }
 
@@ -796,6 +797,9 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if self.input[start..].starts_with('¬') {
+            self.pos = start + '¬'.len_utf8();
+            self.current = Token::UnicodeNot;
         } else if first == b'~' {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
