@@ -231,6 +231,7 @@ fn validate_guest_expr(
                                 if *i>=count||!mutable.contains(i){return Err("invalid loop assignment".into());}
                                 work.push((x,d+1,count,0));
                             }
+                            LoopStep::Exit(c,_)=>work.push((c,d+1,count,0)),
                             LoopStep::Loop(c,ss)=>{
                                 work.push((c,d+1,count,0));blocks.push((ss,count,mutable.clone(),d+1));
                             }
@@ -292,14 +293,15 @@ fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut Fu
     use crate::frontend::LoopStep;
     let count=frame.len();
     let header=b.create_block();let body=b.create_block();let exit=b.create_block();
-    for _ in 0..count{b.append_block_param(header,types::I64);}
+    for _ in 0..count{b.append_block_param(header,types::I64);b.append_block_param(exit,types::I64);}
     let entry=frame.iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
     b.ins().jump(header,&entry);
     b.switch_to_block(header);
     let header_values=b.block_params(header).to_vec();
     let test=emit(condition,b,&[],&header_values,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
     let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
-    b.ins().brif(truth,body,&[],exit,&[]);
+    let false_args=header_values.iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
+    b.ins().brif(truth,body,&[],exit,&false_args);
     b.switch_to_block(body);b.seal_block(body);
     let mut current=header_values.clone();
     for step in steps{
@@ -307,11 +309,19 @@ fn emit_scalar_loop(condition:&Expr,steps:&[crate::frontend::LoopStep],b:&mut Fu
             LoopStep::Bind(x,_)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);current.push(value);}
             LoopStep::Set(i,x)=>{let value=emit(x,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);current[*i]=value;}
             LoopStep::Loop(c,ss)=>emit_scalar_loop(c,ss,b,&mut current,error,divisor_error,negative_exponent_error,refinement_error,i32_error),
+            LoopStep::Exit(c,breaking)=>{
+                let test=emit(c,b,&[],&current,error,divisor_error,negative_exponent_error,refinement_error,i32_error);
+                let truth=b.ins().icmp_imm(IntCC::NotEqual,test,0);
+                let next=b.create_block();
+                let values=current[..count].iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
+                b.ins().brif(truth,if *breaking{exit}else{header},&values,next,&[]);
+                b.switch_to_block(next);b.seal_block(next);
+            }
         }
     }
     let back=current[..count].iter().copied().map(BlockArg::Value).collect::<Vec<_>>();
     b.ins().jump(header,&back);b.seal_block(header);
-    b.switch_to_block(exit);b.seal_block(exit);*frame=header_values;
+    b.switch_to_block(exit);b.seal_block(exit);*frame=b.block_params(exit).to_vec();
 }
 
 fn emit(
