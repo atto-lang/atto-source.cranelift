@@ -1397,7 +1397,6 @@ fn odb1_native_signed_shift8_scalar_gate() {
         "fnc main(x:int):int{return x>>>8;}",
         "fnc main(x:int):int{return x>8;}",
         "fnc main(x:int):int{return x<<8;}",
-        "fnc main(x:int):int{return x/256;}",
         "define module wal_frame as pub fnc main():int{return 256>>8;} end",
     ] {
         fixture(invalid, &["256"], false, "");
@@ -2401,4 +2400,16 @@ fn actor_pubsub_words_inside_comments_do_not_change_scalar_programs() {
         true,
         "42\n",
     );
+}
+
+#[test]
+fn checked_division_jit_cli_values_and_traps() {
+    for (a,b,want) in [("84","2","42\n"),("-7","2","-3\n"),("7","-2","-3\n"),("-7","-2","3\n")] {
+        fixture("fnc main(a:int,b:int):int{return a/b;}", &[a,b], true, want);
+    }
+    fixture("fnc main(a:int,b:int):int{return a/b;}", &["1","0"], false, "");
+    fixture("fnc main(a:int,b:int):int{return a/b;}", &["-9223372036854775808","-1"], false, "");
+    fixture("fnc main():int{return 2+84/2*3;}", &[], true, "128\n");
+    fixture("fnc main():int{return 84/2/2;}", &[], true, "21\n");
+    fixture("fnc main():int{return seq(1/0,42);}", &[], false, "");
 }
