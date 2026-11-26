@@ -100,13 +100,25 @@ fn eager_checked_overflow_cannot_hide_under_zero_or_bitxor() {
 }
 
 #[test]
+fn checked_signed_division_executes_and_traps_without_success_output() {
+    for (expr, expected) in [("1 / 2",0), ("-7 / 3",-2), ("7 / -3",-2), ("-7 / -3",2)] {
+        accept(expr, expected);
+    }
+    for expr in ["1 / 0", "-9223372036854775808 / -1", "0 * (1 / 0)"] {
+        let output = cli(&guest(expr), "run");
+        assert_eq!(output.status.code(), Some(1), "{expr}");
+        assert!(output.stdout.is_empty(), "{expr}");
+        assert!(String::from_utf8_lossy(&output.stderr).starts_with("orescranelift: "));
+    }
+}
+
+#[test]
 fn unsupported_ownership_actor_and_decimal_source_never_emits_ir() {
     for expression in [
         "rt mut share 1",
         "rt borrow x",
         "new Actor()",
         "1.5",
-        "1 / 2",
         "1__0",
         "1 ^ 2",
         "1 ^^ 2",
