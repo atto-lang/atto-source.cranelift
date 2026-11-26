@@ -32,6 +32,14 @@ impl<'a> Quantities<'a> {
                 let target=self.p.name()?;
                 let index=self.dimensions.iter().position(|n|n==&target)
                     .ok_or("E_UNIT_DECLARATION: unknown dimension")?;
+                if self.p.take(Token::Punct(b'='))? {
+                    let base=self.p.name()?;
+                    if !self.units.iter().any(|(n,i)|n==&base && *i==index) {
+                        return Err("E_UNIT_DECLARATION: unknown or incompatible alias".into());
+                    }
+                } else if self.units.iter().any(|(_,i)|*i==index) {
+                    return Err("E_UNIT_DECLARATION: duplicate base unit".into());
+                }
                 self.units.push((name,index));
             }
             self.p.expect(Token::Punct(b';'))?;
@@ -79,9 +87,11 @@ impl<'a> Quantities<'a> {
         if self.p.take(Token::Punct(b'-'))? {
             if let Token::Number(n)=self.p.current {
                 if integer_digits(n)?=="9223372036854775808" {
+                    let end=self.p.pos;
                     self.p.next()?;
+                    let compact=self.p.pos==end+1;
                     let expr=self.p.node(Expr::Literal(i64::MIN))?;
-                    return self.postfix(Typed{expr,dim:SCALAR},true);
+                    return self.postfix(Typed{expr,dim:SCALAR},compact);
                 }
             }
             let value=self.atom(depth+1)?;
@@ -94,9 +104,11 @@ impl<'a> Quantities<'a> {
         }
         if let Token::Number(n)=self.p.current {
             let v=integer_digits(n)?.parse::<i64>().map_err(|_|"i64 literal out of range")?;
+            let end=self.p.pos;
             self.p.next()?;
+            let compact=self.p.pos==end+1;
             let expr=self.p.node(Expr::Literal(v))?;
-            return self.postfix(Typed{expr,dim:SCALAR},true);
+            return self.postfix(Typed{expr,dim:SCALAR},compact);
         }
         Err("E_UNIT_PROFILE: expected closed i64 quantity expression".into())
     }
@@ -104,7 +116,6 @@ impl<'a> Quantities<'a> {
         if depth>MAX_DEPTH {return Err("expression depth budget exceeded".into());}
         let mut lhs=self.atom(depth+1)?;
         loop{
-            if min_bp<=5&&self.p.take(Token::Word("as"))? {self.target(&mut lhs,true)?;continue;}
             let (l,r,op)=match self.p.current{
                 Token::Punct(b'+')=>(1,2,b'+'),
                 Token::Punct(b'-')=>(1,2,b'-'),
@@ -130,6 +141,11 @@ impl<'a> Quantities<'a> {
             let left=Box::new(lhs.expr);let right=Box::new(rhs.expr);
             let expr=self.p.node(match op{b'+'=>Expr::Add(left,right),b'-'=>Expr::Sub(left,right),b'*'=>Expr::Mul(left,right),b'/'=>Expr::QuantityDiv(left,right),_=>unreachable!()})?;
             lhs=Typed{expr,dim};
+        }
+        // Quantity casts/ascriptions have lower precedence than arithmetic.
+        // Parenthesize attachment when used as a subsequent operand.
+        if min_bp==0 && self.p.take(Token::Word("as"))? {
+            self.target(&mut lhs,true)?;
         }
         Ok(lhs)
     }
