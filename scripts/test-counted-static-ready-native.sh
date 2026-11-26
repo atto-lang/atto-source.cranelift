@@ -21,14 +21,14 @@ for c in cases:
     raw=(root/c['path']).read_bytes()
     assert hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==c['gitBlobSha1']
 PY
-for name in counted-three counted-zero counted-one counted-alias counted-mixed-future-alias counted-multi-channel-fair counted-mixed-zero counted-distinct-alias-projection; do
+for name in counted-three counted-zero counted-one counted-alias counted-dynamic counted-dynamic-zero counted-mixed-future-alias counted-multi-channel-fair counted-mixed-zero counted-distinct-alias-projection; do
   "$compiler" emit-counted-static-ready-object "$corpus/$name.atto" > "$work/guest.o"
   file "$work/guest.o" | grep -F relocatable
   cc "$work/main.c" "$work/guest.o" -o "$work/guest"
   test "$("$work/guest")" = 42
   echo "CRANELIFT_NATIVE_GUEST_PASS $name"
 done
-for name in counted-dynamic counted-dynamic-zero reject-counted-negative reject-counted-bool reject-counted-scalar reject-counted-default reject-counted-write reject-counted-dynamic-bool reject-counted-dynamic-unknown; do
+for name in reject-counted-negative reject-counted-bool reject-counted-scalar reject-counted-default reject-counted-write reject-counted-dynamic-bool reject-counted-dynamic-unknown; do
   if "$compiler" emit-counted-static-ready-object "$corpus/$name.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
   test ! -s "$work/denial"
   grep -F E_COUNTED_STATIC_READY "$work/err"
@@ -70,5 +70,16 @@ for body in \
   printf 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(1); %s }\n' "$body" > "$work/bad.atto"
   if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
   test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+done
+# Only literal-known lexical counts, and mutable scalar assignment, are admitted.
+for body in \
+ 'val int count = 1; count = 0; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
+ 'val int count = 17; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
+ 'val int count = 1 + 1; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;' \
+ 'let int count = 1; count = count + 1; val Array[int] b = await select<int>(count) { when readch a: int n -> { return n; } }; return 42;'; do
+  printf 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(1); %s }\n' "$body" > "$work/bad.atto"
+  if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
+  test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+  echo CRANELIFT_LEXICAL_COUNT_REJECT_PASS
 done
 echo CRANELIFT_COUNTED_STATIC_NATIVE_PASS
