@@ -1076,7 +1076,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn quantity_atom(&mut self, depth: usize, units: &[QuantityUnit], locals: &[(String,QuantityDim)]) -> Result<(Expr,[i8;8]), String> {
+    fn quantity_atom(&mut self, depth: usize, units: &[QuantityUnit], locals: &[(String,QuantityDim)]) -> Result<(Expr,QuantityDim),String> {
         if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
         if self.take(Token::Punct(b'<'))? {
             self.checked_i64_cast_target()?;
