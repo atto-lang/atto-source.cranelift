@@ -41,6 +41,18 @@ fn rejects_every_unsupported_nominal_declaration_without_output() {
         "define record Pair as\nend\n",
         "define interface Message as\nend\n",
         "define trait Sendable as\nend\n",
+        // Contract declarations must remain distinct from executable scalar
+        // functions even when a valid scalar main follows them.
+        "define contract Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define pub contract Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "pub define contract Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define contract ShopApi for namespace as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define interface Api as run():int; end\npub fnc main():int{return 42;}\n",
+        "define interface Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define interface Api as mtd run():int; end\npub fnc main():int{return 42;}\n",
+        "define trait Api as run():int; end\npub fnc main():int{return 42;}\n",
+        "define trait Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define trait Api as mtd run():int; end\npub fnc main():int{return 42;}\n",
         "define protocol Wire as\nend\n",
         "define service Router as\nend\n",
         "define actor A extends B implements I as\nend\n",
