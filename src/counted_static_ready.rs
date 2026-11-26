@@ -1,7 +1,7 @@
-//! Literal-count closed-world scalarization into the existing native
+//! Literal or singleton-proven count closed-world scalarization into the existing native
 //! Cranelift Program IR. Queue readiness/order is statically known, but every
 //! payload, projection and returned expression executes as checked native code.
-//! No external producer, dynamic count, actor or scheduler claim.
+//! No external producer, unproven dynamic count, actor or scheduler claim.
 use crate::frontend::{Expr, Program};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -12,7 +12,7 @@ fn lit(n:i64)->Expr{Expr::Literal(n)}
 fn choose(c:Expr,y:Expr,n:Expr)->Expr{Expr::Choose(boxed(c),boxed(y),boxed(n))}
 #[derive(Clone)]
 enum Slot {
-    Scalar(usize), Channel{cap:usize,queue:VecDeque<usize>},
+    Scalar(usize,bool), Channel{cap:usize,queue:VecDeque<usize>},
     Future{value:Expr,retired:bool}, Array(Vec<usize>), Pending(Plan), Consumed,
 }
 #[derive(Clone)]
@@ -115,15 +115,37 @@ impl Parser {
             let n=self.name()?;return match self.slots.get_mut(&n){Some(Slot::Future{value,retired}) if !*retired=>{*retired=true;Ok(Value::Int(value.clone()))},_=>Err(err("expected live Future"))}
         }
         let n=self.name()?;match self.slots.get(&n).cloned(){
-            Some(Slot::Scalar(i))=>Ok(Value::Int(Expr::Local(i))),
+            Some(Slot::Scalar(i,_))=>Ok(Value::Int(Expr::Local(i))),
             Some(Slot::Array(a))=>{if self.eat("["){let i=self.small(15)?;self.need("]")?;Ok(Value::Int(Expr::Local(*a.get(i).ok_or_else(||err("array bounds"))?)))}else{self.need(".")?;self.need("size")?;Ok(Value::Int(lit(a.len() as i64)))}},
             _=>Err(err("unknown or escaping capability")),
+        }
+    }
+    // Abstract evaluation of the pure, checked integer subset. Never fold
+    // emitted guest arithmetic away. Only a singleton count permits this
+    // static topology profile; unknown or overflowing proofs fail closed.
+    fn prove(&self,e:&Expr, fuel:&mut usize)->Option<i64>{
+        *fuel=fuel.checked_sub(1)?;
+        match e{
+            Expr::Literal(n)=>Some(*n),
+            Expr::Local(i)=>self.prove(self.locals.get(*i)?,fuel),
+            Expr::Neg(a)=>self.prove(a,fuel)?.checked_neg(),
+            Expr::Add(a,b)=>self.prove(a,fuel)?.checked_add(self.prove(b,fuel)?),
+            Expr::Sub(a,b)=>self.prove(a,fuel)?.checked_sub(self.prove(b,fuel)?),
+            Expr::Mul(a,b)=>self.prove(a,fuel)?.checked_mul(self.prove(b,fuel)?),
+            Expr::RefinementCast(a,lo,hi)=>self.prove(a,fuel).filter(|n|lo<=n&&n<=hi),
+            _=>None,
         }
     }
     fn plan(&mut self)->R<Plan>{
         if self.pending.is_some(){return Err(err("await outstanding batch first"))}
         if self.eat("<"){self.need("int")?;self.need(">")?}
-        self.need("(")?;let count=self.small(16)?;self.need(")")?;
+        self.need("(")?;let value=self.expr(0,None,false)?.int()?;self.need(")")?;
+        let proven=self.prove(&value,&mut 4096).ok_or_else(||err("count is not singleton-proven"))?;
+        if !(0..=16).contains(&proven){return Err(err("SelectCountInvalid"))}
+        // Snapshot now, before a pending handle can escape or a let changes.
+        // The native checked evaluation and exact refinement remain in IR.
+        self.local(Expr::RefinementCast(boxed(value),proven,proven))?;
+        let count=proven as usize;
         let fair=self.eat("fair");if !fair{self.eat("first");}let over=self.eat("over");if !over{self.need("{")?}
         let mut arms=vec![];
         while self.eat("when"){
@@ -156,14 +178,15 @@ impl Parser {
         if p.count>0{for arm in &p.arms{if let Some(Slot::Future{retired,..})=self.slots.get_mut(&arm.source){*retired=true;}}}
         Ok(out)
     }
-    fn bind(&mut self)->R<()>{
+    fn bind(&mut self,mutable:bool)->R<()>{
         let t=self.ty()?;let n=self.name()?;if self.slots.contains_key(&n)||self.slots.len()>=64{return Err(err("lexical binding quota"))}self.need("=")?;
+        if mutable&&t!="int"{return Err(err("only scalar mutation supported"))}
         let slot=match t{
             "channel"=>{if self.pending.is_some(){return Err(err("await batch first"))}self.need("Channel")?;self.need(".")?;self.need("new")?;self.need("<")?;self.need("int")?;self.need(">")?;self.need("(")?;let cap=self.small(64)?;self.need(")")?;if cap==0{return Err(err("zero capacity"))}Slot::Channel{cap,queue:VecDeque::new()}},
             "future"=>{if self.pending.is_some(){return Err(err("await batch first"))}self.need("select")?;self.need("<")?;self.need("int")?;self.need(">")?;let over=self.eat("over");if !over{self.need("{")?}self.need("default")?;self.need(":")?;self.need("->")?;self.need("{")?;self.need("return")?;let value=self.expr(0,Some("$no_binder"),false)?.int()?;self.need(";")?;self.need("}")?;self.need(if over{"end"}else{"}"})?;Slot::Future{value,retired:false}},
             "pending"=>{self.eat("nb");self.need("select")?;let p=self.plan()?;self.pending=Some(n.clone());Slot::Pending(p)},
             "array"=>{self.need("await")?;let legacy=self.eat("nb");let p=if self.eat("select"){self.plan()?}else{if legacy{return Err(err("nb requires select"))}let h=self.name()?;if self.pending.as_deref()!=Some(&h){return Err(err("expected outstanding batch"))}let Some(Slot::Pending(p))=self.slots.get(&h).cloned() else{return Err(err("pending plan"))};self.slots.insert(h,Slot::Consumed);self.pending=None;p};Slot::Array(self.drive(p)?)},
-            "int"=>{let v=self.expr(0,None,false)?.int()?;Slot::Scalar(self.local(v)?)},
+            "int"=>{let v=self.expr(0,None,false)?.int()?;Slot::Scalar(self.local(v)?,mutable)},
             _=>return Err(err("type")),
         };
         self.need(";")?;self.slots.insert(n,slot);Ok(())
@@ -173,7 +196,14 @@ impl Parser {
         let mut conditions=vec![];let mut statements=0;
         while self.peek()!="return"{
             statements+=1;if statements>128{return Err(err("statement quota"))}
-            if self.eat("val"){if !conditions.is_empty(){return Err(err("only terminal condition chain supported"))}self.bind()?}
+            if self.eat("val"){if !conditions.is_empty(){return Err(err("only terminal condition chain supported"))}self.bind(false)?}
+            else if self.eat("let"){if !conditions.is_empty(){return Err(err("only terminal condition chain supported"))}self.bind(true)?}
+            else if self.tokens.get(self.pos+1).is_some_and(|s|s=="="){
+                if !conditions.is_empty(){return Err(err("assignment after terminal branch"))}
+                let n=self.name()?;if !matches!(self.slots.get(&n),Some(Slot::Scalar(_,true))){return Err(err("immutable or unknown scalar"))}
+                self.need("=")?;let v=self.expr(0,None,false)?.int()?;self.need(";")?;
+                let i=self.local(v)?;self.slots.insert(n,Slot::Scalar(i,true));
+            }
             else if self.eat("writech"){
                 if self.pending.is_some()||!conditions.is_empty(){return Err(err("write before outstanding await or after terminal branch"))}
                 let n=self.name()?;self.need(",")?;let v=self.expr(0,None,false)?.int()?;self.need(";")?;

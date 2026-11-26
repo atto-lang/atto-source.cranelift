@@ -21,14 +21,14 @@ for c in cases:
     raw=(root/c['path']).read_bytes()
     assert hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==c['gitBlobSha1']
 PY
-for name in counted-three counted-zero counted-one counted-alias counted-mixed-future-alias counted-multi-channel-fair counted-mixed-zero counted-distinct-alias-projection; do
+for name in counted-three counted-zero counted-one counted-alias counted-dynamic counted-dynamic-zero counted-mixed-future-alias counted-multi-channel-fair counted-mixed-zero counted-distinct-alias-projection; do
   "$compiler" emit-counted-static-ready-object "$corpus/$name.atto" > "$work/guest.o"
   file "$work/guest.o" | grep -F relocatable
   cc "$work/main.c" "$work/guest.o" -o "$work/guest"
   test "$("$work/guest")" = 42
   echo "CRANELIFT_NATIVE_GUEST_PASS $name"
 done
-for name in counted-dynamic counted-dynamic-zero reject-counted-negative reject-counted-bool reject-counted-scalar reject-counted-default reject-counted-write reject-counted-dynamic-bool reject-counted-dynamic-unknown; do
+for name in reject-counted-negative reject-counted-bool reject-counted-scalar reject-counted-default reject-counted-write reject-counted-dynamic-bool reject-counted-dynamic-unknown; do
   if "$compiler" emit-counted-static-ready-object "$corpus/$name.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
   test ! -s "$work/denial"
   grep -F E_COUNTED_STATIC_READY "$work/err"
@@ -68,6 +68,16 @@ for body in \
  'writech a, 42; val Future<Array<int>> f = select<int>(1) { when readch a: int n -> { return n; } }; writech a, 5; val Array[int] b = await f; return b[0];' \
  'writech a, 42; val Array[int] b = await select<int>(0) { when readch a: int n -> { return n; } }; if (1 == 1) || ((readch a) == 42) then return 42; fi return 0;'; do
   printf 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(1); %s }\n' "$body" > "$work/bad.atto"
+  if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
+  test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
+done
+# Singleton arithmetic proof, native snapshot and rejection of invalid counts.
+printf '%s\n' 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(2); writech a, 21; writech a, 99; let int c = 2 - 1; val Future<Array<int>> p = select<int>(c) { when readch a: int n -> { return n * 2; } }; c = 0; val Array[int] b = await p; return b[0]; }' > "$work/snapshot.atto"
+"$compiler" emit-counted-static-ready-object "$work/snapshot.atto" > "$work/guest.o"
+cc "$work/main.c" "$work/guest.o" -o "$work/guest"
+test "$("$work/guest")" = 42
+for count in '17' '0 - 1' '9223372036854775807 + 1'; do
+  printf 'suspends fnc main(): int { val Channel<int> a = Channel.new<int>(1); val int c = %s; val Array[int] b = await select<int>(c) { when readch a: int n -> { return n; } }; return 42; }\n' "$count" > "$work/bad.atto"
   if "$compiler" emit-counted-static-ready-object "$work/bad.atto" > "$work/denial" 2> "$work/err"; then exit 1; fi
   test ! -s "$work/denial"; grep -F E_COUNTED_STATIC_READY "$work/err"
 done
