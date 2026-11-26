@@ -215,7 +215,9 @@ impl Parser {
             return Ok("channel");
         }
         if self.eat("Future") {
-            if !self.eat("<") { return Ok("inferFuture"); }
+            if !self.eat("<") {
+                return Ok("inferFuture");
+            }
             if self.eat("Array") {
                 self.need("<")?;
                 self.need("int")?;
@@ -343,8 +345,12 @@ impl Parser {
                 return Err(err("await only in terminal return or array initializer"));
             }
             let legacy = self.eat("nb");
-            if self.eat("select") { return Ok(Value::Int(self.default_scalar()?)); }
-            if legacy { return Err(err("nb requires select")); }
+            if self.eat("select") {
+                return Ok(Value::Int(self.default_scalar()?));
+            }
+            if legacy {
+                return Err(err("nb requires select"));
+            }
             let n = self.name()?;
             return match self.slots.get_mut(&n) {
                 Some(Slot::Future { value, retired }) if !*retired => {
@@ -503,9 +509,14 @@ impl Parser {
         Ok(out)
     }
     fn default_scalar(&mut self) -> R<Expr> {
-        if self.eat("<") { self.need("int")?; self.need(">")?; }
+        if self.eat("<") {
+            self.need("int")?;
+            self.need(">")?;
+        }
         let over = self.eat("over");
-        if !over { self.need("{")?; }
+        if !over {
+            self.need("{")?;
+        }
         self.need("default")?;
         self.need(":")?;
         self.need("->")?;
@@ -562,13 +573,20 @@ impl Parser {
                     look += 3;
                 }
                 if self.tokens.get(look).is_some_and(|s| s == "(") {
-                    if t == "future" { return Err(err("expected scalar Future")); }
+                    if t == "future" {
+                        return Err(err("expected scalar Future"));
+                    }
                     let p = self.plan()?;
                     self.pending = Some(n.clone());
                     Slot::Pending(p)
                 } else {
-                    if t == "pending" { return Err(err("expected counted Future")); }
-                    Slot::Future { value: self.default_scalar()?, retired: false }
+                    if t == "pending" {
+                        return Err(err("expected counted Future"));
+                    }
+                    Slot::Future {
+                        value: self.default_scalar()?,
+                        retired: false,
+                    }
                 }
             }
             "array" => {

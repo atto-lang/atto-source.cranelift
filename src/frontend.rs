@@ -1,10 +1,10 @@
 //! Fail-closed, bounded *subset* of Oreslang. Not a general Oreslang parser.
+#[path = "closed_option.rs"]
+mod closed_option;
 #[path = "quantity_scalar.rs"]
 mod quantity_scalar;
 #[path = "quoted_source.rs"]
 mod quoted_source;
-#[path = "closed_option.rs"]
-mod closed_option;
 // Use the same line boundaries as the Java/Rust source lexer and the
 // quoted-template scanner. Keep byte offsets stable for all diagnostics.
 fn line_break_width(bytes: &[u8], at: usize) -> usize {
@@ -530,6 +530,12 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         let start = self.pos;
+        // Exact UTF-8 suspension aliases share the existing fail-closed effect gate.
+        if self.input[start..].starts_with('⧖') || self.input[start..].starts_with('∂') {
+            self.pos += 3;
+            self.current = Token::Word("suspends");
+            return Ok(());
+        }
         let first = b[self.pos];
         self.pos += 1;
         // Stage-0 cannot bind injected state lifetimes or borrow authority.
@@ -562,7 +568,12 @@ impl<'a> Parser<'a> {
             {
                 self.pos += 1;
             }
-            self.current = Token::Word(&self.input[start..self.pos]);
+            let spelling = &self.input[start..self.pos];
+            self.current = Token::Word(if spelling == "susp" {
+                "suspends"
+            } else {
+                spelling
+            });
             // Scalar stage-0 has no compiler-owned library linker.
             if self.current == Token::Word("import") {
                 return Err("E_LIBRARY_PROFILE_UNSUPPORTED: atto.core/alloc/std and actor modules require verified import/profile lowering".into());
@@ -631,8 +642,10 @@ impl<'a> Parser<'a> {
             {
                 return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and checked-handle native JIT lowering required".into());
             }
-            if self.closed_option_profile && self.current == Token::Word("trap")
-                && b.get(self.pos) == Some(&b'!') && !comparison
+            if self.closed_option_profile
+                && self.current == Token::Word("trap")
+                && b.get(self.pos) == Some(&b'!')
+                && !comparison
             {
                 self.pos += 1;
                 self.current = Token::Word("trap!");
@@ -703,16 +716,18 @@ impl<'a> Parser<'a> {
             // the scalar-only Cranelift backend cannot represent tagged
             // Option/Result payloads or classify guest trap control effects.
             // Refuse these reserved constructs before AST/native codegen.
-            if !self.closed_option_profile && matches!(
-                self.current,
-                Token::Word("Option")
-                    | Token::Word("Result")
-                    | Token::Word("Some")
-                    | Token::Word("None")
-                    | Token::Word("Ok")
-                    | Token::Word("Err")
-                    | Token::Word("trap")
-            ) {
+            if !self.closed_option_profile
+                && matches!(
+                    self.current,
+                    Token::Word("Option")
+                        | Token::Word("Result")
+                        | Token::Word("Some")
+                        | Token::Word("None")
+                        | Token::Word("Ok")
+                        | Token::Word("Err")
+                        | Token::Word("trap")
+                )
+            {
                 return Err("typed Option/Result/trap is unsupported by the Cranelift scalar backend; requires verified tagged sum and guest control lowering".into());
             }
             // Collection and borrow syntax are not represented by scalar
@@ -796,9 +811,9 @@ impl<'a> Parser<'a> {
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if self.closed_option_profile && first == b'?' {
-            self.current = Token::Punct(first);
-        } else if b"()+-*/{}[];:,><=.!&|".contains(&first) {
+        } else if (self.closed_option_profile && first == b'?')
+            || b"()+-*/{}[];:,><=.!&|".contains(&first)
+        {
             self.current = Token::Punct(first);
         } else {
             return Err(format!("invalid character at byte {start}"));
@@ -1386,13 +1401,13 @@ impl<'a> Parser<'a> {
             })
             .into());
         }
-        let mut seen_export = false;
+        let mut export_count = 0usize;
         while self.current == Token::Word("export") {
-            if seen_export {
-                return Err("EXPORT_DUPLICATE: main".into());
+            if export_count >= 128 {
+                return Err("EXPORT_SOURCE_LIMIT: too many directives".into());
             }
             self.file_export()?;
-            seen_export = true;
+            export_count += 1;
         }
         let mut seen_define = false;
         let mut seen_pub = false;
@@ -1715,11 +1730,11 @@ impl<'a> Parser<'a> {
             result
         };
         while self.current == Token::Word("export") {
-            if seen_export {
-                return Err("EXPORT_DUPLICATE: main".into());
+            if export_count >= 128 {
+                return Err("EXPORT_SOURCE_LIMIT: too many directives".into());
             }
             self.file_export()?;
-            seen_export = true;
+            export_count += 1;
         }
         if matches!(self.current, Token::Word("actor" | "supervisor")) {
             return Err(
@@ -2267,10 +2282,12 @@ pub fn parse(text: &str) -> Result<Program, String> {
     let original = Parser::new(text)?.program();
     // Only a complete, independently typed closed Option program can enter
     // the fused scalar lowering. Preserve all ordinary parser denials otherwise.
-    if original.is_err() && text.contains("trap!") && text.contains("match") {
-        if let Ok(program) = closed_option::parse(text) {
-            return Ok(program);
-        }
+    if original.is_err()
+        && text.contains("trap!")
+        && text.contains("match")
+        && let Ok(program) = closed_option::parse(text)
+    {
+        return Ok(program);
     }
     // Preserve authoritative declaration/effect/export diagnostics. Refine
     // only generic grammar denials (or the specific unsupported Struct case).
