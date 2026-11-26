@@ -183,7 +183,7 @@ fn rate_limit_weighted_counter_scalar_native_execution() {
         false,
         "",
     );
-    fixture("fnc main():int{return 100/60;}", &[], false, "");
+    fixture("fnc main():int{return 100/60;}", &[], true, "1\n");
     fixture("fnc main():int{return 100>60;}", &[], false, "");
     fixture(
         "define module backpressure as pub fnc limit():int{return 42;} end",
@@ -304,7 +304,6 @@ fn forge_scalar_v1_intersection() {
     }
     for source in [
         "pub fnc main(): int { return undeclared_value; }",
-        "pub fnc main(): int { return 3 / 2; }",
         "define actor Worker as { pub fnc on_message(int n): int { return n; } } pub fnc main(): int { const worker = spawn Worker(); stop worker; return 43; }",
         "pub async fnc main(): int { return 42; }",
         "pub fnc main(): int { return match 2 over on 2 { 42; } end; }",
@@ -798,7 +797,6 @@ fn syntax_rejections_produce_no_guest_stdout() {
     for source in [
         "fnc main():int{return 4^1;}",
         "fnc main():int{return 4^^1;}",
-        "fnc main():int{return 4/2;}",
         "fnc main():int{return 4.0;}",
         "fnc main():float{return 4;}",
         "fnc main():int{return Integer.pow(3);}",
@@ -1664,7 +1662,6 @@ fn shared_five_backend_scalar_wave_native_jit() {
     }
     for expression in [
         "9223372036854775808",
-        "7 / 2",
         "-(-9223372036854775808)",
         "5 ^ 3",
     ] {

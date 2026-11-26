@@ -949,7 +949,178 @@ impl<'a> Parser<'a> {
         self.expect(Token::Punct(b';'))?;
         Ok(())
     }
+    // Separate bounded quantity profile; every admitted quantity is typed
+    // before erasure into the existing checked scalar IR.
+    fn quantity_program(mut self) -> Result<Program, String> {
+        let mut dimensions: Vec<String> = Vec::new();
+        let mut units: Vec<(String, usize)> = Vec::new();
+        while self.current == Token::Word("define")
+            && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit")) {
+            self.next()?;
+            let dimension = self.take(Token::Word("dimension"))?;
+            if !dimension { self.expect(Token::Word("unit"))?; }
+            let name = self.name()?;
+            if !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
+                return Err("E_UNIT_NAME: expected nominal name".into());
+            }
+            if dimensions.contains(&name) || units.iter().any(|(n,_)| *n == name) {
+                return Err("E_UNIT_DUPLICATE: duplicate nominal name".into());
+            }
+            if dimension {
+                if dimensions.len() >= 8 { return Err("E_UNIT_LIMIT: dimensions".into()); }
+                dimensions.push(name);
+            } else {
+                if units.len() >= 32 { return Err("E_UNIT_LIMIT: units".into()); }
+                self.expect(Token::Punct(b':'))?;
+                let dim_name = self.name()?;
+                let index = dimensions.iter().position(|n| *n == dim_name).ok_or("E_UNIT_NAME: unknown dimension")?;
+                if self.take(Token::Punct(b'='))? {
+                    let base = self.name()?;
+                    if !units.iter().any(|(n,d)| *n == base && *d == index) {
+                        return Err("E_UNIT_NAME: unknown or incompatible alias".into());
+                    }
+                } else if units.iter().any(|(_,d)| *d == index) {
+                    return Err("E_UNIT_DUPLICATE: duplicate base unit".into());
+                }
+                units.push((name,index));
+            }
+            self.expect(Token::Punct(b';'))?;
+        }
+        self.take(Token::Word("pub"))?;
+        self.expect(Token::Word("fnc"))?;
+        self.expect(Token::Word("main"))?;
+        self.expect(Token::Punct(b'('))?;
+        self.expect(Token::Punct(b')'))?;
+        if !self.take(Token::Punct(b':'))? {
+            self.expect(Token::Punct(b'-'))?;
+            self.expect(Token::Punct(b'>'))?;
+        }
+        self.expect(Token::Word("int"))?;
+        self.expect(Token::Punct(b'{'))?;
+        let mut bindings: Vec<(String,[i8;8])> = Vec::new();
+        while self.take(Token::Word("val"))? {
+            let name = self.name()?;
+            if bindings.len() >= 64 || bindings.iter().any(|(n,_)| *n == name)
+                || units.iter().any(|(n,_)| *n == name) || dimensions.contains(&name)
+                || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                || matches!(name.as_str(),"val"|"int"|"return"|"main"|"as"|"i64"|"define"|"unit"|"dimension") {
+                return Err("E_UNIT_BINDING: invalid or duplicate local".into());
+            }
+            self.expect(Token::Punct(b'='))?;
+            let (value,dim) = self.quantity_expr(0,0,&units,&bindings)?;
+            self.expect(Token::Punct(b';'))?;
+            validate_ast_depth(&value)?;
+            bindings.push((name,dim));
+            self.local_initializers.push(value);
+        }
+        self.expect(Token::Word("return"))?;
+        let (result,dim) = self.quantity_expr(0,0,&units,&bindings)?;
+        if dim != [0;8] { return Err("E_UNIT_ERASURE: scalar return".into()); }
+        self.expect(Token::Punct(b';'))?;
+        self.expect(Token::Punct(b'}'))?;
+        self.expect(Token::End)?;
+        validate_ast_depth(&result)?;
+        Ok(Program { parameters: vec![], locals: self.local_initializers, result, trace_steps: vec![] })
+    }
+
+    fn quantity_target(&mut self, dim: &mut [i8;8], units: &[(String,usize)], cast: bool) -> Result<(), String> {
+        let name = self.name()?;
+        if cast && matches!(name.as_str(),"int"|"i64") {
+            if *dim != [0;8] { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
+            return Ok(());
+        }
+        let index = units.iter().find(|(n,_)| *n == name).map(|(_,i)| *i).ok_or("E_UNIT_NAME: unknown unit")?;
+        if *dim != [0;8] { return Err("E_UNIT_ATTACHMENT: repeated unit attachment".into()); }
+        dim[index] = 1;
+        Ok(())
+    }
+
+    fn quantity_atom(&mut self, depth: usize, units: &[(String,usize)], locals: &[(String,[i8;8])]) -> Result<(Expr,[i8;8]), String> {
+        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+        if self.take(Token::Punct(b'<'))? {
+            self.checked_i64_cast_target()?;
+            self.expect(Token::Punct(b'>'))?;
+            let (value,dim) = self.quantity_atom(depth+1,units,locals)?;
+            if dim != [0;8] { return Err("E_UNIT_ERASURE: checked scalar cast".into()); }
+            return Ok((value,dim));
+        }
+        let negative = self.take(Token::Punct(b'-'))?;
+        if negative {
+            if !matches!(self.current,Token::Number(n) if integer_digits(n).is_ok_and(|v| v=="9223372036854775808")) {
+                let (value,dim)=self.quantity_atom(depth+1,units,locals)?;
+                return Ok((self.node(Expr::Neg(Box::new(value)))?,dim));
+            }
+        } else if self.take(Token::Punct(b'+'))? {
+            return self.quantity_atom(depth+1,units,locals);
+        }
+        let mut compact=false;
+        let (value,mut dim)=match self.current {
+            Token::Number(n) => {
+                let v=if negative { i64::MIN } else { integer_digits(n)?.parse::<i64>().map_err(|_| "i64 literal out of range")? };
+                compact=self.input.as_bytes().get(self.pos)==Some(&b'<');
+                self.next()?;
+                (self.node(Expr::Literal(v))?,[0;8])
+            },
+            Token::Punct(b'(') => {
+                self.next()?;
+                let result=self.quantity_expr(0,depth+1,units,locals)?;
+                self.expect(Token::Punct(b')'))?;
+                result
+            },
+            Token::Word(n) => {
+                let (index,(_,d))=locals.iter().enumerate().find(|(_, (name,_))| name==n).ok_or("E_UNIT_NAME: unbound local")?;
+                let d=*d; self.next()?;
+                (self.node(Expr::Local(index))?,d)
+            },
+            _=>return Err("expected quantity expression".into()),
+        };
+        loop {
+            let cast= self.current==Token::Punct(b':') && self.input.as_bytes().get(self.pos)==Some(&b':');
+            if cast { self.next()?; self.expect(Token::Punct(b':'))?; }
+            else if !self.take(Token::Punct(b'.'))? && !(compact && self.current==Token::Punct(b'<')) { break; }
+            self.expect(Token::Punct(b'<'))?;
+            self.quantity_target(&mut dim,units,cast)?;
+            self.expect(Token::Punct(b'>'))?;
+            compact=false;
+        }
+        Ok((value,dim))
+    }
+
+    fn quantity_expr(&mut self, min_bp:u8, depth:usize, units:&[(String,usize)], locals:&[(String,[i8;8])]) -> Result<(Expr,[i8;8]),String> {
+        if depth > MAX_DEPTH { return Err("expression depth budget exceeded".into()); }
+        let (mut lhs,mut dim)=self.quantity_atom(depth+1,units,locals)?;
+        loop {
+            if self.current==Token::Word("as") && min_bp<=5 {
+                self.next()?; self.quantity_target(&mut dim,units,true)?; continue;
+            }
+            let (l,r,op)=match self.current {
+                Token::Punct(b'+')=>(1,2,b'+'),Token::Punct(b'-')=>(1,2,b'-'),
+                Token::Punct(b'*')=>(3,4,b'*'),Token::Punct(b'/')=>(3,4,b'/'),_=>break,
+            };
+            if l<min_bp { break; }
+            self.next()?;
+            let (rhs,rd)=self.quantity_expr(r,depth+1,units,locals)?;
+            if op==b'+' || op==b'-' {
+                if dim!=rd { return Err("E_UNIT_DIMENSION: incompatible additive operands".into()); }
+            } else {
+                for i in 0..8 {
+                    let e=i16::from(dim[i])+if op==b'*' {i16::from(rd[i])} else {-i16::from(rd[i])};
+                    if !(-32..=32).contains(&e) { return Err("E_UNIT_LIMIT: exponent".into()); }
+                    dim[i]=e as i8;
+                }
+            }
+            lhs=self.node(match op {
+                b'+'=>Expr::Add(Box::new(lhs),Box::new(rhs)),b'-'=>Expr::Sub(Box::new(lhs),Box::new(rhs)),
+                b'*'=>Expr::Mul(Box::new(lhs),Box::new(rhs)),b'/'=>Expr::Div(Box::new(lhs),Box::new(rhs)),_=>unreachable!(),
+            })?;
+        }
+        Ok((lhs,dim))
+    }
+
     fn program(mut self) -> Result<Program, String> {
+        if self.current==Token::Word("define") && (self.next_significant_word_is("dimension") || self.next_significant_word_is("unit")) {
+            return self.quantity_program();
+        }
         // File-scoped namespace is metadata only. Stage-0 still requires one
         // scalar main, and no implicit cross-file or nominal type resolution.
         let has_namespace = self.take(Token::Word("use"))?;
