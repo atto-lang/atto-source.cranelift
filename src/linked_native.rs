@@ -148,20 +148,20 @@ fn inspect_expression(
             if matches!(target.as_str(), "And" | "Or" | "Xor") && scope.contains_key(target) {
                 return Err("E_LINK_BOOLEAN_SHADOW".into());
             }
-            if !functions.contains_key(target) {
-                if let Some(expanded) = named_reduction(target, args)? {
-                    // Validate the expanded typed tree, including skipped operands,
-                    // under the existing depth, node and call-graph budgets.
-                    return inspect_expression(
-                        &expanded,
-                        scope,
-                        functions,
-                        program,
-                        dependencies,
-                        nodes,
-                        depth,
-                    );
-                }
+            if !functions.contains_key(target)
+                && let Some(expanded) = named_reduction(target, args)?
+            {
+                // Validate the expanded typed tree, including skipped operands,
+                // under the existing depth, node and call-graph budgets.
+                return inspect_expression(
+                    &expanded,
+                    scope,
+                    functions,
+                    program,
+                    dependencies,
+                    nodes,
+                    depth,
+                );
             }
             let index = functions.get(target).ok_or("E_LINK_UNBOUND_CALLEE")?;
             let callee = &program[*index];
@@ -399,10 +399,10 @@ fn emit_expr(
             if matches!(name.as_str(), "And" | "Or" | "Xor") && scope.contains_key(name) {
                 return Err("E_LINK_BOOLEAN_SHADOW".into());
             }
-            if !refs.contains_key(name) {
-                if let Some(expanded) = named_reduction(name, arguments)? {
-                    return emit_expr(&expanded, builder, scope, refs, failure, depth);
-                }
+            if !refs.contains_key(name)
+                && let Some(expanded) = named_reduction(name, arguments)?
+            {
+                return emit_expr(&expanded, builder, scope, refs, failure, depth);
             }
             let func_ref = *refs.get(name).ok_or("E_LINK_UNBOUND_CALLEE")?;
             let mut values = Vec::with_capacity(arguments.len());
