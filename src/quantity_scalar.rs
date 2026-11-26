@@ -447,6 +447,7 @@ impl<'a> Quantities<'a> {
             };
             if mutable&&want.is_none(){return Err("E_VERIFY_UNSUPPORTED: mutable binding requires explicit type".into());}
             self.binding_name(&name)?;
+            if self.strict&&self.p.current==Token::Punct(b';'){return Err("E_MISSING_INITIALIZER: explicit initializer required".into());}
             self.p.expect(Token::Punct(b'='))?;
             if self.strict&&self.p.take(Token::Word("Array"))?{
                 if mutable||want.is_some(){return Err("E_VERIFY_UNSUPPORTED: fixed array requires inferred val".into());}
@@ -713,7 +714,9 @@ impl<'a> Quantities<'a> {
                 }else if self.p.current==Token::Punct(b'='){(first,None)}
                 else{let w=self.annotation(&first)?;(self.p.name()?,Some(w))};
                 if mutating&&want.is_none(){return Err("E_VERIFY_UNSUPPORTED: mutable loop local requires explicit type".into());}
-                self.binding_name(&name)?;self.p.expect(Token::Punct(b'='))?;
+                self.binding_name(&name)?;
+                if self.p.current==Token::Punct(b';'){return Err("E_MISSING_INITIALIZER: explicit initializer required".into());}
+                self.p.expect(Token::Punct(b'='))?;
                 let value=self.expr(0,0)?;self.p.expect(Token::Punct(b';'))?;
                 if let Some(w)=want{Self::boundary(w,&value,"E_REFINEMENT_BINDING")?;}
                 if len>=64{return Err("E_UNIT_LIMIT: loop locals".into());}
