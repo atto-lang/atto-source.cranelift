@@ -130,7 +130,7 @@ fn contracted_delimiters_native_guests() {
     let header="type R = int where self >= 1 and self <= 42; fnc f(int x) -> int requires x >= 1 requires x <= 42";
     let tail=" pub fnc main() -> int { return f(2); }";
     fs::write(&harness,"#include <stdint.h>\n#include <assert.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){int64_t out=0;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}\n").unwrap();
-    for body in [" { return 84/x; }","\nbegin return 84/x; end","\rbegin return 84/x; end","\u{2028}begin return 84/x; end"," :: return 84/x; end","\n:: return 84/x; end"] {
+    for body in [" { return 84/x; }","\nbegin return 84/x; end","\rbegin return 84/x; end"," :: return 84/x; end","\n:: return 84/x; end"] {
         fs::write(&input,format!("{header}{body}{tail}")).unwrap();
         let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("emit-object").arg(&input).output().unwrap();
         assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
@@ -143,5 +143,11 @@ fn contracted_delimiters_native_guests() {
         let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("emit-object").arg(&input).output().unwrap();
         assert!(!out.status.success()&&out.stdout.is_empty(),"{body}");
     }
+    // The physical source policy rejects Unicode separators such as U+2028
+    // before lexing. CR and LF above remain accepted; do not relax the guard.
+    fs::write(&input, format!("{header}\u{2028}begin return 84/x; end{tail}")).unwrap();
+    let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("emit-object").arg(&input).output().unwrap();
+    assert!(!out.status.success() && out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("source_unicode_control"));
     fs::remove_dir_all(dir).unwrap();
 }
