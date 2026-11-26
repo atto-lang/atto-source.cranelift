@@ -180,6 +180,15 @@ fn refinement(p: &mut Parser<'_>) -> Result<Option<String>, String> {
     Ok(Some(name))
 }
 
+// Composite operators must be adjacent bytes, not separate tokens.
+fn adjacent_pair(p: &mut Parser<'_>, first: u8, second: u8) -> Result<(), String> {
+    if p.current != Token::Punct(first) || p.input.as_bytes().get(p.pos) != Some(&second) {
+        return Err("E_CLOSED_OPTION_OPERATOR_ADJACENCY".into());
+    }
+    p.next()?;
+    p.expect(Token::Punct(second))
+}
+
 fn variant(p: &mut Parser<'_>) -> Result<Option<Expr>, String> {
     if p.take(Token::Word("None"))? {
         return Ok(None);
@@ -221,8 +230,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
         p.expect(Token::Punct(b')'))?;
     }
     if !p.take(Token::Punct(b':'))? {
-        p.expect(Token::Punct(b'-'))?;
-        p.expect(Token::Punct(b'>'))?;
+        adjacent_pair(&mut p, b'-', b'>')?;
     }
     p.expect(Token::Word("int"))?;
     p.expect(Token::Punct(b'{'))?;
@@ -263,8 +271,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Word("unwrap"))?;
     p.expect(Token::Punct(b'('))?;
     p.expect(Token::Punct(b')'))?;
-    p.expect(Token::Punct(b'|'))?;
-    p.expect(Token::Punct(b'>'))?;
+    adjacent_pair(&mut p, b'|', b'>')?;
     p.expect(Token::Word("match"))?;
     p.expect(Token::Punct(b'<'))?;
     p.expect(Token::Word("int"))?;
@@ -281,8 +288,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Punct(b')'))?;
     p.expect(Token::Punct(b':'))?;
     p.expect(Token::Word("int"))?;
-    p.expect(Token::Punct(b'-'))?;
-    p.expect(Token::Punct(b'>'))?;
+    adjacent_pair(&mut p, b'-', b'>')?;
     if p.name()? != payload {
         return Err("E_CLOSED_OPTION_PAYLOAD".into());
     }
@@ -293,8 +299,7 @@ pub(super) fn parse(text: &str) -> Result<Program, String> {
     p.expect(Token::Punct(b')'))?;
     p.expect(Token::Punct(b':'))?;
     p.expect(Token::Word("int"))?;
-    p.expect(Token::Punct(b'-'))?;
-    p.expect(Token::Punct(b'>'))?;
+    adjacent_pair(&mut p, b'-', b'>')?;
     let fallback = scalar(&mut p, 0, 0)?;
     validate_ast_depth(&fallback)?;
     p.take(Token::Punct(b','))?;

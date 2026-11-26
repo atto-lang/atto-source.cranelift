@@ -569,7 +569,11 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             let spelling = &self.input[start..self.pos];
-            self.current = Token::Word(if spelling == "susp" { "suspends" } else { spelling });
+            self.current = Token::Word(if spelling == "susp" {
+                "suspends"
+            } else {
+                spelling
+            });
             // Scalar stage-0 has no compiler-owned library linker.
             if self.current == Token::Word("import") {
                 return Err("E_LIBRARY_PROFILE_UNSUPPORTED: atto.core/alloc/std and actor modules require verified import/profile lowering".into());
