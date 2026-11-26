@@ -1289,9 +1289,27 @@ impl<'a> Parser<'a> {
         // This is deliberately a bounded, flat scalar subset. Local const
         // and type-first int require constexpr; val may be runtime-dependent.
         // The file/module define-const environment exception is not local.
+        // Rebindable int locals use fresh, eagerly evaluated SSA slots; prior
+        // references retain their old slot. No branch/loop/borrow lowering here.
+        let mut mutable_locals: Vec<String> = Vec::new();
         loop {
             if self.missing_primitive_initializer(){return Err("E_MISSING_INITIALIZER: explicit initializer required".into());}
+            if let Token::Word(name) = self.current {
+                if mutable_locals.iter().any(|known| known == name) {
+                    let binding = self.bindings.iter().position(|(known, _, _)| known == name).ok_or("missing mutable binding")?;
+                    self.next()?;
+                    self.expect(Token::Punct(b'='))?;
+                    let value = self.expr(0, 0)?;
+                    self.expect(Token::Punct(b';'))?;
+                    validate_ast_depth(&value)?;
+                    if self.local_initializers.len() >= MAX_LOCALS { return Err("local SSA slot count exceeds 64".into()); }
+                    self.bindings[binding].2 = self.local_initializers.len();
+                    self.local_initializers.push(value);
+                    continue;
+                }
+            }
             let kind = match self.current {
+                Token::Word("let") if self.next_significant_word_is("int") => "let",
                 Token::Word("const") => "const",
                 Token::Word("int") => "int",
                 Token::Word("val") => "val",
@@ -1322,14 +1340,14 @@ impl<'a> Parser<'a> {
             if !typed && self.take(Token::Punct(b':'))? {
                 self.expect(Token::Word("int"))?;
             }
-            if self.bindings.len() >= MAX_LOCALS {
+            if self.bindings.len() >= MAX_LOCALS || self.local_initializers.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
             let initializer = self.expr(0, 0)?;
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
-            let constant = if kind == "val" {
+            let constant = if kind == "val" || kind == "let" {
                 None
             } else {
                 Some(eval_const_i64(&initializer)?)
@@ -1340,6 +1358,7 @@ impl<'a> Parser<'a> {
             }
             // Bind only after the initializer passes admission, preventing
             // self and forward references and any hidden shadowing.
+            if kind == "let" { mutable_locals.push(name.clone()); }
             self.bindings.push((name, constant, runtime_slot));
         }
         if self.current == Token::Word("let") {
