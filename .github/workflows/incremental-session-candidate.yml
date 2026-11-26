@@ -23,14 +23,31 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Execute real compiler candidate
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify immutable source provenance
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          set -eu
-          cargo test --locked --bin orescranelift incremental_object_tests::exact_native_object_reuse -- --nocapture
-          cargo test --locked --lib sha256::tests:: -- --nocapture
-          cargo test --locked --lib compiler_cache_key::tests:: -- --nocapture
-          cargo test --locked --lib compiler_artifact_receipt::tests:: -- --nocapture
-          cargo test --locked --lib compiler_artifact_store::tests:: -- --nocapture
-          cargo test --locked --lib compiler_cache_key_policy::tests:: -- --nocapture
-          cargo test --locked --lib compiler_cache_ledger::tests:: -- --nocapture
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD 'HEAD^{tree}'
+      - name: Execute real compiler candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          run_nonempty() {
+            cargo test --color never --locked "$@" -- --nocapture | tee "$log"
+            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"
+          }
+          run_nonempty --bin orescranelift incremental_object_tests::exact_native_object_reuse
+          run_nonempty --lib sha256::tests::
+          run_nonempty --lib compiler_cache_key::tests::
+          run_nonempty --lib compiler_artifact_receipt::tests::
+          run_nonempty --lib compiler_artifact_store::tests::
+          run_nonempty --lib compiler_cache_key_policy::tests::
+          run_nonempty --lib compiler_cache_ledger::tests::
           cargo clippy --locked --all-targets -- -D warnings
