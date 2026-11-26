@@ -89,10 +89,26 @@ fn runtime_overflows(expression: &str) {
 }
 #[test]
 fn shared_scalar_compile_rejections_are_not_jit_overflow() {
-    for expression in ["unknown_value", "7 / 2", "5 ^ 3", "5 ^^ 3", "1__0"] {
+    for expression in ["unknown_value", "5 ^ 3", "5 ^^ 3", "1__0"] {
         compiler_rejects(expression);
     }
 }
+#[test]
+fn checked_division_has_distinct_compile_and_execute_phases() {
+    let ir = invoke("ir", "7 / 2");
+    assert!(ir.status.success());
+    assert!(!ir.stdout.is_empty());
+    assert!(ir.stderr.is_empty());
+    let guest = invoke("run", "7 / 2");
+    assert!(guest.status.success());
+    assert_eq!(guest.stdout, b"3\n");
+    assert!(guest.stderr.is_empty());
+    let fault = invoke("run", "7 / 0");
+    assert_eq!(fault.status.code(), Some(1));
+    assert!(fault.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&fault.stderr).starts_with("orescranelift: "));
+}
+
 #[test]
 fn shared_scalar_checked_i64_overflows_are_not_compiler_refusals() {
     for expression in [
