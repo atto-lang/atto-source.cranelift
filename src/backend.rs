@@ -1741,3 +1741,39 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
     }
     module.finish().emit().map_err(|e| e.to_string())
 }
+
+
+#[cfg(test)]
+mod parameter_rebind_tests {
+    use super::*;
+    use crate::frontend::parse;
+
+    #[test]
+    fn straight_line_rebind_uses_ssa_and_preserves_checked_errors() {
+        for source in [
+            "fnc main(rebind int n):int{n=n+1;n=n+1;return n;}",
+            "fnc main(rebind n:int):int{n=n+1;n=n+1;return n;}",
+        ] {
+            let program = parse(source).unwrap();
+            let ir = render_ir(&program).unwrap();
+            assert!(!ir.contains("stack_slot"), "{ir}");
+            assert!(!ir.contains("stack_store"), "{ir}");
+            let guest = compile(&program).unwrap();
+            assert_eq!(guest.run(&[40]), Ok(42));
+            assert!(guest.run(&[i64::MAX]).is_err());
+            assert_eq!(guest.run(&[40]), Ok(42));
+        }
+    }
+
+    #[test]
+    fn fixed_parameters_and_contextual_marker() {
+        assert!(parse("fnc main(int n):int{n=42;return n;}")
+            .unwrap_err().contains("E_IMMUTABLE_REBIND"));
+        let fixed = parse("fnc main(int n):int{return n;}").unwrap();
+        let marked = parse("fnc main(rebind int n):int{return n;}").unwrap();
+        assert_eq!(render_ir(&fixed).unwrap(), render_ir(&marked).unwrap());
+        let identifier = parse("fnc main(rebind:int):int{return rebind;}").unwrap();
+        assert_eq!(compile(&identifier).unwrap().run(&[42]), Ok(42));
+        assert!(parse("fnc main(rebind rebind int n):int{return n;}").is_err());
+    }
+}
