@@ -768,8 +768,8 @@ fn genuine_import_after_unsupported_block_comment_still_fails_closed() {
 #[test]
 fn shared_atto_xo_debit_corpus_executes_unchanged_linked_native_guests() {
     const CORPUS: &str = include_str!("../contracts/atto-xo-checked-debit-v1/cases.tsv");
-    let corpus_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("contracts/atto-xo-checked-debit-v1/cases.tsv");
+    let corpus_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/atto-xo-checked-debit-v1/cases.tsv");
     let digest = Command::new("git")
         .arg("hash-object")
         .arg(&corpus_path)
@@ -803,7 +803,10 @@ fn shared_atto_xo_debit_corpus_executes_unchanged_linked_native_guests() {
         assert_eq!(ir.status.code(), Some(0), "{id} IR");
         assert!(ir.stderr.is_empty());
         let clif = String::from_utf8(ir.stdout).expect("CLIF UTF-8");
-        assert!(clif.contains("linked function debit"), "{id} missing helper");
+        assert!(
+            clif.contains("linked function debit"),
+            "{id} missing helper"
+        );
         assert!(clif.contains("linked function main"), "{id} missing entry");
         assert!(clif.contains("call "), "{id} missing native call");
 
@@ -820,7 +823,10 @@ fn shared_atto_xo_debit_corpus_executes_unchanged_linked_native_guests() {
             );
             overflows += 1;
         } else {
-            assert!(matches!(expected, "42" | "43"), "{id} invalid expected value");
+            assert!(
+                matches!(expected, "42" | "43"),
+                "{id} invalid expected value"
+            );
             assert_eq!(
                 run.status.code(),
                 Some(0),

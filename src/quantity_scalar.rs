@@ -2069,15 +2069,19 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         let result = q.annotation(&ty)?;
         let contracted = matches!(q.p.current, Token::Word("requires" | "ensures"));
         let contracts = q.contracts(&mut params, result, main)?;
-        let end_delimited = if q.p.take(Token::Punct(b'{'))? { false }
-        else if q.pair(b':')? { true }
-        else if q.p.current == Token::Word("begin") {
+        let end_delimited = if q.p.take(Token::Punct(b'{'))? {
+            false
+        } else if q.pair(b':')? {
+            true
+        } else if q.p.current == Token::Word("begin") {
             if contracted && !q.p.newline_before_current {
                 return Err("E_SYNTAX: contracted begin must start on a later line".into());
             }
             q.p.next()?;
             true
-        } else { return Err("E_SYNTAX: expected verified callable body opener".into()); };
+        } else {
+            return Err("E_SYNTAX: expected verified callable body opener".into());
+        };
         if !strict && q.p.current == Token::Word("let") {
             return Err("E_REFINEMENT_BODY: mutable binding not admitted".into());
         }
@@ -2087,7 +2091,11 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         }
         Quantities::boundary(result, &value, "E_REFINEMENT_RETURN")?;
         q.prove_contracts(&contracts, &value, &params)?;
-        q.p.expect(if end_delimited { Token::Word("end") } else { Token::Punct(b'}') })?;
+        q.p.expect(if end_delimited {
+            Token::Word("end")
+        } else {
+            Token::Punct(b'}')
+        })?;
         validate_ast_depth(&value.expr)?;
         if main {
             q.p.expect(Token::End)?;
