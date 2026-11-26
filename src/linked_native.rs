@@ -39,7 +39,8 @@ fn inspect_expression(
         return Err("E_LINK_EXPR_BUDGET".into());
     }
     use ScalarType::{Bool, Int};
-    let mut child = |e: &Raw| inspect_expression(e, scope, functions, program, dependencies, nodes, depth + 1);
+    let mut child =
+        |e: &Raw| inspect_expression(e, scope, functions, program, dependencies, nodes, depth + 1);
     match expr {
         Raw::Tuple(_) => Err("E_LINK_UNSUPPORTED_TUPLE_VALUE".into()),
         Raw::TuplePattern(values, bindings, body) => {
@@ -48,7 +49,9 @@ fn inspect_expression(
             }
             // All root elements are typed in the outer scope, including discards.
             for value in values {
-                if child(value)? != Int { return Err("E_LINK_PATTERN_ELEMENT_TYPE".into()); }
+                if child(value)? != Int {
+                    return Err("E_LINK_PATTERN_ELEMENT_TYPE".into());
+                }
             }
             let mut nested = scope.clone();
             let mut names = std::collections::HashSet::new();
@@ -58,36 +61,61 @@ fn inspect_expression(
                 }
                 nested.insert(name.clone(), Int);
             }
-            let ty = inspect_expression(body, &nested, functions, program, dependencies, nodes, depth + 1)?;
-            if ty != Int { return Err("E_LINK_PATTERN_RESULT_TYPE".into()); }
+            let ty = inspect_expression(
+                body,
+                &nested,
+                functions,
+                program,
+                dependencies,
+                nodes,
+                depth + 1,
+            )?;
+            if ty != Int {
+                return Err("E_LINK_PATTERN_RESULT_TYPE".into());
+            }
             Ok(Int)
         }
         Raw::Literal(_) => Ok(Int),
         Raw::Bool(_) => Ok(Bool),
-        Raw::Name(name) => scope.get(name).copied().ok_or_else(|| "E_LINK_UNBOUND_IDENTIFIER".into()),
+        Raw::Name(name) => scope
+            .get(name)
+            .copied()
+            .ok_or_else(|| "E_LINK_UNBOUND_IDENTIFIER".into()),
         Raw::Add(a, b) | Raw::Sub(a, b) | Raw::Mul(a, b) => {
-            if child(a)? != Int || child(b)? != Int { return Err("E_LINK_INTEGER_OPERANDS".into()); }
+            if child(a)? != Int || child(b)? != Int {
+                return Err("E_LINK_INTEGER_OPERANDS".into());
+            }
             Ok(Int)
         }
         Raw::Eq(a, b) | Raw::Ne(a, b) => {
             let lhs = child(a)?;
             let rhs = child(b)?;
-            if lhs != rhs { return Err("E_LINK_EQUALITY_TYPES".into()); }
+            if lhs != rhs {
+                return Err("E_LINK_EQUALITY_TYPES".into());
+            }
             Ok(Bool)
         }
         Raw::And(a, b) | Raw::Or(a, b) | Raw::Xor(a, b) => {
-            if child(a)? != Bool || child(b)? != Bool { return Err("E_LINK_BOOLEAN_OPERANDS".into()); }
+            if child(a)? != Bool || child(b)? != Bool {
+                return Err("E_LINK_BOOLEAN_OPERANDS".into());
+            }
             Ok(Bool)
         }
         Raw::Not(a) => {
-            if child(a)? != Bool { return Err("E_LINK_BOOLEAN_OPERANDS".into()); }
+            if child(a)? != Bool {
+                return Err("E_LINK_BOOLEAN_OPERANDS".into());
+            }
             Ok(Bool)
         }
         Raw::If(condition, yes, no) => {
-            if child(condition)? != Bool { return Err("E_LINK_BOOLEAN_CONDITION".into()); }
+            if child(condition)? != Bool {
+                return Err("E_LINK_BOOLEAN_CONDITION".into());
+            }
             let y = child(yes)?;
             let n = child(no)?;
-            if y != n { return Err("E_LINK_BRANCH_TYPES".into()); }
+            if y != n {
+                return Err("E_LINK_BRANCH_TYPES".into());
+            }
             Ok(y)
         }
         Raw::Call(target, args) => {
@@ -97,7 +125,9 @@ fn inspect_expression(
                 return Err("E_LINK_CALL_ARITY_OR_ENTRY".into());
             }
             for (arg, ty) in args.iter().zip(&callee.param_types) {
-                if child(arg)? != *ty { return Err("E_LINK_ARGUMENT_TYPE".into()); }
+                if child(arg)? != *ty {
+                    return Err("E_LINK_ARGUMENT_TYPE".into());
+                }
             }
             dependencies.push(target.clone());
             Ok(callee.return_type)
@@ -141,12 +171,17 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
         if names.insert(func.name.clone(), i).is_some() {
             return Err("E_LINK_DUP_FUNCTION".into());
         }
-        if func.params.len() != func.param_types.len() || func.params.len() > 4 || func.locals.len() > MAX_LOCALS {
+        if func.params.len() != func.param_types.len()
+            || func.params.len() > 4
+            || func.locals.len() > MAX_LOCALS
+        {
             return Err("E_LINK_FUNCTION_ARITY_OR_LOCAL_BUDGET".into());
         }
     }
     let main = names.get("main").ok_or("E_LINK_MAIN_REQUIRED")?;
-    if program[*main].return_type != ScalarType::Int { return Err("E_LINK_MAIN_TYPE".into()); }
+    if program[*main].return_type != ScalarType::Int {
+        return Err("E_LINK_MAIN_TYPE".into());
+    }
     if !program[*main].params.is_empty() {
         return Err("E_LINK_MAIN_ARITY".into());
     }
@@ -183,7 +218,9 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
             &mut nodes,
             0,
         )?;
-        if actual != func.return_type { return Err("E_LINK_RETURN_TYPE".into()); }
+        if actual != func.return_type {
+            return Err("E_LINK_RETURN_TYPE".into());
+        }
         edges.push(dependencies);
     }
     let mut states = vec![0; program.len()];
@@ -229,7 +266,9 @@ fn emit_expr(
             }
             let mut nested = scope.clone();
             for (name, slot) in bindings.iter().zip(slots) {
-                if let Some(name) = name { nested.insert(name.clone(), slot); }
+                if let Some(name) = name {
+                    nested.insert(name.clone(), slot);
+                }
             }
             emit_expr(body, builder, &nested, refs, failure, depth + 1)
         }
@@ -245,7 +284,11 @@ fn emit_expr(
         Raw::Eq(a, b) | Raw::Ne(a, b) | Raw::Xor(a, b) => {
             let lhs = emit_expr(a, builder, scope, refs, failure, depth + 1)?;
             let rhs = emit_expr(b, builder, scope, refs, failure, depth + 1)?;
-            let cc = if matches!(expr, Raw::Eq(_, _)) { IntCC::Equal } else { IntCC::NotEqual };
+            let cc = if matches!(expr, Raw::Eq(_, _)) {
+                IntCC::Equal
+            } else {
+                IntCC::NotEqual
+            };
             let flag = builder.ins().icmp(cc, lhs, rhs);
             Ok(builder.ins().uextend(types::I64, flag))
         }
@@ -256,9 +299,13 @@ fn emit_expr(
             let merge = builder.create_block();
             builder.append_block_param(merge, types::I64);
             if matches!(expr, Raw::And(_, _)) {
-                builder.ins().brif(flag, rhs_block, &[], merge, &[BlockArg::Value(lhs)]);
+                builder
+                    .ins()
+                    .brif(flag, rhs_block, &[], merge, &[BlockArg::Value(lhs)]);
             } else {
-                builder.ins().brif(flag, merge, &[BlockArg::Value(lhs)], rhs_block, &[]);
+                builder
+                    .ins()
+                    .brif(flag, merge, &[BlockArg::Value(lhs)], rhs_block, &[]);
             }
             builder.switch_to_block(rhs_block);
             builder.seal_block(rhs_block);
