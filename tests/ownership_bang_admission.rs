@@ -87,8 +87,10 @@ fn rejects_ownership_prefixes_before_run_or_ir() {
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
-                stderr.contains(if ["copy!42","take!42","borrow!mut value","mut borrow!value","share!value",
-                    "copy!!value","borrow!/* checked loan */mut value"].contains(&expression) {
+                stderr.contains(if expression.split_once('!').is_some_and(|(_, tail)| {
+                    let tail = tail.strip_prefix('!').unwrap_or(tail);
+                    !tail.as_bytes().first().is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c))
+                }) {
                     "E_BANG_KEYWORD_WHITESPACE"
                 } else { "OWNERSHIP_BANG_BACKEND_UNSUPPORTED" }),
                 "{mode} wrong diagnostic for {expression}: {stderr}"
@@ -206,7 +208,8 @@ fn exclusive_fixture_is_removed_on_scope_exit() {
 #[test]
 fn exact_separator_matrix_denies_before_check_run_or_ir() {
     for keyword in ["trap!","throw!","raise!","panic!","copy!","copy!!",
-        "take!","move!","borrow!","share!","pin!","drop!","pipe!","rpipe!","stop!","expand!"] {
+        "take!","move!","borrow!","share!","pin!","drop!","pipe!","rpipe!","stop!","expand!",
+        "ref!","deref!","unref!","freeze!","weak!"] {
         for tail in ["value","(42)","/*comment*/ value","","\u{a0}value"] {
             for mode in ["check","run","ir"] {
                 let source=format!("fnc main():int{{return {keyword}{tail};}}");
