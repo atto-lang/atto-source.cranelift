@@ -1830,6 +1830,22 @@ pub fn parse(text: &str) -> Result<Program, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn strict_i64_source_admission() {
+        let pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42;";
+        for e in ["40+2","84/2","42 as Bounded","-9223372036854775808"] {
+            let source=format!("{pre} pub fnc main() -> int {{return {e};}}");
+            assert!(super::parse_verified_strict_i64(&source).is_ok(),"{e}");
+        }
+        for e in ["42/0","-9223372036854775808 / -1","9223372036854775807+1","(9223372036854775807+1)*0","43 as Bounded"] {
+            let source=format!("{pre} pub fnc main() -> int {{return {e};}}");
+            assert!(super::parse_verified_strict_i64(&source).err().is_some_and(|e|e.contains("E_VERIFY_UNPROVEN:")),"{e}");
+        }
+        assert!(super::parse_verified_strict_i64("pub fnc main() -> int {return 42;}").is_err());
+        let eager=format!("{pre} pub fnc main() -> int {{val int n = 9223372036854775807+1;return 42;}}");
+        assert!(super::parse_verified_strict_i64(&eager).err().is_some_and(|e|e.contains("E_VERIFY_UNPROVEN:")));
+    }
+
     use super::*;
     #[test]
     fn mutex_new_constructor_is_required_but_not_yet_runtime_supported() {
