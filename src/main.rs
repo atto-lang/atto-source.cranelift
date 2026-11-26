@@ -386,6 +386,38 @@ fn run() -> Result<(), String> {
     }
     Ok(())
 }
+// Explicit internal one-entry host-native object session. No persistent
+// cache, external package linkage, or JIT fallback.
+#[derive(Default)]
+struct IncrementalObjectSession { prior:Option<(String,Vec<u8>)> }
+impl IncrementalObjectSession {
+    fn build(&mut self,source:&str,cold:bool)->Result<(Vec<u8>,bool),String>{
+        if !cold {if let Some((old,bytes))=&self.prior {if old==source{return Ok((bytes.clone(),true));}}}
+        let parsed=frontend::parse(source)?;let bytes=backend::emit_object(&parsed)?;
+        self.prior=Some((source.to_owned(),bytes.clone()));Ok((bytes,false))
+    }
+}
+#[cfg(test)]
+mod incremental_object_tests{
+    use super::*;
+    #[test]
+    fn exact_native_object_reuse(){
+        let a="pub fnc main(): int { return 41+1; }";let b="pub fnc main(): int { return 41+2; }";
+        let mut s=IncrementalObjectSession::default();let (cold,hit)=s.build(a,true).unwrap();assert!(!hit);
+        assert_eq!(cold,backend::emit_object(&frontend::parse(a).unwrap()).unwrap());
+        let (warm,hit)=s.build(a,false).unwrap();assert!(hit);assert_eq!(warm,cold);
+        let (edit,hit)=s.build(b,false).unwrap();assert!(!hit);assert_eq!(edit,backend::emit_object(&frontend::parse(b).unwrap()).unwrap());assert_ne!(cold,edit);
+        let bad="pub fnc main(): int { return missing; }";assert_eq!(s.build(bad,false).unwrap_err(),frontend::parse(bad).unwrap_err());assert_eq!(s.build(b,false).unwrap(),(edit.clone(),true));
+        let dir=std::env::temp_dir().join(format!("atto-clif-incremental-{}",std::process::id()));std::fs::create_dir(&dir).unwrap();
+        let host=dir.join("host.c");std::fs::write(&host,"#include <stdint.h>\nextern int64_t oreslang_scalar_entry(void);\nint main(void){return (int)oreslang_scalar_entry();}\n").unwrap();
+        for (bytes,expected) in [(cold,42),(warm,42),(edit,43)]{
+            let obj=dir.join("guest.o");let exe=dir.join("guest");std::fs::write(&obj,bytes).unwrap();
+            assert!(std::process::Command::new("cc").arg(&host).arg(&obj).arg("-o").arg(&exe).status().unwrap().success());
+            assert_eq!(std::process::Command::new(&exe).status().unwrap().code(),Some(expected));
+        }
+        std::fs::remove_dir_all(dir).unwrap();println!("INCREMENTAL_CRANELIFT|actual-aot-guest=42/43|rollback");
+    }
+}
 fn main() {
     if let Err(e) = run() {
         eprintln!("orescranelift: {e}");
