@@ -3734,18 +3734,17 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
     }
     fn name<'a>(p: &mut Parser<'a>) -> Result<&'a str, String> {
         const RESERVED: &str = " define pub private durable persistent actor as state end int bool true false self receive init fnc mtd let val mut const return await suspends susp async critical using with import namespace module class struct contract enum new spawn stop if else match on default void ";
-        if let Word(n) = p.current {
-            if !n.is_empty()
-                && n.len() <= 128
-                && n.bytes()
-                    .next()
-                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-                && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                && !RESERVED.contains(&format!(" {n} "))
-            {
-                take(p, Word(n))?;
-                return Ok(n);
-            }
+        if let Word(n) = p.current
+            && !n.is_empty()
+            && n.len() <= 128
+            && n.bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !RESERVED.contains(&format!(" {n} "))
+        {
+            take(p, Word(n))?;
+            return Ok(n);
         }
         Err("E_DURABLE_SCALAR_SCHEMA_V1".into())
     }
