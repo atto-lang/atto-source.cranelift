@@ -423,6 +423,9 @@ impl<'a> Quantities<'a> {
     fn strict_updates(&mut self)->Result<(),String>{
         if !self.strict{return Ok(());}
         loop{
+            // Declarations may follow an assignment or a completed loop. Each
+            // snapshot still gets a new eager slot, never the mutable slot.
+            self.bindings()?;
             if self.p.take(Token::Word("while"))?{
                 if self.mutable.len()!=1{return Err("E_VERIFY_UNSUPPORTED: single declared mutable loop state required".into());}
                 let (key,want)=self.mutable[0].clone();
