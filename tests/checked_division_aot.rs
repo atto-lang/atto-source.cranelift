@@ -9,7 +9,9 @@ fn checked_division_executes_native_objects() {
     let object = dir.join("guest.o");
     let harness = dir.join("host.c");
     let binary = dir.join("guest");
-    fs::write(&harness, r#"
+    fs::write(
+        &harness,
+        r#"
 #include <stdint.h>
 #include <assert.h>
 extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
@@ -25,15 +27,40 @@ int main(void) {
     }
   }
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
     fs::write(&source, "pub fnc main(a:int,b:int):int{return a/b;}").unwrap();
     let artifact = Command::new(env!("CARGO_BIN_EXE_orescranelift"))
-        .arg("emit-object").arg(&source).output().unwrap();
-    assert!(artifact.status.success(), "{}", String::from_utf8_lossy(&artifact.stderr));
+        .arg("emit-object")
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        artifact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&artifact.stderr)
+    );
     fs::write(&object, artifact.stdout).unwrap();
-    let link=Command::new("cc").args(["-std=c11","-Wall","-Werror","-fsanitize=undefined","-fno-sanitize-recover=all"])
-        .arg(&harness).arg(&object).arg("-o").arg(&binary).output().unwrap();
-    assert!(link.status.success(), "{}",String::from_utf8_lossy(&link.stderr));
+    let link = Command::new("cc")
+        .args([
+            "-std=c11",
+            "-Wall",
+            "-Werror",
+            "-fsanitize=undefined",
+            "-fno-sanitize-recover=all",
+        ])
+        .arg(&harness)
+        .arg(&object)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        link.status.success(),
+        "{}",
+        String::from_utf8_lossy(&link.stderr)
+    );
     assert!(Command::new(&binary).status().unwrap().success());
     fs::remove_dir_all(&dir).unwrap();
 }

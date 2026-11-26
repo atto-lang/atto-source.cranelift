@@ -1660,11 +1660,7 @@ fn shared_five_backend_scalar_wave_native_jit() {
         );
         fixture(&source, &[], true, "42\n");
     }
-    for expression in [
-        "9223372036854775808",
-        "-(-9223372036854775808)",
-        "5 ^ 3",
-    ] {
+    for expression in ["9223372036854775808", "-(-9223372036854775808)", "5 ^ 3"] {
         fixture(
             &format!("pub fnc main(): int {{ return {expression}; }}"),
             &[],
@@ -2401,11 +2397,31 @@ fn actor_pubsub_words_inside_comments_do_not_change_scalar_programs() {
 
 #[test]
 fn checked_division_jit_cli_values_and_traps() {
-    for (a,b,want) in [("84","2","42\n"),("-7","2","-3\n"),("7","-2","-3\n"),("-7","-2","3\n")] {
-        fixture("fnc main(a:int,b:int):int{return a/b;}", &[a,b], true, want);
+    for (a, b, want) in [
+        ("84", "2", "42\n"),
+        ("-7", "2", "-3\n"),
+        ("7", "-2", "-3\n"),
+        ("-7", "-2", "3\n"),
+    ] {
+        fixture(
+            "fnc main(a:int,b:int):int{return a/b;}",
+            &[a, b],
+            true,
+            want,
+        );
     }
-    fixture("fnc main(a:int,b:int):int{return a/b;}", &["1","0"], false, "");
-    fixture("fnc main(a:int,b:int):int{return a/b;}", &["-9223372036854775808","-1"], false, "");
+    fixture(
+        "fnc main(a:int,b:int):int{return a/b;}",
+        &["1", "0"],
+        false,
+        "",
+    );
+    fixture(
+        "fnc main(a:int,b:int):int{return a/b;}",
+        &["-9223372036854775808", "-1"],
+        false,
+        "",
+    );
     fixture("fnc main():int{return 2+84/2*3;}", &[], true, "128\n");
     fixture("fnc main():int{return 84/2/2;}", &[], true, "21\n");
     fixture("fnc main():int{return seq(1/0,42);}", &[], false, "");
