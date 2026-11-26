@@ -193,6 +193,9 @@ struct Binding {
     slot: usize,
     width: Width,
 }
+type BindingFacts = Vec<(String, Binding)>;
+type GuardFacts = (Expr, BindingFacts, BindingFacts);
+type LoopPlan = (Expr, Vec<LoopStep>, BindingFacts);
 #[derive(Clone, Copy)]
 struct Refinement {
     dim: Dim,
@@ -632,24 +635,24 @@ impl<'a> Quantities<'a> {
             return self.atom(depth + 1);
         }
         if self.p.take(Token::Punct(b'-'))? {
-            if let Token::Number(n) = self.p.current {
-                if integer_digits(n)? == "9223372036854775808" {
-                    let end = self.p.pos;
-                    self.p.next()?;
-                    let compact = self.p.pos == end + 1;
-                    let expr = self.p.node(Expr::Literal(i64::MIN))?;
-                    return self.postfix(
-                        Typed {
-                            expr,
-                            dim: SCALAR,
-                            scale: Scale::ONE,
-                            range: Range::exact(i64::MIN),
-                            width: Width::Literal,
-                        },
-                        compact,
-                        true,
-                    );
-                }
+            if let Token::Number(n) = self.p.current
+                && integer_digits(n)? == "9223372036854775808"
+            {
+                let end = self.p.pos;
+                self.p.next()?;
+                let compact = self.p.pos == end + 1;
+                let expr = self.p.node(Expr::Literal(i64::MIN))?;
+                return self.postfix(
+                    Typed {
+                        expr,
+                        dim: SCALAR,
+                        scale: Scale::ONE,
+                        range: Range::exact(i64::MIN),
+                        width: Width::Literal,
+                    },
+                    compact,
+                    true,
+                );
             }
             let value = self.atom(depth + 1)?;
             if self.strict && value.range.lo == i64::MIN {
@@ -691,99 +694,93 @@ impl<'a> Quantities<'a> {
                 true,
             );
         }
-        if let Token::Word(name) = self.p.current {
-            if let Some((_, b)) = self.bindings.iter().find(|(n, _)| n == name) {
-                let b = *b;
-                self.p.next()?;
-                if let Some((_, names)) = self.arrays.iter().find(|(n, _)| n == name).cloned() {
-                    if !self.p.take(Token::Punct(b'['))? {
-                        return Err(
-                            "E_VERIFY_UNSUPPORTED: array cannot escape or be used as scalar".into(),
-                        );
-                    }
-                    let index = self.expr(0, depth + 1)?;
-                    self.p.expect(Token::Punct(b']'))?;
-                    Self::scalar(&index)?;
-                    let (lo, hi) = (index.range.lo, index.range.hi);
-                    if lo < 0 || hi >= names.len() as i64 {
-                        return Err(
-                            "E_VERIFY_UNPROVEN: index not proved within receiver bounds".into()
-                        );
-                    }
-                    if !matches!(index.expr, Expr::Local(_) | Expr::Literal(_)) {
-                        return Err(
-                            "E_VERIFY_UNSUPPORTED: fixed index requires local or literal".into(),
-                        );
-                    }
-                    let read = |k: i64| {
-                        self.bindings
-                            .iter()
-                            .find(|(n, _)| n == &names[k as usize])
-                            .map(|(_, b)| *b)
-                            .ok_or("E_VERIFY_UNSUPPORTED: array cell outside scope")
-                    };
-                    let last = read(hi)?;
-                    let mut value = Expr::Local(last.slot);
-                    let mut range = last.range;
-                    for k in (lo..hi).rev() {
-                        let cell = read(k)?;
-                        range = range.join(cell.range);
-                        value = Expr::Choose(
-                            Box::new(Expr::Compare(
-                                0,
-                                Box::new(index.expr.clone()),
-                                Box::new(Expr::Literal(k)),
-                            )),
-                            Box::new(Expr::Local(cell.slot)),
-                            Box::new(value),
-                        );
-                    }
-                    validate_ast_depth(&value)?;
-                    return self.postfix(
-                        Typed {
-                            expr: value,
-                            dim: SCALAR,
-                            scale: Scale::ONE,
-                            range,
-                            width: Width::I64,
-                        },
-                        false,
-                        false,
+        if let Token::Word(name) = self.p.current
+            && let Some((_, b)) = self.bindings.iter().find(|(n, _)| n == name)
+        {
+            let b = *b;
+            self.p.next()?;
+            if let Some((_, names)) = self.arrays.iter().find(|(n, _)| n == name).cloned() {
+                if !self.p.take(Token::Punct(b'['))? {
+                    return Err(
+                        "E_VERIFY_UNSUPPORTED: array cannot escape or be used as scalar".into(),
                     );
                 }
-                let expr = self.p.node(Expr::Local(b.slot))?;
+                let index = self.expr(0, depth + 1)?;
+                self.p.expect(Token::Punct(b']'))?;
+                Self::scalar(&index)?;
+                let (lo, hi) = (index.range.lo, index.range.hi);
+                if lo < 0 || hi >= names.len() as i64 {
+                    return Err(
+                        "E_VERIFY_UNPROVEN: index not proved within receiver bounds".into()
+                    );
+                }
+                if !matches!(index.expr, Expr::Local(_) | Expr::Literal(_)) {
+                    return Err(
+                        "E_VERIFY_UNSUPPORTED: fixed index requires local or literal".into(),
+                    );
+                }
+                let read = |k: i64| {
+                    self.bindings
+                        .iter()
+                        .find(|(n, _)| n == &names[k as usize])
+                        .map(|(_, b)| *b)
+                        .ok_or("E_VERIFY_UNSUPPORTED: array cell outside scope")
+                };
+                let last = read(hi)?;
+                let mut value = Expr::Local(last.slot);
+                let mut range = last.range;
+                for k in (lo..hi).rev() {
+                    let cell = read(k)?;
+                    range = range.join(cell.range);
+                    value = Expr::Choose(
+                        Box::new(Expr::Compare(
+                            0,
+                            Box::new(index.expr.clone()),
+                            Box::new(Expr::Literal(k)),
+                        )),
+                        Box::new(Expr::Local(cell.slot)),
+                        Box::new(value),
+                    );
+                }
+                validate_ast_depth(&value)?;
                 return self.postfix(
                     Typed {
-                        expr,
-                        dim: b.dim,
-                        scale: b.scale,
-                        range: b.range,
-                        width: b.width,
+                        expr: value,
+                        dim: SCALAR,
+                        scale: Scale::ONE,
+                        range,
+                        width: Width::I64,
                     },
                     false,
                     false,
                 );
             }
+            let expr = self.p.node(Expr::Local(b.slot))?;
+            return self.postfix(
+                Typed {
+                    expr,
+                    dim: b.dim,
+                    scale: b.scale,
+                    range: b.range,
+                    width: b.width,
+                },
+                false,
+                false,
+            );
         }
-        if let Token::Word(name) = self.p.current {
-            if let Some((_, helper)) = self.helpers.iter().find(|(n, _)| n == name) {
-                let helper = helper.clone();
-                self.p.next()?;
-                return self.call(helper, depth + 1);
-            }
+        if let Token::Word(name) = self.p.current
+            && let Some((_, helper)) = self.helpers.iter().find(|(n, _)| n == name)
+        {
+            let helper = helper.clone();
+            self.p.next()?;
+            return self.call(helper, depth + 1);
         }
-        if let Token::Word(_) = self.p.current {
-            if self
-                .p
-                .input
-                .as_bytes()
-                .get(self.p.pos..)
-                .is_some_and(|tail| {
-                    tail.iter().copied().find(|c| !c.is_ascii_whitespace()) == Some(b'(')
-                })
-            {
-                return Err("E_REFINEMENT_CALL: unknown or recursive helper".into());
-            }
+        if matches!(self.p.current, Token::Word(_))
+            && self.p.input.as_bytes().get(self.p.pos..).is_some_and(|tail| {
+                tail.iter().copied().find(|c| !c.is_ascii_whitespace()) == Some(b'(')
+            })
+        {
+            return Err("E_REFINEMENT_CALL: unknown or recursive helper".into());
         }
         Err(
             "E_UNIT_PROFILE: expected quantity expression, binding or earlier private helper"
@@ -1380,7 +1377,7 @@ impl<'a> Quantities<'a> {
         &mut self,
         incoming: &[(String, Binding)],
         depth: usize,
-    ) -> Result<(Expr, Vec<(String, Binding)>, Vec<(String, Binding)>), String> {
+    ) -> Result<GuardFacts, String> {
         if depth > 16 {
             return Err("E_UNIT_LIMIT: guard depth".into());
         }
@@ -1417,30 +1414,29 @@ impl<'a> Quantities<'a> {
         }
         let mut yes = incoming.to_vec();
         let mut no = incoming.to_vec();
-        if let Expr::Local(slot) = &left.expr {
-            if right.range.lo == right.range.hi {
-                if let Some(i) = incoming.iter().position(|(_, b)| b.slot == *slot) {
-                    let r = incoming[i].1.range;
-                    let n = right.range.lo;
-                    let edge = |cmp| {
-                        if cmp == 1 && Range::bit(n) != 0 && r.lo == n && r.hi == n {
-                            let (lo, hi) = if incoming[i].1.width == Width::I32 {
-                                (I32_LO, I32_HI)
-                            } else {
-                                (i64::MIN, i64::MAX)
-                            };
-                            return Range {
-                                lo,
-                                hi,
-                                holes: Range::bit(n),
-                            };
-                        }
-                        r.restrict(cmp, n)
+        if let Expr::Local(slot) = &left.expr
+            && right.range.lo == right.range.hi
+            && let Some(i) = incoming.iter().position(|(_, b)| b.slot == *slot)
+        {
+            let r = incoming[i].1.range;
+            let n = right.range.lo;
+            let edge = |cmp| {
+                if cmp == 1 && Range::bit(n) != 0 && r.lo == n && r.hi == n {
+                    let (lo, hi) = if incoming[i].1.width == Width::I32 {
+                        (I32_LO, I32_HI)
+                    } else {
+                        (i64::MIN, i64::MAX)
                     };
-                    yes[i].1.range = edge(op);
-                    no[i].1.range = edge([1, 0, 5, 4, 3, 2][op as usize]);
+                    return Range {
+                        lo,
+                        hi,
+                        holes: Range::bit(n),
+                    };
                 }
-            }
+                r.restrict(cmp, n)
+            };
+            yes[i].1.range = edge(op);
+            no[i].1.range = edge([1, 0, 5, 4, 3, 2][op as usize]);
         }
         Ok((
             self.p
@@ -1453,7 +1449,7 @@ impl<'a> Quantities<'a> {
         &mut self,
         incoming: &[(String, Binding)],
         depth: usize,
-    ) -> Result<(Expr, Vec<(String, Binding)>, Vec<(String, Binding)>), String> {
+    ) -> Result<GuardFacts, String> {
         let (mut e, mut yes, mut no) = self.predicate(incoming, depth)?;
         let mut count = 0;
         while self.pair(b'&')? {
@@ -1476,7 +1472,7 @@ impl<'a> Quantities<'a> {
         &mut self,
         incoming: &[(String, Binding)],
         depth: usize,
-    ) -> Result<(Expr, Vec<(String, Binding)>, Vec<(String, Binding)>), String> {
+    ) -> Result<GuardFacts, String> {
         let (mut e, mut yes, mut no) = self.guard_and(incoming, depth)?;
         let mut count = 0;
         while self.pair(b'|')? {
@@ -1565,7 +1561,7 @@ impl<'a> Quantities<'a> {
         mutable: &MutableTypes,
         frame_len: usize,
         depth: usize,
-    ) -> Result<(Expr, Vec<LoopStep>, Vec<(String, Binding)>), String> {
+    ) -> Result<LoopPlan, String> {
         if depth > 16 {
             return Err("E_UNIT_LIMIT: loop depth".into());
         }
@@ -1802,16 +1798,16 @@ impl<'a> Quantities<'a> {
             validate_ast_depth(&value.expr)?;
             return Ok(value);
         }
-        if self.p.current == Token::Punct(b'}') {
-            if let Some(t) = tail {
-                let saved = self.cursor();
-                self.bindings.retain(|(name, _)| t.scope.contains(name));
-                self.seek(t.resume);
-                let value = self.sequence(t.mutable.clone(), depth + 1, t.outer.clone())?;
-                Self::record_tail(&t, self.cursor())?;
-                self.seek(saved);
-                return Ok(value);
-            }
+        if self.p.current == Token::Punct(b'}')
+            && let Some(t) = tail
+        {
+            let saved = self.cursor();
+            self.bindings.retain(|(name, _)| t.scope.contains(name));
+            self.seek(t.resume);
+            let value = self.sequence(t.mutable.clone(), depth + 1, t.outer.clone())?;
+            Self::record_tail(&t, self.cursor())?;
+            self.seek(saved);
+            return Ok(value);
         }
         if self.strict && self.p.take(Token::Word("if"))? {
             let incoming = self.bindings.clone();
