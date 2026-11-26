@@ -1030,13 +1030,18 @@ impl<'a> Parser<'a> {
     fn missing_primitive_initializer(&self) -> bool {
         let qualified=matches!(self.current,Token::Word("let"|"val"|"const"));
         let mut scan=match Parser::new(&self.input[self.pos..]){Ok(p)=>p,Err(_)=>return false};
-        let ty=if qualified{
-            let ty=scan.current;
+        let first=if qualified{
+            let first=scan.current;
             if scan.next().is_err(){return false;}
-            ty
+            first
         }else{self.current};
-        if !matches!(ty,Token::Word("int"|"bool"|"string"|"String")){return false;}
-        matches!(scan.current,Token::Word(_))&&scan.next().is_ok()&&scan.current==Token::Punct(b';')
+        let primitive=|token|matches!(token,Token::Word("int"|"bool"|"string"|"String"));
+        if primitive(first)&&matches!(scan.current,Token::Word(_)){
+            return scan.next().is_ok()&&scan.current==Token::Punct(b';');
+        }
+        qualified&&matches!(first,Token::Word(_))&&scan.current==Token::Punct(b':')&&
+            scan.next().is_ok()&&primitive(scan.current)&&scan.next().is_ok()&&
+            scan.current==Token::Punct(b';')
     }
 
     fn program(mut self) -> Result<Program, String> {
