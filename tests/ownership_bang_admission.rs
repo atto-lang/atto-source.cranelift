@@ -544,3 +544,39 @@ int main(void){for(int i=0;i<100;i++){
         for mode in ["check","ir","emit-object"]{let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");}
     }
 }
+
+#[test]
+fn fixed_scalar_array_placement_native_memory_and_rejections(){
+    let good="define struct Packet { i8 tag; Array<i16,3> cells; int tail; } with { constructor(i8 tag, Array<i16,3> cells, int tail) { self.tag = tag; self.cells = cells; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-1, Array.of(10,20,11), 2) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).cells[0]; val c = (deref! p).cells[1]; val d = (deref! p).cells[2]; val e = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d + e; }";
+    let out=run_source(good,"run");assert!(out.status.success(),"{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{ir:?}");
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 16, align = 8"),"{clif}");
+    for offset in [2,4,6,8]{assert!(clif.contains(&format!("stack_addr.i64 ss0+{offset}")),"{clif}");}
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-array-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{object:?}");
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0 && out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{link:?}");assert!(Command::new(&bin).status().unwrap().success());
+            println!("FIXED_ARRAY_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [("Array<i16,3> cells;","Array<i16,0> cells;"),("Array<i16,3> cells;","Array<i16,9> cells;"),("Array<i16,3> cells,","Array<i16,2> cells,"),("Array.of(10,20,11)","Array.of(10,20)"),("Array.of(10,20,11)","Array.of(10,20,32768)"),(".cells[2]",".cells[3]"),(".cells[2]",".cells[-1]"),(".cells[2]",".cells[tail]"),(".cells[2]",".cells"),(".cells[2]",".cells[2][0]"),(".tag;",".tag[0];"),("Array.of(10,20,11)","Array.of(10,20,11,12)") ]{
+        let bad=good.replacen(from,to,1);assert_ne!(bad,good);
+        for mode in ["check","run","ir","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
