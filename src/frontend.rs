@@ -2595,7 +2595,7 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
     if p.current != Token::Word("with") { return Ok(()); }
     if fields.len() % 3 != 0 || fields.len() > 192 { return Err(syntax()); }
     let mut field_names = BTreeSet::new();
-    for field in fields.chunks_exact(3) {
+    for field in fields.as_chunks::<3>().0 {
         match field {
             [Token::Word("int" | "bool"), Token::Word(name), Token::Punct(b';')] => {
                 if !field_names.insert(*name) { return Err("E_STRUCT_WITH_DUPLICATE: duplicate field".into()); }
@@ -2885,8 +2885,8 @@ pub fn parse(text: &str) -> Result<Program, String> {
     // Text is merely a dispatch hint. Only the canonical lexer and complete
     // isolated grammar may authorize erasure. Failed attempts retain the
     // ordinary parser's existing fail-closed ownership diagnostics.
-    if text.contains("RawPointer") {
-        if let Ok(program) = parse_reusable_slot(text) { return Ok(program); }
+    if text.contains("RawPointer") && let Ok(program) = parse_reusable_slot(text) {
+        return Ok(program);
     }
     let original = Parser::new(text)?.program();
     // Only a complete, independently typed closed Option program can enter
@@ -2949,7 +2949,7 @@ mod attached_struct_target_tests {
             GROUPED.replace("int <- product()", "int • product()"),
             GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
             GROUPED.replace("mtd int • sum()", "mut mtd shift(int n):void { self.x = n; } mtd int • sum()")] {
-            let err = parse(&source).err().expect("must fail closed");
+            let err = parse(&source).expect_err("must fail closed");
             assert!(err.contains("E_STRUCT_WITH_NATIVE_UNSUPPORTED"), "{err}");
         }
     }
@@ -2962,7 +2962,7 @@ mod attached_struct_target_tests {
             (GROUPED.replace("int y;", "int x;"), "E_STRUCT_WITH_DUPLICATE"),
             (GROUPED.replace("constructor(int x, int y)", "mut constructor(int x, int y)"), "E_STRUCT_WITH_SYNTAX"),
         ] {
-            let err = parse(&source).err().expect("must reject invalid header");
+            let err = parse(&source).expect_err("must reject invalid header");
             assert!(err.contains(code), "{err}");
         }
         assert!(parse("/* type Point = struct { int x; } with {} */ pub fnc main():int { return 42; }").is_ok());
@@ -4635,7 +4635,7 @@ mod canonical_stdout_scalar_admission_tests {
                      "stdio /* nested /* comment */ */ .out.write(\"A\")", "process.stdout . write(\"A\")"] {
             let source = format!("pub fnc main():int {{ {call}; return 42; }}");
             for result in [parse(&source), parse_verified_strict_i64(&source)] {
-                assert!(result.err().expect("must reject").contains("E_STDOUT_PROFILE_UNSUPPORTED"));
+                assert!(result.expect_err("must reject").contains("E_STDOUT_PROFILE_UNSUPPORTED"));
             }
         }
     }

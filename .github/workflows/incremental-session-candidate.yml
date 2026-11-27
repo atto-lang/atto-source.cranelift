@@ -1,0 +1,53 @@
+name: Incremental compiler session candidate
+on:
+  pull_request:
+    paths:
+      - 'src/main.rs'
+      - 'src/lib.rs'
+      - 'src/sha256.rs'
+      - 'src/compiler_cache_key.rs'
+      - 'src/compiler_artifact_receipt.rs'
+      - 'src/compiler_artifact_store.rs'
+      - 'src/compiler_artifact_store/authority.rs'
+      - 'src/compiler_artifact_store/session.rs'
+      - 'src/compiler_cache_key_policy.rs'
+      - 'src/compiler_cache_ledger.rs'
+      - '.github/workflows/incremental-session-candidate.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify immutable source provenance
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD 'HEAD^{tree}'
+      - name: Execute real compiler candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          run_nonempty() {
+            cargo test --color never --locked "$@" -- --nocapture | tee "$log"
+            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"
+          }
+          run_nonempty --bin orescranelift incremental_object_tests::exact_native_object_reuse
+          run_nonempty --lib sha256::tests::
+          run_nonempty --lib compiler_cache_key::tests::
+          run_nonempty --lib compiler_artifact_receipt::tests::
+          run_nonempty --lib compiler_artifact_store::tests::
+          run_nonempty --lib compiler_cache_key_policy::tests::
+          run_nonempty --lib compiler_cache_ledger::tests::
+          cargo clippy --locked --all-targets -- -D warnings

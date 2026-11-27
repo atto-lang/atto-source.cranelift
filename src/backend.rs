@@ -13,6 +13,7 @@ use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 mod telemetry;
+pub use telemetry::Span;
 
 pub struct Compiled {
     pub(crate) module: JITModule, // Own executable allocations until after every native call.
@@ -891,6 +892,18 @@ pub fn emit_object(source: &Program) -> Result<Vec<u8>, String> {
     emit_scalar_object(source, false)
 }
 
+/// Compile the restricted attached-struct profile through its typed frontend.
+pub fn compile_attached_struct_object(source: &str) -> Result<Vec<u8>, String> {
+    let program = crate::frontend::attached_scalar_values::parse(source)?;
+    emit_object(&program)
+}
+
+/// Compile verified unsigned source to a host-target object.
+pub fn compile_unsigned_object(source: &str) -> Result<Vec<u8>, String> {
+    let parsed = crate::frontend::parse_unsigned(source)?;
+    emit_unsigned_object(&parsed)
+}
+
 pub(crate) fn emit_unsigned_object(
     source: &crate::frontend::UnsignedProgram,
 ) -> Result<Vec<u8>, String> {
@@ -915,7 +928,7 @@ fn emit_scalar_object(source: &Program, unsigned: bool) -> Result<Vec<u8>, Strin
 }
 
 impl Compiled {
-    pub fn run_traced(&self, args: &[i64]) -> (Result<i64, String>, Vec<telemetry::Span>) {
+    pub fn run_traced(&self, args: &[i64]) -> (Result<i64, String>, Vec<Span>) {
         telemetry::record(|| self.run(args))
     }
 
