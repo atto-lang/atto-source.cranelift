@@ -580,3 +580,56 @@ int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entr
         }
     }
 }
+
+#[test]
+fn placement_checked_subtraction_preserves_left_association_and_atomic_output() {
+    let source="define struct CoordPair { int left; int right; } with { constructor(int left, int right) { self.left = left; self.right = right; } } pub fnc main(int lhs, int rhs): int { let Storage<CoordPair> s = alloc! CoordPair; let mut RawPointer<CoordPair> p = RawPointer.empty<CoordPair>(); new CoordPair(lhs, rhs) at s; ref! p to s; val a = (deref! p).left; val b = (deref! p).right; unref! p; destroy! s; free! s; return a - b + b; }";
+    // Pair is a reserved built-in aggregate, not a nominal struct name.
+    let reserved=source.replace("CoordPair","Pair");
+    let denied=run_source(&reserved,"emit-object");assert!(!denied.status.success()&&denied.stdout.is_empty());
+    let fixture=SourceFixture::create(source);
+    for (args,expected) in [
+        (["42","-3"],Some("42")),
+        (["-9223372036854775808","-9223372036854775808"],Some("-9223372036854775808")),
+        (["-9223372036854775808","1"],None),
+        (["9223372036854775807","-1"],None),
+        (["0","-9223372036854775808"],None),
+    ]{
+        let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("run").arg(&fixture.path).args(args).output().unwrap();
+        if let Some(want)=expected{assert!(out.status.success(),"{out:?}");assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),want);}
+        else{assert!(!out.status.success()&&out.stdout.is_empty(),"{out:?}");}
+    }
+    let ir=run_source(source,"ir");assert!(ir.status.success());
+    let clif=String::from_utf8_lossy(&ir.stdout);assert!(clif.contains("ssub_overflow")&&clif.contains("sadd_overflow"),"{clif}");
+    let literal=source.replace("main(int lhs, int rhs)","main()").replace("CoordPair(lhs, rhs)","CoordPair(-9223372036854775808, 1)");
+    for mode in ["run","check","ir","emit-object"]{
+        let out=run_source(&literal,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {out:?}");
+    }
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-sub-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(source,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{object:?}");
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){
+  int64_t out=777;
+  assert(oreslang_scalar_entry(42,-3,0,0,&out)==0 && out==42);
+  assert(oreslang_scalar_entry(INT64_MIN,INT64_MIN,0,0,&out)==0 && out==INT64_MIN);
+  out=777;
+  assert(oreslang_scalar_entry(INT64_MIN,1,0,0,&out)==1 && out==777);
+  assert(oreslang_scalar_entry(INT64_MAX,-1,0,0,&out)==1 && out==777);
+  assert(oreslang_scalar_entry(0,INT64_MIN,0,0,&out)==1 && out==777);
+}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{link:?}");assert!(Command::new(&bin).status().unwrap().success());
+            println!("CHECKED_SUB_PLACEMENT_NATIVE_PASS success=200 failure=300 observer_opt={opt}");
+        }
+    }
+}
