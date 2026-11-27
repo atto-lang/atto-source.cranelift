@@ -1,5 +1,5 @@
 use super::{Parser,Token};
-use super::physical_layout::{self, FieldType, Layout, Limits, Owner, Storage};
+use super::physical_layout::{self, FieldType, Limits, Owner, Storage};
 use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind { I8, I16, I32, I64 }
@@ -16,29 +16,62 @@ impl Kind {
             Self::I32 => i32::try_from(n).is_ok(), Self::I64 => true }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldKind { Scalar(Kind), Inline(usize) }
+#[derive(Clone, Debug)]
+struct Decl { name: String, fields: Vec<(String,FieldKind)> }
+#[derive(Clone, Debug)]
+struct Leaf { name: String, path: Vec<usize>, kind: Kind }
+fn leaves(owners:&[Decl],root:usize)->Result<Vec<Leaf>,String>{
+    fn visit(owners:&[Decl],id:usize,prefix:&str,path:&mut Vec<usize>,out:&mut Vec<Leaf>)->Result<(),String>{
+        if path.len()>=8{return Err(err());}
+        let owner=owners.get(id).ok_or_else(err)?;
+        for (index,(name,kind)) in owner.fields.iter().enumerate(){
+            path.push(index);
+            let name=if prefix.is_empty(){name.clone()}else{format!("{prefix}.{name}")};
+            match kind {
+                FieldKind::Scalar(k)=>{
+                    if out.len()>=8{return Err(err());}
+                    out.push(Leaf{name,path:path.clone(),kind:*k});
+                }
+                FieldKind::Inline(i) if *i<id=>visit(owners,*i,&name,path,out)?,
+                FieldKind::Inline(_)=>return Err(err()),
+            }
+            path.pop();
+        }
+        Ok(())
+    }
+    let mut result=Vec::new();visit(owners,root,"",&mut Vec::new(),&mut result)?;
+    if result.is_empty(){return Err(err());}Ok(result)
+}
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
     Construct(Vec<i64>), Bind, CopyField(u8), Detach, Destroy, Free,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Plan {
-    owner: String,
-    fields: Vec<(String, Kind)>,
+    owners: Vec<Decl>,
+    root: usize,
     pub steps: Vec<Step>,
     pub result: Vec<usize>,
 }
-fn err() -> String { "E_POINTER_PLACEMENT: invalid closed typed flat struct placement profile".into() }
+fn err() -> String { "E_POINTER_PLACEMENT: invalid closed typed nested struct placement profile".into() }
 impl Plan {
-    pub(crate) fn layout(&self) -> Result<Layout,String> {
-        if self.fields.is_empty() || self.fields.len() > 8 { return Err(err()); }
-        let owner = Owner { identity: self.owner.clone(), fields: self.fields.iter().map(|(n,k)| {
-            let size=k.size(); (n.clone(),FieldType::Scalar(Storage {size,align:size}))
-        }).collect() };
-        physical_layout::plan(&[owner],Limits {max_size:65536,max_align:8,max_owners:1,max_fields:8})?
-            .pop().ok_or_else(err)
+    fn leaves(&self) -> Result<Vec<Leaf>,String> { leaves(&self.owners,self.root) }
+    pub(crate) fn physical_slots(&self) -> Result<(Storage,Vec<(u64,Storage)>),String> {
+        let leaves=self.leaves()?;
+        let owners=self.owners.iter().map(|o|Owner {identity:o.name.clone(),fields:o.fields.iter().map(|(n,k)|{
+            let field=match k {FieldKind::Scalar(k)=>{let size=k.size();FieldType::Scalar(Storage{size,align:size})},FieldKind::Inline(i)=>FieldType::Inline(*i)};
+            (n.clone(),field)
+        }).collect()}).collect::<Vec<_>>();
+        let layouts=physical_layout::plan(&owners,Limits{max_size:65536,max_align:8,max_owners:8,max_fields:64})?;
+        let root=layouts.get(self.root).ok_or_else(err)?;
+        let slots=leaves.iter().map(|leaf|root.project(&layouts,&leaf.path)).collect::<Result<Vec<_>,_>>()?;
+        Ok((root.storage,slots))
     }
     pub(crate) fn verify(&self) -> Result<usize,String> {
-        self.layout()?;
+        self.physical_slots()?;
+        let leaves=self.leaves()?;
         let bad=err;
         if self.steps.is_empty() || self.steps.len()>32 || self.result.is_empty() || self.result.len()>8 {
             return Err(bad());
@@ -48,13 +81,13 @@ impl Plan {
         let mut state=State::Empty;
         let mut generation=0u32;
         let mut bound=None;
-        let mut fields=vec![0i64;self.fields.len()];
+        let mut fields=vec![0i64;leaves.len()];
         let mut copies=Vec::new();
         for step in &self.steps {
             match step {
                 Step::Construct(values) if state==State::Empty && bound.is_none()
-                    && values.len()==self.fields.len()
-                    && values.iter().zip(&self.fields).all(|(&v,(_,k))| k.fits(v)) => {
+                    && values.len()==leaves.len()
+                    && values.iter().zip(&leaves).all(|(&v,l)| l.kind.fits(v)) => {
                     generation=generation.checked_add(1).ok_or_else(bad)?;
                     fields.clone_from(values); state=State::Live;
                 }
@@ -102,33 +135,63 @@ impl PointParser<'_> {
             matches!(n,"s"|"p"|"main"|"int"|"pub"|"fnc"|"let"|"val"|"mut"|"return"|"alloc"|"destroy"|"free"|"ref"|"deref"|"unref"|"new"|"at"|"to"|"empty"|"null"|"true"|"false"|"self"|"constructor"|"define"|"struct"|"with"|"await"|"suspends"|"rt"|"if"|"else"|"end"|"while"|"for"|"class"|"actor"|"task"|"select"|"defer"|"recover"|"copy"|"take"|"borrow"|"share"|"drop"|"move"|"pin"|"import"|"export"|"use"|"namespace"|"module"|"const"|"unsafe"|"void"|"panic"|"trap"|"throw"|"raise") {return Err(err());}
         self.p.name()
     }
-    fn parse(&mut self)->Result<Plan,String> {
+    fn kind(&mut self,owners:&[Decl])->Result<FieldKind,String>{
+        let name=self.p.name()?;
+        if let Some(k)=Kind::parse(&name){return Ok(FieldKind::Scalar(k));}
+        owners.iter().position(|o|o.name==name).map(FieldKind::Inline).ok_or_else(err)
+    }
+    fn declaration(&mut self,owners:&[Decl])->Result<Decl,String>{
         self.word("define")?;self.word("struct")?;
         let owner=self.p.aggregate_name()?;
         if owner.len()>64 || !owner.starts_with(|c:char|c.is_ascii_uppercase())
             || !owner.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_')
-            || matches!(owner.as_str(),"Storage"|"RawPointer") {return Err(err());}
+            || matches!(owner.as_str(),"Storage"|"RawPointer")
+            || owners.iter().any(|o|o.name==owner){return Err(err());}
         self.need(Token::Punct(b'{'))?;
-        let mut fields=Vec::<(String,Kind)>::new();
-        while self.p.current!=Token::Punct(b'}') {
-            if fields.len()>=8 {return Err(err());}
-            let ty=self.p.name()?;let kind=Kind::parse(&ty).ok_or_else(err)?;
-            let name=self.ident()?;
+        let mut fields=Vec::<(String,FieldKind)>::new();
+        while self.p.current!=Token::Punct(b'}'){
+            if fields.len()>=8{return Err(err());}
+            let kind=self.kind(owners)?;let name=self.ident()?;
             if fields.iter().any(|(n,_)|n==&name){return Err(err());}
             self.need(Token::Punct(b';'))?;fields.push((name,kind));
         }
         if fields.is_empty(){return Err(err());}
         self.need(Token::Punct(b'}'))?;self.word("with")?;self.need(Token::Punct(b'{'))?;self.word("constructor")?;
         self.need(Token::Punct(b'('))?;
-        for (i,(f,k)) in fields.iter().enumerate() {
-            if i>0 {self.need(Token::Punct(b','))?;}
-            if Kind::parse(&self.p.name()?)!=Some(*k){return Err(err());}
-            self.word(f)?;
+        for (i,(f,k)) in fields.iter().enumerate(){
+            if i>0{self.need(Token::Punct(b','))?;}
+            if self.kind(owners)?!=*k{return Err(err());}self.word(f)?;
         }
         self.need(Token::Punct(b')'))?;self.need(Token::Punct(b'{'))?;
-        // This bounded profile accepts only complete, identity constructor assignments.
-        for (f,_) in &fields {self.word("self")?;self.need(Token::Punct(b'.'))?;self.word(f)?;self.need(Token::Punct(b'='))?;self.word(f)?;self.need(Token::Punct(b';'))?;}
+        for (f,_) in &fields{self.word("self")?;self.need(Token::Punct(b'.'))?;self.word(f)?;self.need(Token::Punct(b'='))?;self.word(f)?;self.need(Token::Punct(b';'))?;}
         self.need(Token::Punct(b'}'))?;self.need(Token::Punct(b'}'))?;
+        Ok(Decl{name:owner,fields})
+    }
+    fn arguments(&mut self,owners:&[Decl],id:usize,depth:usize,values:&mut Vec<i64>)->Result<(),String>{
+        if depth>=8{return Err(err());}
+        let owner=owners.get(id).ok_or_else(err)?;
+        self.word(&owner.name)?;self.need(Token::Punct(b'('))?;
+        for (i,(_,kind)) in owner.fields.iter().enumerate(){
+            if i>0{self.need(Token::Punct(b','))?;}
+            match kind{
+                FieldKind::Scalar(k)=>{let v=self.number()?;if !k.fits(v)||values.len()>=8{return Err(err());}values.push(v);}
+                FieldKind::Inline(n) if *n<id=>self.arguments(owners,*n,depth+1,values)?,
+                FieldKind::Inline(_)=>return Err(err()),
+            }
+        }
+        self.need(Token::Punct(b')'))
+    }
+    fn parse(&mut self)->Result<Plan,String>{
+        let mut owners=Vec::new();
+        while self.word_is("define"){
+            if owners.len()>=8{return Err(err());}
+            let declaration=self.declaration(&owners)?;owners.push(declaration);
+            leaves(&owners,owners.len()-1)?;
+        }
+        let root=owners.len().checked_sub(1).ok_or_else(err)?;
+        let owner=owners[root].name.clone();
+        let fields=&owners[root].fields;
+        let flat=leaves(&owners,root)?;
         self.word("pub")?;self.word("fnc")?;self.word("main")?;self.need(Token::Punct(b'('))?;self.need(Token::Punct(b')'))?;
         self.need(Token::Punct(b':'))?;self.word("int")?;self.need(Token::Punct(b'{'))?;
         self.word("let")?;self.word("Storage")?;self.need(Token::Punct(b'<'))?;self.word(&owner)?;self.need(Token::Punct(b'>'))?;
@@ -140,21 +203,21 @@ impl PointParser<'_> {
         while !self.word_is("return") {
             if steps.len()>=32{return Err(err());}
             let step=if self.word_is("new") {
-                self.word("new")?;self.word(&owner)?;self.need(Token::Punct(b'('))?;
-                let mut values=Vec::new();
-                for (i,(_,k)) in fields.iter().enumerate(){
-                    if i>0 {self.need(Token::Punct(b','))?;}
-                    let v=self.number()?;if !k.fits(v){return Err(err());}values.push(v);
-                }
-                self.need(Token::Punct(b')'))?;self.word("at")?;self.word("s")?;Step::Construct(values)
+                self.word("new")?;let mut values=Vec::new();
+                self.arguments(&owners,root,0,&mut values)?;
+                self.word("at")?;self.word("s")?;Step::Construct(values)
             } else if self.word_is("ref!") {
                 self.op("ref")?;self.word("p")?;self.word("to")?;self.word("s")?;Step::Bind
             } else if self.word_is("val") {
                 self.word("val")?;let n=self.ident()?;
                 let i=names.len();if fields.iter().any(|(f,_)|f==&n)||names.insert(n,i).is_some(){return Err(err());}
                 self.need(Token::Punct(b'='))?;self.need(Token::Punct(b'('))?;self.op("deref")?;self.word("p")?;self.need(Token::Punct(b')'))?;self.need(Token::Punct(b'.'))?;
-                let field=self.p.name()?;
-                Step::CopyField(u8::try_from(fields.iter().position(|(n,_)|n==&field).ok_or_else(err)?).map_err(|_|err())?)
+                let mut field=self.p.name()?;
+                for _ in 1..8{
+                    if !self.p.take(Token::Punct(b'.'))?{break;}
+                    field.push('.');field.push_str(&self.p.name()?);
+                }
+                Step::CopyField(u8::try_from(flat.iter().position(|l|l.name==field).ok_or_else(err)?).map_err(|_|err())?)
             } else if self.word_is("unref!") {self.op("unref")?;self.word("p")?;Step::Detach}
             else if self.word_is("destroy!"){self.op("destroy")?;self.word("s")?;Step::Destroy}
             else if self.word_is("free!"){self.op("free")?;self.word("s")?;Step::Free}
@@ -169,7 +232,7 @@ impl PointParser<'_> {
         }
         self.need(Token::Punct(b';'))?;self.need(Token::Punct(b'}'))?;self.need(Token::End)?;
         
-        let p=Plan{owner,fields,steps,result};p.verify()?;Ok(p)
+        let p=Plan{owners,root,steps,result};p.verify()?;Ok(p)
     }
 }
 

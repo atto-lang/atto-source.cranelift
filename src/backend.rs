@@ -825,15 +825,15 @@ fn prepare_ir_inner(
     let value = if let Some(plan)=placement {
         use crate::frontend::point_placement::Step;
         use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
-        // Closed source-defined flat signed-integer structs. The layout planner,
+        // Closed source-defined nested signed-integer structs. The layout planner,
         // not spelling or field count, supplies native sizes, alignment and offsets.
         if ptr != types::I64 {return Err("E_LAYOUT_TARGET: 64-bit native placement required".into());}
-        let layout=plan.layout()?;
-        let size=u32::try_from(layout.storage.size).map_err(|_|"E_LAYOUT_LIMIT")?;
-        let align=u8::try_from(layout.storage.align.trailing_zeros()).map_err(|_|"E_LAYOUT_LIMIT")?;
-        let slots=layout.fields.iter().enumerate().map(|(i,f)| {
-            let offset=i32::try_from(layout.project(&[],&[i])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
-            let ty=match f.storage.size {1=>types::I8,2=>types::I16,4=>types::I32,8=>types::I64,_=>return Err("E_LAYOUT_TARGET: unsupported field width".into())};
+        let (layout,leaves)=plan.physical_slots()?;
+        let size=u32::try_from(layout.size).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let align=u8::try_from(layout.align.trailing_zeros()).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let slots=leaves.iter().map(|(offset,storage)| {
+            let offset=i32::try_from(*offset).map_err(|_|"E_LAYOUT_LIMIT")?;
+            let ty=match storage.size {1=>types::I8,2=>types::I16,4=>types::I32,8=>types::I64,_=>return Err("E_LAYOUT_TARGET: unsupported field width".into())};
             Ok((offset,ty))
         }).collect::<Result<Vec<_>,String>>()?;
         let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,size,align));
