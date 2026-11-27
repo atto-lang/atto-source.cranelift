@@ -348,6 +348,11 @@ fn run() -> Result<(), String> {
             .write_all(&object)
             .map_err(|e| e.to_string());
     }
+    if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
+        && let Some(functions) = functional_pipelines::parse_named_recursive(source)?
+    {
+        return run_linked_native(&mode, &values, &functions);
+    }
     let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated
