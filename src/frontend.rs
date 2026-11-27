@@ -355,6 +355,7 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     closed_option_profile: bool,
     reusable_slot_profile: bool,
+    point_placement_profile: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
@@ -436,6 +437,7 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays: false,
             closed_option_profile: false,
             reusable_slot_profile: false,
+            point_placement_profile: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             pair_scope_checked: false,
@@ -718,7 +720,7 @@ impl<'a> Parser<'a> {
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
             }
-            if self.current == Token::Word("new") && !self.mutex_scan {
+            if self.current == Token::Word("new") && !self.mutex_scan && !self.point_placement_profile {
                 return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
             }
             if self.current == Token::Word("unsafe") {

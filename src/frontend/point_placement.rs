@@ -121,5 +121,8 @@ pub(crate) fn parse(text:&str)->Result<Plan,String>{
     super::validate_source_envelope(text)?;
     let mut p=Parser::new(text)?;
     p.reusable_slot_profile=true;
+    // Only this complete closed placement grammar can admit `new`.
+    // Ordinary scalar and raw-pointer slot parsers keep the class-allocation denial.
+    p.point_placement_profile=true;
     PointParser{p}.parse()
 }
