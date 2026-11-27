@@ -652,6 +652,11 @@ impl<'a> Parser<'a> {
             // Distinguish contextual bangs from comparisons.
             let suffix = &self.input[self.pos..];
             let comparison = is_comparison_bang(suffix);
+            if self.current == Token::Word("seq") && !comparison && b.get(self.pos) == Some(&b'!') {
+                self.pos += 1;
+                self.current = Token::Word("seq!");
+                return Ok(());
+            }
             // Only the isolated slot parser may lex these exact operators.
             // Its mode cannot flow into the ordinary scalar parser.
             if self.reusable_slot_profile && !comparison && b.get(self.pos) == Some(&b'!') {
@@ -941,7 +946,7 @@ impl<'a> Parser<'a> {
     }
     fn name(&mut self) -> Result<String, String> {
         match self.current {
-            Token::Word(s) => {
+            Token::Word(s) if s != "seq!" => {
                 let out = s.to_owned();
                 self.next()?;
                 Ok(out)
@@ -958,11 +963,11 @@ impl<'a> Parser<'a> {
     }
     /// Sequences are scoped, never tuples or callable argument lists.
     /// Even unused earlier values must retain arithmetic trap behavior.
-    fn sequence(&mut self, depth: usize) -> Result<Expr, String> {
+    fn sequence(&mut self, depth: usize, close: u8, consume_close: bool) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
         }
-        if self.current == Token::Punct(b')') {
+        if self.current == Token::Punct(close) {
             return Err("E_SEQ_EMPTY: sequence must have at least one expression".into());
         }
         let mut expressions = Vec::new();
@@ -978,7 +983,12 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(Token::Punct(b')'))?;
+        if self.current != Token::Punct(close) {
+            return Err("E_SEQ_DELIMITER: expected sequence closing delimiter".into());
+        }
+        if consume_close {
+            self.next()?;
+        }
         self.node(Expr::Seq(expressions))
     }
     // Deliberately bounded to the trusted, non-suspending scalar subset.
@@ -1458,13 +1468,16 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'+'))? {
             return self.atom(depth + 1);
         }
-        if self.take(Token::Word("seq"))? {
+        if self.current == Token::Word("seq") && self.next_significant_is(b'(') {
+            return Err("E_CALL_BACKEND_UNSUPPORTED: ordinary seq(...) call needs checked callable lowering; use seq! (...) for a sequence".into());
+        }
+        if self.take(Token::Word("seq!"))? {
             self.expect(Token::Punct(b'('))?;
-            return self.sequence(depth + 1);
+            return self.sequence(depth + 1, b')', true);
         }
         if self.take(Token::Punct(b'('))? {
             if self.take(Token::Punct(b'>'))? {
-                return self.sequence(depth + 1);
+                return self.sequence(depth + 1, b')', true);
             }
             let e = self.expr(0, depth + 1)?;
             self.expect(Token::Punct(b')'))?;
@@ -1997,7 +2010,12 @@ impl<'a> Parser<'a> {
         } else {
             let inline_effects = self.inline_statements(0)?;
             self.expect(Token::Word("return"))?;
-            let value = self.expr(0, 0)?;
+            let value = if matches!(self.current, Token::Word("seq" | "seq!")) && !self.next_significant_is(b'(') {
+                self.next()?;
+                self.sequence(0, b';', false)?
+            } else {
+                self.expr(0, 0)?
+            };
             let result = if inline_effects.is_empty() {
                 value
             } else {
@@ -4222,28 +4240,35 @@ end"#;
     #[test]
     fn scoped_scalar_seq_model_preserves_source_order_and_rejects_invalid_arity() {
         for expression in [
-            "seq(42)",
-            "seq(1,2,42)",
+            "seq! (42)",
+            "seq! (1,2,42)",
+            "seq 1,2,42",
+            "seq! 1,2,42",
+            "seq!(1,2,42)",
             "(> 1,2,42)",
-            "seq(1,seq(2,42))",
-            "seq(1,(> 2,42))",
-            "seq(1,2)+40",
-            "seq(1,Integer.bitAnd(3,1),42)",
+            "seq! (1,seq! (2,42))",
+            "seq! (1,(> 2,42))",
+            "seq! (1,2)+40",
+            "seq! (1,Integer.bitAnd(3,1),42)",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             let parsed = parse(&source).expect("scoped scalar seq must parse");
             assert_eq!(eval(&parsed.result, &[]), Ok(42), "{source}");
         }
         for expression in [
-            "seq()",
+            "seq! ()",
             "(>)",
-            "seq(1,)",
+            "seq! (1,)",
             "(> 1,)",
-            "seq(,1)",
-            "seq(1,,2)",
-            "seq(1;2)",
+            "seq! (,1)",
+            "seq! (1,,2)",
+            "seq! (1;2)",
             "(1,2)",
-            "seq 1,2",
+            "seq 1,",
+            "seq! 1,",
+            "seq(1,42)",
+            "seq (1,42)",
+            "seq !(1,42)",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             assert!(
@@ -4252,15 +4277,15 @@ end"#;
             );
         }
         let too_many = format!(
-            "fnc main():int{{return seq({});}}",
+            "fnc main():int{{return seq! ({});}}",
             (0..17).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
         );
         assert!(parse(&too_many).unwrap_err().contains("E_SEQ_LIMIT"));
         assert!(parse("fnc main(seq:int):int{return seq;}").is_err());
-        let model_trap = parse("fnc main():int{return seq(9223372036854775807+1,42);}")
+        let model_trap = parse("fnc main():int{return seq! (9223372036854775807+1,42);}")
             .expect("arithmetic trapping sequence has valid syntax");
         assert_eq!(eval(&model_trap.result, &[]), Err("overflow"));
-        let zero_divisor = parse("fnc main():int{return seq(Integer.rem(8,0),42);}")
+        let zero_divisor = parse("fnc main():int{return seq! (Integer.rem(8,0),42);}")
             .expect("guarded remainder syntax");
         assert_eq!(eval(&zero_divisor.result, &[]), Err("divisor_zero"));
         // These Program expressions may also be constructed without parsing;
