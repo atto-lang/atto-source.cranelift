@@ -216,7 +216,13 @@ impl<'a> Reader<'a>{
         let slots=if let Some(env)=env{env}else{&self.values.get(&root).ok_or("E_TYPE: unknown value")?.slots};
         slots.get(&field).cloned().ok_or_else(||"E_TYPE: unknown scalar projection".into())
     }
-    fn value_name(&self)->Option<String>{if let Token::Word(n)=self.p.current{if self.values.contains_key(n){return Some(n.to_owned())}}None}
+    // Only a complete nominal operand can enter the copy/constructor lane.
+    // A scalar projection or readonly call must go through typed expression parsing.
+    fn value_name(&self)->Option<String>{
+        if let Token::Word(n)=self.p.current{
+            if self.values.contains_key(n)&&!self.p.next_significant_is(b'.'){return Some(n.to_owned())}
+        }None
+    }
     fn snapshot_slots(&mut self,v:&Value)->R<Slots>{
         let mut slots=Slots::new();
         for l in self.owners[&v.owner].leaves.clone(){slots.insert(l.path.clone(),self.snapshot(v.slots[&l.path].clone())?);}
