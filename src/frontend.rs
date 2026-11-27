@@ -4257,3 +4257,5 @@ pub mod scalar_library;
 
 #[path = "frontend/point_placement.rs"]
 pub(crate) mod point_placement;
+#[path = "frontend/physical_layout.rs"]
+pub(crate) mod physical_layout;

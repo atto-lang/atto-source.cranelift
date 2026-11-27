@@ -825,18 +825,27 @@ fn prepare_ir_inner(
     let value = if let Some(plan)=placement {
         use crate::frontend::point_placement::Step;
         use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
-        let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,16,3));
+        // This closed Point lane is admitted only on the verified 64-bit
+        // native storage profile. The planner owns size/alignment/offsets.
+        if ptr != types::I64 {return Err("E_LAYOUT_TARGET: 64-bit native placement required".into());}
+        let layout=crate::frontend::physical_layout::point_layout()?;
+        let size=u32::try_from(layout.storage.size).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let align=u8::try_from(layout.storage.align.trailing_zeros()).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let x=i32::try_from(layout.project(&[],&[0])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let y=i32::try_from(layout.project(&[],&[1])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let offsets=[x,y];
+        let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,size,align));
         let mut copies=Vec::new();
         for step in &plan.steps {
             match *step {
                 Step::Construct(x,y)=>{
                     let a=b.ins().iconst(types::I64,x);let z=b.ins().iconst(types::I64,y);
-                    b.ins().stack_store(ptr,a,storage,0);b.ins().stack_store(ptr,z,storage,8);
+                    b.ins().stack_store(ptr,a,storage,x);b.ins().stack_store(ptr,z,storage,y);
                 }
-                Step::CopyField(f)=>copies.push(b.ins().stack_load(ptr,types::I64,storage,i32::from(f)*8)),
+                Step::CopyField(f)=>copies.push(b.ins().stack_load(ptr,types::I64,storage,offsets[usize::from(f)])),
                 Step::Destroy|Step::Free=>{
                     let zero=b.ins().iconst(types::I64,0);
-                    b.ins().stack_store(ptr,zero,storage,0);b.ins().stack_store(ptr,zero,storage,8);
+                    b.ins().stack_store(ptr,zero,storage,x);b.ins().stack_store(ptr,zero,storage,y);
                 }
                 Step::Bind|Step::Detach=>{}
             }
