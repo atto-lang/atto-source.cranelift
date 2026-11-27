@@ -321,6 +321,16 @@ fn run() -> Result<(), String> {
             .write_all(&object)
             .map_err(|e| e.to_string());
     }
+    // The placement parser proves the complete closed grammar and enforces
+    // the shared envelope before this narrowly scoped dispatch. Generic
+    // attached-header denials remain authoritative for all other paths.
+    if matches!(mode.as_str(), "run" | "ir" | "check" | "emit-object")
+        && source.contains("Storage") && source.contains("RawPointer")
+        && let Ok(plan)=frontend::point_placement::parse(source)
+    {
+        if !values.is_empty() {return Err("placement expects no runtime arguments".into());}
+        return backend::placement_command(&plan,&mode);
+    }
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
@@ -338,12 +348,6 @@ fn run() -> Result<(), String> {
             .lock()
             .write_all(&object)
             .map_err(|e| e.to_string());
-    }
-    if source.contains("Storage") && source.contains("RawPointer")
-        && let Ok(plan)=frontend::point_placement::parse(source)
-    {
-        if !values.is_empty() {return Err("placement expects no runtime arguments".into());}
-        return backend::placement_command(&plan,&mode);
     }
     let linked_source = has_real_import_header(source);
     if linked_source {
