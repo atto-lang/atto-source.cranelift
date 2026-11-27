@@ -146,6 +146,7 @@ mod tests {
                 node(direct, calls)
             }).collect();
             let actual = infer_parking(&nodes).unwrap();
+            assert_eq!(actual.len(), n);
             for (root, effect) in actual.iter().enumerate() {
                 let mut expected = ParkingEffects::default();
                 let mut seen = vec![false; n];
@@ -172,6 +173,37 @@ mod tests {
             vec![Some((i + 1) % 1024); 16],
         )).collect();
         assert!(infer_parking(&cycle).unwrap().iter().all(|r| *r == park));
+    }
+
+    #[test]
+    fn all_effect_pairs_and_full_capacity_are_exact() {
+        fn mask(bits: u8) -> ParkingEffects {
+            ParkingEffects {
+                explicit_suspend: bits & 1 != 0,
+                runtime_park: bits & 2 != 0,
+                unresolved: bits & 4 != 0,
+            }
+        }
+        assert!(infer_parking(&[]).unwrap().is_empty());
+        for left in 0..8 {
+            for right in 0..8 {
+                let rows = infer_parking(&[
+                    node(mask(left), vec![Some(1)]),
+                    node(mask(right), vec![]),
+                    node(mask(0), vec![]),
+                ]).unwrap();
+                assert_eq!(rows, vec![mask(left | right), mask(right), mask(0)]);
+                assert_eq!(rows[0].requires_suspend_annotation(), (left | right) & 1 != 0);
+                assert_eq!(rows[0].safe_with_exclusive_loan(), left | right == 0);
+            }
+        }
+        let mut ring: Vec<_> = (0..1024).map(|i| node(
+            if i == 1023 { mask(7) } else { mask(0) },
+            vec![Some((i + 1) % 1024); 16],
+        )).collect();
+        assert_eq!(infer_parking(&ring).unwrap(), vec![mask(7); 1024]);
+        ring[0].calls.push(Some(1));
+        assert_eq!(infer_parking(&ring).unwrap_err(), "parking graph edge budget exceeded");
     }
 
 }
