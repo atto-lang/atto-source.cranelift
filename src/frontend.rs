@@ -1850,13 +1850,13 @@ impl<'a> Parser<'a> {
     // subject and replacements are ordered SSA initializers, not storage
     // cells. Restore lexical bindings once the terminal result is parsed.
     fn scalar_alias_return(&mut self) -> Result<Expr, String> {
-        const UNSUPPORTED: &str = "MATCH_DEFAULT_BACKEND_UNSUPPORTED: only a single unguarded wildcard scalar alias is admitted";
+        let unsupported = format!("MATCH_DEFAULT_BACKEND_UNSUPPORTED: only a single unguarded wildcard scalar alias is admitted at byte {}", self.pos.saturating_sub("match".len()));
         self.expect(Token::Word("match"))?;
         let subject = self.expr(0, 0)?;
         validate_ast_depth(&subject)?;
         if !self.take(Token::Word("over"))? || !self.take(Token::Word("on"))?
             || !self.take(Token::Word("_"))? || !self.take(Token::Word("as"))? {
-            return Err(UNSUPPORTED.into());
+            return Err(unsupported);
         }
         let mut rebind = self.current == Token::Word("rebind") && !self.next_significant_is(b'-');
         if rebind {
@@ -1882,7 +1882,7 @@ impl<'a> Parser<'a> {
             return Err("E_SYNTAX: invalid scalar alias name".into());
         }
         if !self.take(Token::Punct(b'-'))? || !self.take(Token::Punct(b'>'))? {
-            return Err(UNSUPPORTED.into());
+            return Err(unsupported);
         }
         let outer = self.bindings.len();
         self.push_scalar_alias_version(&name, subject)?;
@@ -1907,7 +1907,7 @@ impl<'a> Parser<'a> {
         };
         self.take(Token::Punct(b','))?;
         if !self.take(Token::Word("end"))? {
-            return Err(UNSUPPORTED.into());
+            return Err(unsupported);
         }
         self.bindings.truncate(outer);
         Ok(value)
