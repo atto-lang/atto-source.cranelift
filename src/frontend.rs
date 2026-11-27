@@ -5,6 +5,8 @@ mod closed_option;
 mod quantity_scalar;
 #[path = "quoted_source.rs"]
 mod quoted_source;
+#[path = "frontend/attached_scalar_values.rs"]
+pub(crate) mod attached_scalar_values;
 // Use the same line boundaries as the Java/Rust source lexer and the
 // quoted-template scanner. Keep byte offsets stable for all diagnostics.
 fn line_break_width(bytes: &[u8], at: usize) -> usize {
@@ -370,6 +372,7 @@ struct Parser<'a> {
     entry_scope_checked: bool,
     unsigned_scalar: bool,
     attached_struct_target: bool,
+    attached_scalar_values: bool,
 }
 
 fn identifier_start_width(text: &str, at: usize) -> usize {
@@ -454,6 +457,7 @@ impl<'a> Parser<'a> {
             entry_scope_checked: false,
             unsigned_scalar: false,
             attached_struct_target: false,
+            attached_scalar_values: false,
         };
         p.next()?;
         Ok(p)
@@ -565,6 +569,22 @@ impl<'a> Parser<'a> {
             self.pos += 3;
             self.current = Token::Word("suspends");
             return Ok(());
+        }
+        // These tokens exist only in the isolated typed nominal value lane.
+        // The ordinary scalar ownership denial remains unchanged.
+        if self.attached_scalar_values {
+            if self.input[start..].starts_with("copy!") && b.get(start+5).is_some_and(|c| c.is_ascii_whitespace()) {
+                self.pos += 5;
+                self.current = Token::Word("copy!");
+                return Ok(());
+            }
+            for op in ["&&", "||", "==", "!=", "<=", ">="] {
+                if self.input[start..].starts_with(op) {
+                    self.pos += op.len();
+                    self.current = Token::Word(op);
+                    return Ok(());
+                }
+            }
         }
         if self.attached_struct_target && self.input[start..].starts_with('•') {
             self.pos += '•'.len_utf8();
