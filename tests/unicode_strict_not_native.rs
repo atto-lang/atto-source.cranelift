@@ -15,6 +15,8 @@ fn unicode_not_native_predicate_and_no_artifact_denials(){
     };
     for body in [
         "if ¬false && ¬¬true { return 42; } else { return 0; }",
+        "if !false && !!true { return 42; } else { return 0; }",
+        "if !(false || false) { return 42; } else { return 0; }",
         "val x = 1; if ¬(x == 0) { return 42/x; } else { return 0; }",
     ] {
         let out=compile(body);
@@ -24,7 +26,7 @@ fn unicode_not_native_predicate_and_no_artifact_denials(){
         assert!(Command::new("cc").arg(&driver).arg(&object).arg("-o").arg(&binary).status().unwrap().success());
         assert!(Command::new(&binary).status().unwrap().success());
     }
-    for body in ["if ¬1 { return 42; } else { return 0; }","return ¬false;","if true¬ { return 42; } else { return 0; }"] {
+    for body in ["if ¬1 { return 42; } else { return 0; }","if !1 { return 42; } else { return 0; }","return ¬false;","return !false;","return copy! 42;","if true¬ { return 42; } else { return 0; }"] {
         let out=compile(body);
         assert!(!out.status.success(),"{body}");
         assert!(out.stdout.is_empty(),"{body} emitted object");

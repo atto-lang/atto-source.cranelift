@@ -827,6 +827,13 @@ impl<'a> Parser<'a> {
             return Err(
                 "E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into(),
             );
+        } else if first == b'!' && self.strict_fixed_arrays &&
+            matches!(self.current, Token::Word("if") | Token::Punct(b'(' | b'&' | b'|') | Token::UnicodeNot) &&
+            b.get(self.pos) != Some(&b'=') && !self.input[self.pos..].starts_with("eq")
+        {
+            // Only the strict typed predicate parser consumes this token.
+            // A preceding callable/ownership name never enters this branch.
+            self.current = Token::UnicodeNot;
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
