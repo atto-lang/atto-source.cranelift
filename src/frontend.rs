@@ -1674,20 +1674,66 @@ impl<'a> Parser<'a> {
         }
         // Straight-line scalar rebind only. Each RHS observes the previous
         // SSA version; commit a fresh local initializer after parsing it.
-        while let Token::Word(name) = self.current {
-            if !self.parameters.iter().any(|p| p == name) || !self.next_significant_is(b'=') {
+        while let Token::Word(word) = self.current {
+            let explicit = word == "set" && !self.next_significant_is(b'=')
+                && !self.next_significant_is(b'(');
+            let mut wrapped = false;
+            let mut prefix = None;
+            if explicit {
+                self.next()?;
+                if self.take(Token::Punct(b'!'))? {
+                    wrapped = self.take(Token::Punct(b'('))?;
+                }
+                if let Token::Punct(op @ (b'+' | b'-')) = self.current {
+                    if self.input.as_bytes().get(self.pos) == Some(&op) {
+                        self.next()?;
+                        self.expect(Token::Punct(op))?;
+                        prefix = Some(op);
+                    }
+                }
+            }
+            let Token::Word(name) = self.current else {
+                return Err("E_SYNTAX: explicit update requires a parameter name".into());
+            };
+            if !explicit && (!self.parameters.iter().any(|p| p == name) || !self.next_significant_is(b'=')) {
                 break;
             }
             if !rebindable.iter().any(|p| p == name) {
-                return Err("E_IMMUTABLE_REBIND: fixed parameter".into());
+                return Err("E_IMMUTABLE_REBIND: target is not a rebindable scalar parameter".into());
             }
             if self.local_initializers.len() >= MAX_LOCALS || self.bindings.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             let name = name.to_owned();
+            let prior = self.bindings.iter().rev().find(|(n, _, _)| n == &name)
+                .map(|(_, _, slot)| Expr::Local(*slot))
+                .unwrap_or_else(|| Expr::Param(self.parameters.iter().position(|p| p == &name).expect("rebindable parameter")));
             self.next()?;
-            self.expect(Token::Punct(b'='))?;
-            let initializer = self.expr(0, 0)?;
+            let initializer = if let Some(op) = prefix {
+                let lhs = Box::new(self.node(prior)?);
+                let rhs = Box::new(self.node(Expr::Literal(1))?);
+                self.node(if op == b'+' { Expr::Add(lhs, rhs) } else { Expr::Sub(lhs, rhs) })?
+            } else if explicit && matches!(self.current, Token::Punct(b'+' | b'-' | b'*')) {
+                let Token::Punct(op) = self.current else { unreachable!() };
+                let following = self.input.as_bytes().get(self.pos).copied();
+                self.next()?;
+                let rhs = if matches!(op, b'+' | b'-') && following == Some(op) {
+                    self.expect(Token::Punct(op))?;
+                    self.node(Expr::Literal(1))?
+                } else if following == Some(b'=') {
+                    self.expect(Token::Punct(b'='))?;
+                    self.expr(0, 0)?
+                } else {
+                    return Err("E_SYNTAX: compound update requires contiguous operator".into());
+                };
+                let lhs = Box::new(self.node(prior)?);
+                let rhs = Box::new(rhs);
+                self.node(match op { b'+' => Expr::Add(lhs, rhs), b'-' => Expr::Sub(lhs, rhs), _ => Expr::Mul(lhs, rhs) })?
+            } else {
+                self.expect(Token::Punct(b'='))?;
+                self.expr(0, 0)?
+            };
+            if wrapped { self.expect(Token::Punct(b')'))?; }
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
             let slot = self.local_initializers.len();
