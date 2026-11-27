@@ -1,0 +1,32 @@
+name: Cranelift scalar wildcard alias native JIT
+on:
+  push:
+    branches: ['draft/fixed-parameter-ssa-rebind-20261126']
+  pull_request:
+    paths:
+      - 'src/frontend.rs'
+      - 'tests/immutable_scalar_locals.rs'
+      - 'contracts/incoming-scalar-bindings-v1/**'
+      - '.github/workflows/incoming-scalar-alias.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-jit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin exact head and shared fixture
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          test "$(git hash-object --no-filters contracts/incoming-scalar-bindings-v1/incoming-alias-typed.atto)" = a468f12a990b9e228b3dda649ba839526d3a32f9
+      - name: Execute actual native JIT regression suite
+        run: cargo test --locked --test immutable_scalar_locals -- --nocapture

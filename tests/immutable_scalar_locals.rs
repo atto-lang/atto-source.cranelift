@@ -185,3 +185,23 @@ fn scalar_locals_do_not_bypass_ownership_or_actor_admission() {
         refuses(source, &[], "");
     }
 }
+
+#[test]
+fn terminal_wildcard_scalar_alias_native_jit() {
+    for source in [
+        include_str!("../contracts/incoming-scalar-bindings-v1/incoming-alias-typed.atto"),
+        "fnc main():int{return match 40 over on _ as const z -> z+2 end;}",
+        "fnc main():int{return match 20 over on _ as rebind int z -> {z=z+1;z=z+1;return z+20;} end;}",
+        "fnc main():int{return match 42 over on _ as rebind -> rebind end;}",
+    ] { accepts(source, &[], "42\n"); }
+    accepts("fnc main(z:int):int{return match z over on _ as rebind int z -> {z=z+2;return z+20;} end;}", &["20"], "42\n");
+    for (source, diagnostic) in [
+        ("fnc main():int{return match 42 over on _ as int z -> {z=0;return z;} end;}", "E_IMMUTABLE_REBIND"),
+        ("fnc main():int{return match 42 over on _ as bool z -> 1 end;}", "E_TYPE"),
+        ("fnc main():int{return match 42 over on _ as rebind rebind int z -> z end;}", "E_SYNTAX"),
+        ("fnc main():int{return match 42 over on _ as mut z -> z end;}", "E_UNSUPPORTED"),
+        ("fnc main():int{return match 42 over on _ as int z when true -> z end;}", "MATCH_DEFAULT_BACKEND_UNSUPPORTED"),
+        ("fnc main():int{return match z over on _ as int z -> z end;}", "unbound"),
+    ] { refuses(source, &[], diagnostic); }
+    refuses("fnc main(x:int):int{return match x+1 over on _ as int z -> 42 end;}", &["9223372036854775807"], "overflow");
+}

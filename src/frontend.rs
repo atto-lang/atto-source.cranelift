@@ -353,6 +353,7 @@ struct Parser<'a> {
     mutex_scan: bool,
     strict_fixed_arrays: bool,
     closed_option_profile: bool,
+    scalar_alias_return_token: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
@@ -420,6 +421,7 @@ impl<'a> Parser<'a> {
             mutex_scan,
             strict_fixed_arrays: false,
             closed_option_profile: false,
+            scalar_alias_return_token: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             pair_scope_checked: false,
@@ -673,7 +675,8 @@ impl<'a> Parser<'a> {
                 return Err("unsafe source is not supported".into());
             }
             // Match requires a typed CFG and exhaustive pattern lowering.
-            if !self.closed_option_profile && self.current == Token::Word("match") {
+            if !self.closed_option_profile && !self.scalar_alias_return_token
+                && self.current == Token::Word("match") {
                 return Err(format!(
                     "MATCH_DEFAULT_BACKEND_UNSUPPORTED: typed patterns, checked fallback and exhaustiveness require CFG lowering at byte {start}"
                 ));
@@ -1782,8 +1785,19 @@ impl<'a> Parser<'a> {
                 .ok_or("scalar main requires a return")?
         } else {
             let inline_effects = self.inline_statements(0)?;
+            // Admit the match token only immediately after this terminal
+            // return, and never in a prior initializer or nested expression.
+            self.scalar_alias_return_token = true;
             self.expect(Token::Word("return"))?;
-            let value = self.expr(0, 0)?;
+            self.scalar_alias_return_token = false;
+            let value = if self.current == Token::Word("match") {
+                if !inline_effects.is_empty() {
+                    return Err("MATCH_DEFAULT_BACKEND_UNSUPPORTED: alias after inline effects requires ordered CFG lowering".into());
+                }
+                self.scalar_alias_return()?
+            } else {
+                self.expr(0, 0)?
+            };
             let result = if inline_effects.is_empty() {
                 value
             } else {
@@ -1832,6 +1846,84 @@ impl<'a> Parser<'a> {
             trace_steps,
         })
     }
+    // An unguarded single wildcard arm has no conditional CFG. The
+    // subject and replacements are ordered SSA initializers, not storage
+    // cells. Restore lexical bindings once the terminal result is parsed.
+    fn scalar_alias_return(&mut self) -> Result<Expr, String> {
+        const UNSUPPORTED: &str = "MATCH_DEFAULT_BACKEND_UNSUPPORTED: only a single unguarded wildcard scalar alias is admitted";
+        self.expect(Token::Word("match"))?;
+        let subject = self.expr(0, 0)?;
+        validate_ast_depth(&subject)?;
+        if !self.take(Token::Word("over"))? || !self.take(Token::Word("on"))?
+            || !self.take(Token::Word("_"))? || !self.take(Token::Word("as"))? {
+            return Err(UNSUPPORTED.into());
+        }
+        let mut rebind = self.current == Token::Word("rebind") && !self.next_significant_is(b'-');
+        if rebind {
+            self.next()?;
+            if (self.current == Token::Word("rebind") && !self.next_significant_is(b'-'))
+                || matches!(self.current, Token::Word("const" | "val" | "let")) {
+                return Err("E_SYNTAX: duplicate or conflicting alias marker".into());
+            }
+        } else if self.take(Token::Word("const"))? || self.take(Token::Word("val"))? {
+        } else if self.take(Token::Word("let"))? {
+            rebind = true;
+        }
+        if self.current == Token::Word("mut") {
+            return Err("E_UNSUPPORTED: scalar alias has no mutable referent".into());
+        }
+        if matches!(self.current, Token::Word("bool" | "boolean")) {
+            return Err("E_TYPE: alias annotation must equal int subject type".into());
+        }
+        self.take(Token::Word("int"))?;
+        let name = self.name()?;
+        if is_java_v1_reserved_parameter_name(&name)
+            || matches!(name.as_str(), "_" | "int" | "Integer" | "main" | "seq" | "on" | "over" | "end" | "when" | "as" | "mut" | "const" | "val" | "let" | "return" | "sync" | "task" | "yield") {
+            return Err("E_SYNTAX: invalid scalar alias name".into());
+        }
+        if !self.take(Token::Punct(b'-'))? || !self.take(Token::Punct(b'>'))? {
+            return Err(UNSUPPORTED.into());
+        }
+        let outer = self.bindings.len();
+        self.push_scalar_alias_version(&name, subject)?;
+        let value = if self.take(Token::Punct(b'{'))? {
+            while matches!(self.current, Token::Word(word) if word == name) {
+                if !rebind {
+                    return Err("E_IMMUTABLE_REBIND: fixed scalar match alias".into());
+                }
+                self.next()?;
+                self.expect(Token::Punct(b'='))?;
+                let replacement = self.expr(0, 0)?;
+                self.expect(Token::Punct(b';'))?;
+                self.push_scalar_alias_version(&name, replacement)?;
+            }
+            self.expect(Token::Word("return"))?;
+            let result = self.expr(0, 0)?;
+            self.expect(Token::Punct(b';'))?;
+            self.expect(Token::Punct(b'}'))?;
+            result
+        } else {
+            self.expr(0, 0)?
+        };
+        self.take(Token::Punct(b','))?;
+        if !self.take(Token::Word("end"))? {
+            return Err(UNSUPPORTED.into());
+        }
+        self.bindings.truncate(outer);
+        Ok(value)
+    }
+
+    fn push_scalar_alias_version(&mut self, name: &str, initializer: Expr) -> Result<(), String> {
+        if self.local_initializers.len() >= MAX_LOCALS || self.bindings.len() >= MAX_LOCALS {
+            return Err("local binding count exceeds 64".into());
+        }
+        validate_ast_depth(&initializer)?;
+        let slot = self.local_initializers.len();
+        self.local_initializers.push(initializer);
+        self.bindings.push((name.to_owned(), None, slot));
+        Ok(())
+    }
+
     // The scalar profile supports one reachable return. Each preceding scope
     // either falls through before that return, or surrounds its evaluation.
     fn scalar_body(
