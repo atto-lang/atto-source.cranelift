@@ -370,8 +370,7 @@ mod tests {
                     }
                     assert!(!pending[index].close());
                 }
-                for (index, (release, worker)) in
-                    releases.into_iter().zip(workers).enumerate().rev()
+                for (index, (release, worker)) in releases.into_iter().zip(workers).enumerate().rev()
                 {
                     release.send(()).unwrap();
                     worker.join().unwrap();
@@ -396,5 +395,4 @@ mod tests {
             });
         }
     }
-
 }
