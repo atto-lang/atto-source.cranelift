@@ -314,4 +314,87 @@ mod tests {
         assert!(fence.close());
         assert!(fence.retirement_ready());
     }
+
+    #[test]
+    fn concurrent_owner_settlement_keeps_physical_credit() {
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        const OWNERS: usize = 64;
+        const LIMIT: Duration = Duration::from_secs(10);
+        for _ in 0..10 {
+            std::thread::scope(|scope| {
+                let mut owners = Vec::with_capacity(OWNERS);
+                let mut pending = Vec::with_capacity(OWNERS);
+                let mut releases = Vec::with_capacity(OWNERS);
+                let mut workers = Vec::with_capacity(OWNERS);
+                let (entered_tx, entered_rx) = sync_channel(OWNERS);
+                for index in 0..OWNERS {
+                    let fence = Fence::new(1, 2).unwrap();
+                    let ticket = fence.register(1).unwrap();
+                    let execution = fence.claim(&ticket).unwrap();
+                    pending.push(fence.register(1).unwrap());
+                    owners.push(Some(fence));
+                    let (release_tx, release_rx) = sync_channel(1);
+                    releases.push(release_tx);
+                    let entered = entered_tx.clone();
+                    workers.push(scope.spawn(move || {
+                        let result = std::panic::catch_unwind(move || {
+                            let _lease = execution;
+                            entered.send(index).unwrap();
+                            release_rx.recv_timeout(LIMIT).unwrap();
+                            if index % 2 == 0 {
+                                panic!("expected callback failure");
+                            }
+                        });
+                        assert_eq!(result.is_err(), index % 2 == 0);
+                    }));
+                }
+                let mut seen = [false; OWNERS];
+                for _ in 0..OWNERS {
+                    let index = entered_rx.recv_timeout(LIMIT).unwrap();
+                    assert!(!seen[index]);
+                    seen[index] = true;
+                }
+                for index in 0..OWNERS {
+                    let fence = owners[index].as_ref().unwrap();
+                    assert_eq!(fence.counts(), (1, 1));
+                    assert!(matches!(fence.register(1), Err(AdmissionError::Capacity)));
+                    assert_eq!(fence.advance(1), Ok(false));
+                    assert!(fence.claim(&pending[(index + 1) % OWNERS]).is_none());
+                    if index % 2 == 0 {
+                        drop(owners[index].take());
+                    } else {
+                        assert!(fence.close());
+                        assert!(!fence.retirement_ready());
+                    }
+                    assert!(!pending[index].close());
+                }
+                for (index, (release, worker)) in
+                    releases.into_iter().zip(workers).enumerate().rev()
+                {
+                    release.send(()).unwrap();
+                    worker.join().unwrap();
+                    if let Some(fence) = &owners[index] {
+                        assert!(fence.retirement_ready());
+                        assert_eq!(fence.counts(), (0, 0));
+                    }
+                    if index > 0 {
+                        if let Some(peer) = &owners[index - 1] {
+                            assert_eq!(peer.counts(), (0, 1));
+                            assert!(!peer.retirement_ready());
+                        }
+                    }
+                    let fresh = Fence::new(2, 2).unwrap();
+                    assert!(fresh.claim(&pending[index]).is_none());
+                    let ticket = fresh.register(2).unwrap();
+                    let lease = fresh.claim(&ticket).unwrap();
+                    drop(lease);
+                    assert!(fresh.close());
+                    assert!(fresh.retirement_ready());
+                }
+            });
+        }
+    }
+
 }
