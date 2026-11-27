@@ -180,15 +180,18 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
     tokens.push("<eof>".into());
     Ok(tokens)
 }
+pub(crate) const LINKED_MAX_ARITY: usize = 8;
 struct Parser {
     tokens: Vec<String>,
     at: usize,
+    max_arity: usize,
 }
 impl Parser {
-    fn new(src: &str) -> Result<Self, String> {
+    fn new(src: &str, max_arity: usize) -> Result<Self, String> {
         Ok(Self {
             tokens: lex(src)?,
             at: 0,
+            max_arity,
         })
     }
     fn peek(&self) -> &str {
@@ -298,7 +301,7 @@ impl Parser {
         if self.peek() != ")" {
             loop {
                 args.push(self.expr(0, depth + 1, None)?);
-                if args.len() > 4 {
+                if args.len() > self.max_arity {
                     return Err("E_PIPE_ARITY_LIMIT".into());
                 }
                 if !self.eat(",") {
@@ -581,7 +584,7 @@ impl Parser {
                     }
                     params.push(n);
                     param_types.push(ty);
-                    if params.len() > 4 {
+                    if params.len() > self.max_arity {
                         return Err("E_PIPE_ARITY_LIMIT".into());
                     }
                     if !self.eat(",") {
@@ -753,7 +756,7 @@ impl Lower<'_> {
 /// machine code. This path is NOT an interpreter, general linker, or AOT.
 pub fn parse(source: &str) -> Result<Program, String> {
     validate_source_envelope(source)?;
-    compile_functions(Parser::new(source)?.parse()?)
+    compile_functions(Parser::new(source, 4)?.parse()?)
 }
 
 /// Preserve the separately parsed function graph and symbolic calls for
@@ -766,13 +769,13 @@ pub(crate) fn parse_linked_native(
         return Err("E_LINK_IMPORT_LIMIT".into());
     }
     validate_source_envelope(entry)?;
-    let mut selected = Parser::new(entry)?.parse()?;
+    let mut selected = Parser::new(entry, LINKED_MAX_ARITY)?.parse()?;
     for (requested, local, text) in units {
         if reserved_sum_name(requested) || reserved_sum_name(local) {
             return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
         }
         validate_source_envelope(text)?;
-        let candidates = Parser::new(text)?.parse()?;
+        let candidates = Parser::new(text, LINKED_MAX_ARITY)?.parse()?;
         let mut exported = candidates
             .into_iter()
             .filter(|f| f.name == *requested && f.public);
