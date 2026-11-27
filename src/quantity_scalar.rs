@@ -1460,6 +1460,24 @@ impl<'a> Quantities<'a> {
             return Err("E_UNIT_LIMIT: guard depth".into());
         }
         self.bindings = incoming.to_vec();
+        // Typed predicate-only negation. Do not reinterpret integer values as
+        // booleans or route the Unicode token through macro/ownership bangs.
+        if self.p.take(Token::UnicodeNot)? {
+            if !matches!(self.p.current, Token::UnicodeNot | Token::Punct(b'(')
+                | Token::Word("true" | "false")) {
+                return Err("E_VERIFY_UNSUPPORTED: Unicode NOT requires a Boolean predicate".into());
+            }
+            let (p, yes, no) = self.predicate(incoming, depth + 1)?;
+            let not = self.p.node(Expr::Choose(
+                Box::new(p), Box::new(Expr::Literal(0)), Box::new(Expr::Literal(1)),
+            ))?;
+            return Ok((not, no, yes));
+        }
+        if matches!(self.p.current, Token::Word("true" | "false")) {
+            let value = i64::from(self.p.current == Token::Word("true"));
+            self.p.next()?;
+            return Ok((self.p.node(Expr::Literal(value))?, incoming.to_vec(), incoming.to_vec()));
+        }
         if self.p.take(Token::Punct(b'('))? {
             let p = self.guard_or(incoming, depth + 1)?;
             self.p.expect(Token::Punct(b')'))?;
