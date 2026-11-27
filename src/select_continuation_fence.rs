@@ -393,4 +393,84 @@ mod tests {
             });
         }
     }
+
+    #[test]
+    fn hundred_thousand_claim_cancel_schedules() {
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        const ROUNDS: u64 = 100_000;
+        const LIMIT: Duration = Duration::from_secs(10);
+        let fence = Arc::new(Fence::new(1, 1).unwrap());
+        std::thread::scope(|scope| {
+            let (claim_tx, claim_rx) = sync_channel::<(Ticket, u32)>(1);
+            let (cancel_tx, cancel_rx) = sync_channel::<(Ticket, u32)>(1);
+            let (claimed_tx, claimed_rx) = sync_channel(1);
+            let (cancelled_tx, cancelled_rx) = sync_channel(1);
+            let claimant = Arc::clone(&fence);
+            let a = scope.spawn(move || {
+                while let Ok((ticket, delay)) = claim_rx.recv() {
+                    for _ in 0..delay {
+                        std::hint::spin_loop();
+                    }
+                    claimed_tx.send(claimant.claim(&ticket)).unwrap();
+                }
+            });
+            let b = scope.spawn(move || {
+                while let Ok((ticket, delay)) = cancel_rx.recv() {
+                    for _ in 0..delay {
+                        std::hint::spin_loop();
+                    }
+                    cancelled_tx.send(ticket.close()).unwrap();
+                }
+            });
+            let mut seed = 0x1234_5678_u32;
+            let mut claims = 0;
+            let mut cancellations = 0;
+            for generation in 1..=ROUNDS {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let ticket = fence.register(generation).unwrap();
+                if generation % 2 == 0 {
+                    claim_tx.send((ticket.clone(), seed & 31)).unwrap();
+                    cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                } else {
+                    cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                    claim_tx.send((ticket.clone(), seed & 31)).unwrap();
+                }
+                let execution = claimed_rx.recv_timeout(LIMIT).unwrap();
+                let cancelled = cancelled_rx.recv_timeout(LIMIT).unwrap();
+                assert_ne!(execution.is_some(), cancelled);
+                assert!(fence.claim(&ticket).is_none());
+                assert!(!ticket.close());
+                if let Some(lease) = execution {
+                    claims += 1;
+                    assert_eq!(lease.generation(), generation);
+                    assert_eq!(fence.counts(), (0, 1));
+                    assert_eq!(fence.advance(generation), Ok(false));
+                    assert!(matches!(
+                        fence.register(generation),
+                        Err(AdmissionError::Capacity)
+                    ));
+                    drop(lease);
+                } else {
+                    cancellations += 1;
+                }
+                assert_eq!(fence.counts(), (0, 0));
+                assert_eq!(fence.advance(generation), Ok(true));
+            }
+            drop(claim_tx);
+            drop(cancel_tx);
+            a.join().unwrap();
+            b.join().unwrap();
+            assert_eq!(claims + cancellations, ROUNDS);
+            assert!(claims > 0 && cancellations > 0);
+            println!(
+                "CLAIM_CANCEL_STRESS_PASS rounds={ROUNDS} claims={claims} cancellations={cancellations}"
+            );
+        });
+        assert!(fence.close());
+        assert!(fence.retirement_ready());
+    }
 }
