@@ -19,3 +19,7 @@ Status: proposal only; no compiler implementation or execution claimed. Keep dra
 ## Backend-specific implementation and evidence
 
 Use block parameters for fixed incoming values and SSA variables for rebindable parameters; inspect CLIF and native code for unnecessary stack slots or memory traffic; verify native ABI and drop flags.
+
+## Canonical correction (2026-11-27)
+
+[Spec #318](https://github.com/atto-lang/atto-spec/pull/318): `rebind` is only permission and `set` performs assignment. Require explicit set in the straight-line scalar formal path; retain the existing explicit-update grammar. [v2 fixtures](https://github.com/atto-lang/atto-platform-conformance/pull/736) are target-only. Object loans, conditional reference joins, alias migration and AOT evidence remain outstanding.

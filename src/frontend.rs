@@ -1701,6 +1701,9 @@ impl<'a> Parser<'a> {
             if !explicit && (!self.parameters.iter().any(|p| p == name) || !self.next_significant_is(b'=')) {
                 break;
             }
+            if !explicit {
+                return Err("E_EXPLICIT_REBIND: use set name = value".into());
+            }
             if !rebindable.iter().any(|p| p == name) {
                 return Err("E_IMMUTABLE_REBIND: target is not a rebindable scalar parameter".into());
             }

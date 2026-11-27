@@ -1751,8 +1751,8 @@ mod parameter_rebind_tests {
     #[test]
     fn straight_line_rebind_uses_ssa_and_preserves_checked_errors() {
         for source in [
-            "fnc main(rebind int n):int{n=n+1;n=n+1;return n;}",
-            "fnc main(rebind n:int):int{n=n+1;n=n+1;return n;}",
+            "fnc main(rebind int n):int{set n=n+1;set n=n+1;return n;}",
+            "fnc main(rebind n:int):int{set n=n+1;set n=n+1;return n;}",
         ] {
             let program = parse(source).unwrap();
             let ir = render_ir(&program).unwrap();
@@ -1794,8 +1794,11 @@ mod parameter_rebind_tests {
 
     #[test]
     fn fixed_parameters_and_contextual_marker() {
-        assert!(parse("fnc main(int n):int{n=42;return n;}")
+        assert!(parse("fnc main(int n):int{set n=42;return n;}")
             .unwrap_err().contains("E_IMMUTABLE_REBIND"));
+        assert!(parse("fnc main(rebind int n):int{n=42;return n;}")
+            .unwrap_err().contains("E_EXPLICIT_REBIND"));
+        assert!(parse("fnc main(rebind int n):int{rebind n=42;return n;}").is_err());
         let fixed = parse("fnc main(int n):int{return n;}").unwrap();
         let marked = parse("fnc main(rebind int n):int{return n;}").unwrap();
         assert_eq!(render_ir(&fixed).unwrap(), render_ir(&marked).unwrap());
