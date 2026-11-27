@@ -542,10 +542,51 @@ pub struct ProtectedScalarState<const CAP: usize = 64> {
     value: i64,
 }
 
+// Trusted synchronous host bridge. The actual release guard stays private
+// and the callback receives only a borrowed scalar view. No state, receipt
+// or guard can escape through the fixed i64 return. Guest effect admission
+// and physical scheduler fencing are separate compiler/runtime obligations.
+pub struct ScopedScalarLoan<'state, 'receipt, const CAP: usize> {
+    state: &'state mut ProtectedScalarState<CAP>,
+    receipt: StateRegionLoanProvenance<'receipt>,
+    release: StateRegionLoanProvenance<'receipt>,
+}
+
+impl<const CAP: usize> ScopedScalarLoan<'_, '_, CAP> {
+    pub fn read(&self) -> Option<i64> { self.state.read(&self.receipt) }
+    pub fn write(&mut self, value: i64) -> bool { self.state.write(&self.receipt, value) }
+    pub fn add_checked(&mut self, delta: i64) -> Result<Option<i64>, &'static str> {
+        self.state.add_checked(&self.receipt, delta)
+    }
+}
+
+impl<const CAP: usize> Drop for ScopedScalarLoan<'_, '_, CAP> {
+    fn drop(&mut self) {
+        // An authenticated live guard must release exactly once, including
+        // Rust unwinding. A broken invariant must not publish a clean result.
+        if !self.state.release(&self.release) { std::process::abort(); }
+    }
+}
+
 impl<const CAP: usize> ProtectedScalarState<CAP> {
     pub fn new(region_id: u64, generation: u64, domain: u64, place: &str, initial: i64) -> Result<Self, &'static str> {
         Ok(Self { ledger: StateRegionLoanLedger::new(region_id, generation, domain, place)?, value: initial })
     }
+    pub fn with_scalar_loan(
+        &mut self,
+        receipt: &StateRegionLoanProvenance<'_>,
+        callback: impl FnOnce(&mut ScopedScalarLoan<'_, '_, CAP>) -> Result<i64, &'static str>,
+    ) -> Result<Option<i64>, &'static str> {
+        // Derive release before admission, so no fallible preparation can
+        // strand a newly acquired loan. Denial never executes the callback.
+        let release = receipt.release_record()?;
+        if !self.try_borrow(receipt) { return Ok(None); }
+        let mut guard = ScopedScalarLoan { state: self, receipt: *receipt, release };
+        let result = callback(&mut guard);
+        drop(guard);
+        result.map(Some)
+    }
+
     pub fn try_borrow(&mut self, r: &StateRegionLoanProvenance<'_>) -> bool { self.ledger.try_borrow(r) }
     pub fn release(&mut self, r: &StateRegionLoanProvenance<'_>) -> bool { self.ledger.release(r) }
     pub fn read(&self, r: &StateRegionLoanProvenance<'_>) -> Option<i64> {
@@ -702,5 +743,58 @@ mod live_ledger_tests {
         assert_eq!(a.read(&r), None); assert!(!a.write(&w, 9)); assert!(!a.try_borrow(&claim(3, 3, LoanKind::Read)));
         assert!(a.release(&r.release_record().unwrap())); assert!(a.quiescent_after_retire());
         assert!(!a.release(&r.release_record().unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod scoped_scalar_tests {
+    use super::*;
+    fn claim(id: u64, kind: LoanKind) -> StateRegionLoanProvenance<'static> {
+        StateRegionLoanProvenance::new(1, 1, 7, 1, 1, 1, id, "count", kind, LoanAction::Borrow).unwrap()
+    }
+    #[test]
+    fn scoped_read_write_release_and_denial() {
+        let mut state = ProtectedScalarState::<1>::new(1, 1, 7, "count", 40).unwrap();
+        let r = claim(1, LoanKind::Read);
+        assert_eq!(state.with_scalar_loan(&r, |loan| {
+            assert!(!loan.write(99));
+            assert_eq!(loan.add_checked(1), Ok(None));
+            Ok(loan.read().unwrap())
+        }), Ok(Some(40)));
+        assert_eq!(state.with_scalar_loan(&r, |_| panic!("replayed callback executed")), Ok(None));
+        let w = claim(2, LoanKind::Write);
+        assert_eq!(state.with_scalar_loan(&w, |loan| Ok(loan.add_checked(2)?.unwrap())), Ok(Some(42)));
+        assert!(state.retire());
+        assert!(state.quiescent_after_retire());
+    }
+    #[test]
+    fn scoped_checked_error_releases_without_implicit_rollback() {
+        let mut state = ProtectedScalarState::<1>::new(1, 1, 7, "count", 0).unwrap();
+        let w = claim(1, LoanKind::Write);
+        assert!(state.with_scalar_loan(&w, |loan| {
+            assert!(loan.write(i64::MAX));
+            Ok(loan.add_checked(1)?.unwrap())
+        }).is_err());
+        let r = claim(2, LoanKind::Read);
+        assert_eq!(state.with_scalar_loan(&r, |loan| Ok(loan.read().unwrap())), Ok(Some(i64::MAX)));
+        assert!(state.retire());
+        assert!(state.quiescent_after_retire());
+    }
+    #[test]
+    fn scoped_unwind_drains_the_live_loan_before_next_admission() {
+        let mut state = ProtectedScalarState::<1>::new(1, 1, 7, "count", 0).unwrap();
+        let w = claim(1, LoanKind::Write);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = state.with_scalar_loan(&w, |loan| {
+                assert!(loan.write(7));
+                panic!("simulated trusted host unwind")
+            });
+        }));
+        assert!(outcome.is_err());
+        let r = claim(2, LoanKind::Read);
+        assert_eq!(state.with_scalar_loan(&r, |loan| Ok(loan.read().unwrap())), Ok(Some(7)));
+        assert!(!state.release(&w.release_record().unwrap()));
+        assert!(state.retire());
+        assert!(state.quiescent_after_retire());
     }
 }
