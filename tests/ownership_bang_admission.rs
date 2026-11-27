@@ -269,6 +269,9 @@ fn bounded_reusable_slots_native_cli() {
         "ref! p to a; return 42;",
         "return p;",
         "ref ! p to a; unref! p; return 42;",
+        "ref!p to a; unref! p; return 42;",
+        "ref! p to a; val x = deref!p; unref! p; return x;",
+        "ref! p to a; unref!p; return 42;",
         "ref! p to missing; unref! p; return 42;",
     ] {
         let source = format!("pub fnc main(): int {{ let a: int = 42; let mut RawPointer<int> p = RawPointer.empty<int>(); {body} }}");
