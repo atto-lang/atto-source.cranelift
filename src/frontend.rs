@@ -2855,8 +2855,8 @@ pub fn parse(text: &str) -> Result<Program, String> {
     // Text is merely a dispatch hint. Only the canonical lexer and complete
     // isolated grammar may authorize erasure. Failed attempts retain the
     // ordinary parser's existing fail-closed ownership diagnostics.
-    if text.contains("RawPointer") {
-        if let Ok(program) = parse_reusable_slot(text) { return Ok(program); }
+    if text.contains("RawPointer") && let Ok(program) = parse_reusable_slot(text) {
+        return Ok(program);
     }
     let original = Parser::new(text)?.program();
     // Only a complete, independently typed closed Option program can enter

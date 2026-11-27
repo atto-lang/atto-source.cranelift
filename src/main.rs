@@ -349,8 +349,7 @@ fn run() -> Result<(), String> {
         if path.extension().and_then(|x| x.to_str()) != Some("atto") {
             return Err("E_STRUCT_PROFILE: expected .atto source".into());
         }
-        let program = frontend::attached_scalar_values::parse(source)?;
-        let object = backend::emit_object(&program)?;
+        let object = backend::compile_attached_struct_object(source)?;
         return std::io::stdout().lock().write_all(&object).map_err(|e| e.to_string());
     }
     if mode == "emit-object-u64" {
