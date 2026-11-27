@@ -5,6 +5,8 @@ mod backend;
 mod counted_static_ready;
 pub mod critical_gate;
 mod frontend;
+// Internal analysis only; no guest parking lowering.
+pub mod runtime_parking_effects;
 mod functional_pipelines;
 mod isolate;
 pub mod layout;
