@@ -533,7 +533,7 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
             if is_entry {
                 None
             } else {
-                Some(function.params.len()+usize::from(function.name==NAMED_STAGE))
+                Some(function.params.len()+if function.name==NAMED_STAGE {1} else {0})
             },
         );
         let symbol = if is_entry {
