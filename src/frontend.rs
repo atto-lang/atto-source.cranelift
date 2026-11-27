@@ -2559,6 +2559,39 @@ pub fn parse(text: &str) -> Result<Program, String> {
 }
 
 #[cfg(test)]
+mod attached_struct_target_tests {
+    use super::parse;
+    const GROUPED: &str = "type Point = struct { int x; int y; } with { constructor(int x, int y) { self.x = x; self.y = y; } mtd int • sum() { return self.x + self.y; } mtd int <- product() { return self.x * self.y; } mtd is_origin() : bool { return self.x == 0 && self.y == 0; } } pub fnc main():int { return 0; }";
+    #[test]
+    fn attached_struct_headers_are_checked_but_never_emitted() {
+        let chained = GROUPED.replace("} with { constructor", "} with constructor")
+            .replace("} mtd", "} with mtd")
+            .replace("} } pub fnc", "} pub fnc");
+        for source in [GROUPED.to_owned(), chained,
+            GROUPED.replace("int • sum()", "sum():int"),
+            GROUPED.replace("int <- product()", "int • product()"),
+            GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
+            GROUPED.replace("mtd int • sum()", "mut mtd shift(int n):void { self.x = n; } mtd int • sum()")] {
+            let err = parse(&source).err().expect("must fail closed");
+            assert!(err.contains("E_STRUCT_WITH_NATIVE_UNSUPPORTED"), "{err}");
+        }
+    }
+    #[test]
+    fn invalid_attachments_do_not_reach_value_gate() {
+        for (source, code) in [
+            (GROUPED.replace("is_origin() : bool", "bool * is_origin()"), "E_STRUCT_WITH_SYNTAX"),
+            (GROUPED.replace("int <- product()", "int <- sum()"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("int y;", "int x;"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("constructor(int x, int y)", "mut constructor(int x, int y)"), "E_STRUCT_WITH_SYNTAX"),
+        ] {
+            let err = parse(&source).err().expect("must reject invalid header");
+            assert!(err.contains(code), "{err}");
+        }
+        assert!(parse("/* type Point = struct { int x; } with {} */ pub fnc main():int { return 42; }").is_ok());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn strict_refinement_admission() {
