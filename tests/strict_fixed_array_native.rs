@@ -3,7 +3,9 @@
 
 use std::{
     fs,
-    path::PathBuf,
+    io::ErrorKind,
+    os::unix::fs::DirBuilderExt,
+    path::{Path, PathBuf},
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -16,12 +18,23 @@ impl Scratch {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "atto-strict-fixed-array-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&dir).unwrap();
-        Self(dir)
+        let prefix = format!("atto-strict-fixed-array-{}-{nonce}", std::process::id());
+        Self::reserve(&std::env::temp_dir(), &prefix)
+    }
+
+    fn reserve(root: &Path, prefix: &str) -> Self {
+        // Time resolution can be coarser than concurrent test starts.
+        // Claim a private directory atomically; never reuse or remove a
+        // preexisting path owned by another test/process.
+        for attempt in 0..128 {
+            let dir = root.join(format!("{prefix}-{attempt}"));
+            match fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => return Self(dir),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("cannot reserve strict-array scratch directory: {e}"),
+            }
+        }
+        panic!("strict-array scratch directory collision budget exhausted")
     }
 
     fn compile(&self, program: &str) -> Output {
@@ -161,4 +174,23 @@ fn strict_fixed_array_rejections_never_emit_native_bytes() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+}
+
+#[test]
+fn scratch_reservation_handles_collisions_without_reusing_foreign_directories() {
+    let root = Scratch::new();
+    let occupied = root.0.join("collision-0");
+    fs::create_dir(&occupied).unwrap();
+    fs::write(occupied.join("sentinel"), b"untouched").unwrap();
+    let children = std::thread::scope(|scope| {
+        let root = &root.0;
+        let jobs: Vec<_> = (0..16).map(|_| scope.spawn(move || Scratch::reserve(root, "collision"))).collect();
+        jobs.into_iter().map(|job| job.join().unwrap()).collect::<Vec<_>>()
+    });
+    let unique: std::collections::BTreeSet<_> = children.iter().map(|child| &child.0).collect();
+    assert_eq!(unique.len(), 16);
+    assert!(!unique.contains(&occupied));
+    drop(unique);
+    drop(children);
+    assert_eq!(fs::read(occupied.join("sentinel")).unwrap(), b"untouched");
 }

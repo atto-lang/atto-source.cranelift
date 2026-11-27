@@ -75,3 +75,26 @@ fn actor_sync_words_in_comments_do_not_break_supported_scalar_guest() {
     assert!(output.status.success(), "{:?}", output.stderr);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
+
+#[test]
+fn grouped_spawn_rejects_before_native_value_or_ir() {
+    for expr in [
+        "spawn Worker() with {}",
+        "spawn Worker() with { schedule { max_parallelism = 2; } }",
+        "spawn Worker() with { resources { heap_size = 1024; } }",
+        "spawn Worker() with { init { seed = 42; } }",
+        "spawn Worker() /* trivia */ with { init {} }",
+    ] {
+        let source = format!("fnc main():int{{return {expr};}}");
+        for mode in ["run", "ir"] {
+            let output = invoke(mode, &source);
+            assert!(!output.status.success(), "{mode}: {expr}");
+            assert!(output.stdout.is_empty(), "{mode}: emitted artifact for {expr}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("actor and supervisor capabilities are unsupported"), "{mode}: {expr}: {stderr}");
+        }
+    }
+    let output = invoke("run", "fnc main():int{return 42;} // spawn Worker() with {}\n");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"42\n");
+}

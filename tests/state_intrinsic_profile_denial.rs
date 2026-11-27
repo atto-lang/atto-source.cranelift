@@ -29,6 +29,10 @@ fn shared_positive_state_programs_fail_closed_without_ir_or_execution() {
         include_str!("fixtures/state-intrinsics-v1/pass/state-short-intrinsics.atto"),
         include_str!("fixtures/state-intrinsics-v1/pass/state-owned-tuple-snapshot.atto"),
         include_str!("fixtures/state-intrinsics-v1/pass/state-write-expressions.atto"),
+        "define state on actor C as { let int count: 0; }\nfnc main():int{return 42;}",
+        "pub define state on actor C as { let int count: 0; }\nfnc main():int{return 42;}",
+        "define pub state on actor C as { let int count: 0; }\nfnc main():int{return 42;}",
+        "define state on class C as { let int count: 0; }\nfnc main():int{return 42;}",
     ]
     .iter()
     .enumerate()
