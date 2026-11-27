@@ -269,6 +269,9 @@ fn bounded_reusable_slots_native_cli() {
         "ref! p to a; return 42;",
         "return p;",
         "ref ! p to a; unref! p; return 42;",
+        "ref!p to a; unref! p; return 42;",
+        "ref! p to a; val x = deref!p; unref! p; return x;",
+        "ref! p to a; unref!p; return 42;",
         "ref! p to missing; unref! p; return 42;",
     ] {
         let source = format!("pub fnc main(): int {{ let a: int = 42; let mut RawPointer<int> p = RawPointer.empty<int>(); {body} }}");
@@ -276,6 +279,66 @@ fn bounded_reusable_slots_native_cli() {
             let out = run_source(&source, mode);
             assert!(!out.status.success() && out.stdout.is_empty(), "{mode}: {body}");
         }
+    }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn bounded_reusable_slots_emit_executable_native_objects() {
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = (0..64)
+        .find_map(|_| {
+            let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+            let p = std::env::temp_dir().join(format!("atto-slot-aot-{}-{seq}", std::process::id()));
+            match std::fs::create_dir(&p) {
+                Ok(()) => Some(p),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => None,
+                Err(e) => panic!("cannot create native fixture directory: {e}"),
+            }
+        })
+        .expect("exclusive fixture directory");
+    let _cleanup = Cleanup(dir.clone());
+    let object = dir.join("guest.o");
+    let harness = dir.join("host.c");
+    std::fs::write(&harness, r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void) {
+    int64_t out = -123;
+    assert(oreslang_scalar_entry(0,0,0,0,&out) == 0);
+    assert(out == 42);
+    return 0;
+}
+"#).unwrap();
+    let good = "pub fnc main(): int { let a: int = 40; let b: int = 2; let mut RawPointer<int> p = RawPointer.empty<int>(); ref! p to a; val first = deref! p; unref! p; ref! p to b; val second = deref! p; unref! p; return first + second; }";
+    let emitted = run_source(good, "emit-object");
+    assert!(emitted.status.success(), "{}", String::from_utf8_lossy(&emitted.stderr));
+    assert!(!emitted.stdout.is_empty());
+    std::fs::write(&object, emitted.stdout).unwrap();
+    for opt in ["-O0", "-O2"] {
+        let binary = dir.join(format!("guest{opt}"));
+        let linked = Command::new("cc")
+            .args(["-std=c11", "-Wall", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all", opt])
+            .arg(&harness).arg(&object).arg("-o").arg(&binary).output().unwrap();
+        assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
+        let ran = Command::new(binary).output().unwrap();
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    for body in [
+        "val x = deref! p; return x;",
+        "ref! p to a; return 42;",
+        "ref! p to a; unref! p; unref! p; return 42;",
+        "return p;",
+    ] {
+        let source = format!("pub fnc main(): int {{ let a: int = 42; let mut RawPointer<int> p = RawPointer.empty<int>(); {body} }}");
+        let denied = run_source(&source, "emit-object");
+        assert!(!denied.status.success() && denied.stdout.is_empty(), "{body}");
     }
 }
 
