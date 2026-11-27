@@ -1035,6 +1035,8 @@ impl Compiled {
             Err("integer divisor zero".into())
         } else if status == 3 {
             Err("negative integer exponent".into())
+        } else if status == 6 {
+            Err("E_STACK".into())
         } else if status == 7 {
             Err("E_REFINEMENT_VIOLATION".into())
         } else if status == 8 {
