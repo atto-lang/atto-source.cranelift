@@ -34,7 +34,7 @@ fn actual_named_aggregate_guests_and_rejections() {
         ("const Record<infer R> r=(a=1,b=2);const Record<R> s=(a=1);","E_TYPE_MISMATCH"),
         ("const Record<infer R> r=(a=1,a=2);","E_DUPLICATE_FIELD"),
         ("const Tuple<infer T> t=(1,true);const Tuple<T> s=(true,1);","E_TYPE_MISMATCH"),
-        ("const Tuple<infer T> t=(1,true);const Tuple<T> s=(1);","E_TYPE_MISMATCH"),
+        ("const Tuple<infer T> t=(1,true);const Tuple<T> s=(1,);","E_TYPE_MISMATCH"),
         ("const struct<infer S> s={a:1};const Record<S> r=(a=1);","E_AGGREGATE_KIND"),
         ("const Record<infer R> r=(a=unknown);","E_TYPE_INFER_AMBIGUOUS"),
     ] {
@@ -66,6 +66,30 @@ fn actual_named_aggregate_guests_and_rejections() {
         let guest=run("run",body);
         assert!(guest.status.success(),"{body}: {:?}",guest);
         assert_eq!(guest.stdout.as_slice(),expected.as_slice());
+    }
+    for body in [
+        "const Record r={a:=40,b:2};return r.a+r.b;",
+        "const Record r=(a:=40,b=2,);return r.a+r.b;",
+        "const Record r=();const Record s={};const Tuple t=();return 42;",
+        "const Tuple t=(42,);return t[0];",
+        "const Record<infer R> r={a:1};const Record<R> s=(a:=42);return s.a;",
+    ] {
+        let guest=run("run",body);
+        assert!(guest.status.success(),"{body}: {:?}",guest);
+        assert_eq!(guest.stdout,b"42\n");
+    }
+    for (body,diagnostic) in [
+        ("const Tuple t=(1);","E_TUPLE_ARITY"),
+        ("const Record r={a:=1,a:2};","E_DUPLICATE_FIELD"),
+        ("const Record r={a : = 1};","bool/int literal required"),
+        ("const Record<infer R> R=(a=1);","duplicate aggregate local"),
+        ("const Record<infer R> r=(a=1);const Record R=(a=2);","duplicate aggregate local"),
+        ("const Record<infer R> r=(a=1);const int R=2;","invalid, reserved or duplicate local identifier"),
+    ] {
+        let bad=run("ir",&format!("{body} return 0;"));
+        assert!(!bad.status.success(),"{body}");
+        assert!(bad.stdout.is_empty(),"{body}");
+        assert!(String::from_utf8_lossy(&bad.stderr).contains(diagnostic),"{body}: {:?}",bad);
     }
     let unsupported=run("ir","return Tuple.of(1,2)[0];");
     assert!(!unsupported.status.success());
