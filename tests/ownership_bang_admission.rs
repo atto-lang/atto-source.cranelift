@@ -544,3 +544,83 @@ int main(void){for(int i=0;i<100;i++){
         for mode in ["check","ir","emit-object"]{let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");}
     }
 }
+
+#[test]
+fn local_pair_const_native_cli() {
+    for body in [
+        "const x:=42;const Pair<int> p=x;return p.value;",
+        "const x=x:=42;const Pair<int> p=x;return p.value;",
+        "const x=Pair.of(\"x\",42);const Pair<int> p=x;return p.value;",
+        "const x=\"x\":=42;return x.value;",
+        "const x=y:=42;return x.value;",
+        "const x:=40;const y:=x.value+2;return y.value;",
+    ] {
+        let source = format!("pub fnc main():int{{{body}}}");
+        let output = run_source(&source,"run");
+        assert!(output.status.success(), "{source}: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+        let ir = run_source(&source,"ir");
+        assert!(ir.status.success(), "{source}: {}", String::from_utf8_lossy(&ir.stderr));
+        assert!(!ir.stdout.is_empty());
+    }
+    for body in [
+        "const x:=42;return x;",
+        "const x:=42;return x.key;",
+        "const x:=42;const x:=1;return x.value;",
+        "const x=x:=x;return x.value;",
+        "const x:=x;return x.value;",
+        "const x:=true;return x.value;",
+        "const x: =42;return x.value;",
+        "const x:=42;x.value=7;return x.value;",
+        "const int x=42;const Pair<int> p=x;return 0;",
+        "const x=Pair.of(7,42);return x.value;",
+        "const x:=9223372036854775807+1;return x.value;",
+        "val y=42;const x:=y;return x.value;",
+    ] {
+        let source = format!("pub fnc main():int{{{body}}}");
+        for mode in ["check","run","ir","emit-object"] {
+            let output = run_source(&source,mode);
+            assert!(!output.status.success(), "{mode}: {source}");
+            assert!(output.stdout.is_empty(), "{mode}: {source}");
+        }
+    }
+}
+
+
+// AOT object proof is independent from JIT and scalar IR generation. Link
+// the actual generated object into a fixed observer at both host opt levels.
+#[cfg(all(unix,target_pointer_width="64"))]
+#[test]
+fn local_pair_const_native_cli_aot() {
+    let dir=std::env::temp_dir().join(format!("atto-stored-pair-aot-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+    std::fs::create_dir(&dir).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    let _cleanup=Cleanup(dir.clone());
+    let host=dir.join("host.c");
+    std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+    for (label,decl) in [
+        ("short","const x:=42;"),
+        ("expanded","const x=x:=42;"),
+        ("factory","const x=Pair.of(\"x\",42);")
+    ] {
+        let source=format!("pub fnc main():int{{{decl}const Pair<int> p=x;return p.value;}}");
+        let object=run_source(&source,"emit-object");
+        assert!(object.status.success()&&!object.stdout.is_empty(),"{label}: {:?}",object);
+        let obj=dir.join(format!("{label}.o"));
+        std::fs::write(&obj,object.stdout).unwrap();
+        for opt in ["-O0","-O2"] {
+            let bin=dir.join(format!("{label}{opt}"));
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{label}: {:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success(),"{label}/{opt}");
+            println!("STORED_PAIR_AOT_NATIVE_PASS {label} observer_opt={opt} repetitions=100");
+        }
+    }
+}

@@ -369,6 +369,7 @@ struct Parser<'a> {
     local_initializers: Vec<Expr>,
     named_aggregate_types: std::collections::BTreeMap<String, NamedAggregate>,
     named_aggregate_locals: std::collections::BTreeMap<String, NamedAggregate>,
+    local_pair_keys: std::collections::BTreeMap<String, String>,
     allow_aggregate_wrapper_once: bool,
     pair_scope_checked: bool,
     entry_scope_checked: bool,
@@ -456,6 +457,7 @@ impl<'a> Parser<'a> {
             local_initializers: Vec::new(),
             named_aggregate_types: Default::default(),
             named_aggregate_locals: Default::default(),
+            local_pair_keys: Default::default(),
             allow_aggregate_wrapper_once: false,
             pair_scope_checked: false,
             entry_scope_checked: false,
@@ -1121,6 +1123,124 @@ impl<'a> Parser<'a> {
         let value = signed.parse::<i64>().map_err(|_| "i64 literal out of range")?;
         self.next()?;
         Ok((false, value))
+    }
+
+    // Recognize the contiguous separator using the real lexer cursor.
+    // Trivia may precede :=, but never split the operator.
+    fn pair_separator_ahead(&self) -> bool {
+        let bytes = self.input.as_bytes();
+        let mut at = self.pos;
+        loop {
+            let width = whitespace_width(bytes, at);
+            if width != 0 { at += width; continue; }
+            if bytes.get(at..at.saturating_add(2)) == Some(&b"//"[..]) {
+                at += 2;
+                while at < bytes.len() && line_break_width(bytes, at) == 0 { at += 1; }
+                continue;
+            }
+            if bytes.get(at..at.saturating_add(2)) == Some(&b"/*"[..]) {
+                at = match skip_block_comment(bytes, at) { Ok(end) => end, Err(_) => return false };
+                continue;
+            }
+            return bytes.get(at..at.saturating_add(2)) == Some(&b":="[..]);
+        }
+    }
+
+    fn take_pair_separator(&mut self) -> Result<bool, String> {
+        if self.current != Token::Punct(b':') || self.input.as_bytes().get(self.pos) != Some(&b'=') {
+            return Ok(false);
+        }
+        self.next()?;
+        self.expect(Token::Punct(b'='))?;
+        Ok(true)
+    }
+
+    // Preserve the older immediately projected Pair.of(...).second path.
+    // Only a complete factory followed by the local statement terminator
+    // selects stored Pair admission; lookahead uses bounded lexer tokens.
+    fn stored_pair_factory_ahead(&self) -> bool {
+        if self.current != Token::Word("Pair") { return false; }
+        let Ok(mut scan) = Parser::new(&self.input[self.pos..]) else { return false };
+        if scan.expect(Token::Punct(b'.')).is_err() ||
+           scan.expect(Token::Word("of")).is_err() ||
+           scan.expect(Token::Punct(b'(')).is_err() { return false; }
+        let mut depth = 1usize;
+        for _ in 0..MAX_NODES {
+            match scan.current {
+                Token::End => return false,
+                Token::Punct(b'(') => depth += 1,
+                Token::Punct(b')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return scan.next().is_ok() && scan.current == Token::Punct(b';');
+                    }
+                }
+                _ => {}
+            }
+            if scan.next().is_err() { return false; }
+        }
+        false
+    }
+
+    fn local_pair_key(&mut self) -> Result<String, String> {
+        if let Token::Quoted(raw) = self.current {
+            let bytes = raw.as_bytes();
+            if bytes.len() < 2 || !matches!(bytes[0], b'\'' | b'"') ||
+               !bytes[1..bytes.len()-1].iter().all(|c| (32..=126).contains(c) && *c != 92 && *c != 36) {
+                return Err("E_PAIR_KEY_UNSUPPORTED: plain literal string required".into());
+            }
+            let key = raw[1..raw.len()-1].to_owned();
+            self.next()?;
+            return Ok(key);
+        }
+        self.aggregate_name()
+    }
+
+    fn publish_local_pair(&mut self, name: String, key: String, value: i64) -> Result<(), String> {
+        if name == "Pair" || self.parameters.iter().any(|n| n == "Pair") ||
+           self.bindings.iter().any(|(n,_,_)| n == "Pair") {
+            return Err("E_PAIR_SCOPE_UNSUPPORTED: competing Pair name".into());
+        }
+        if self.parameters.contains(&name) || self.bindings.iter().any(|(n,_,_)| n == &name) ||
+           self.named_aggregate_locals.contains_key(&name) {
+            return Err("E_DUPLICATE: duplicate Pair local".into());
+        }
+        if self.named_aggregate_locals.len() + self.bindings.len() >= MAX_LOCALS {
+            return Err("local binding count exceeds 64".into());
+        }
+        self.named_aggregate_locals.insert(name.clone(), NamedAggregate {
+            kind: "Pair", fields: std::collections::BTreeMap::from([("value".into(), (false, value))])
+        });
+        self.local_pair_keys.insert(name, key);
+        Ok(())
+    }
+
+    fn local_pair_payload(&mut self, name: String, key: String, factory: bool) -> Result<(), String> {
+        // The existing checked constant evaluator is authoritative. No
+        // runtime effect, parameter, owned value or mutable alias is erased.
+        let expr = self.expr(0, 0)?;
+        validate_ast_depth(&expr)?;
+        let value = eval_const_i64(&expr)?;
+        if factory { self.expect(Token::Punct(b')'))?; }
+        self.expect(Token::Punct(b';'))?;
+        self.publish_local_pair(name, key, value)
+    }
+
+    fn typed_local_pair_alias(&mut self) -> Result<(), String> {
+        self.expect(Token::Word("Pair"))?;
+        self.expect(Token::Punct(b'<'))?;
+        self.expect(Token::Word("int"))?;
+        self.expect(Token::Punct(b'>'))?;
+        let name = self.aggregate_name()?;
+        self.expect(Token::Punct(b'='))?;
+        let origin = self.aggregate_name()?;
+        let key = self.local_pair_keys.get(&origin).ok_or("E_PAIR_TYPE: expected local Pair<int>")?.clone();
+        let row = self.named_aggregate_locals.get(&origin).ok_or("E_PAIR_TYPE: missing Pair provenance")?;
+        if row.kind != "Pair" { return Err("E_PAIR_TYPE: incompatible aggregate kind".into()); }
+        let &(is_bool, value) = row.fields.get("value").ok_or("E_PAIR_TYPE: missing Pair payload")?;
+        if is_bool { return Err("E_PAIR_TYPE: expected int payload".into()); }
+        self.expect(Token::Punct(b';'))?;
+        self.publish_local_pair(name, key, value)
     }
 
     fn named_aggregate_binding(&mut self) -> Result<(), String> {
@@ -1898,6 +2018,11 @@ impl<'a> Parser<'a> {
                 Token::Word("val") => "val",
                 _ => break,
             };
+            if kind == "const" && self.next_significant_word_is("Pair") {
+                self.next()?;
+                self.typed_local_pair_alias()?;
+                continue;
+            }
             if kind == "const"
                 && (self.next_significant_word_is("Record")
                     || self.next_significant_word_is("Tuple")
@@ -1931,6 +2056,11 @@ impl<'a> Parser<'a> {
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
+            if kind == "const" && !typed && self.take_pair_separator()? {
+                // Same lexical spelling supplies the literal key, not a lookup.
+                self.local_pair_payload(name.clone(), name, false)?;
+                continue;
+            }
             if !typed && self.take(Token::Punct(b':'))? {
                 self.expect(Token::Word("int"))?;
             }
@@ -1938,6 +2068,28 @@ impl<'a> Parser<'a> {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
+            if kind == "const" && !typed && matches!(self.current, Token::Word(_) | Token::Quoted(_)) && self.pair_separator_ahead() {
+                let key = self.local_pair_key()?;
+                if !self.take_pair_separator()? { return Err("E_PAIR_SYNTAX: expected contiguous :=".into()); }
+                self.local_pair_payload(name, key, false)?;
+                continue;
+            }
+            if kind == "const" && !typed && self.stored_pair_factory_ahead() {
+                self.expect(Token::Word("Pair"))?;
+                self.expect(Token::Punct(b'.'))?;
+                self.expect(Token::Word("of"))?;
+                self.expect(Token::Punct(b'('))?;
+                if !matches!(self.current, Token::Quoted(_)) {
+                    return Err("E_PAIR_KEY_TYPE: factory needs literal string".into());
+                }
+                let key = self.local_pair_key()?;
+                self.expect(Token::Punct(b','))?;
+                self.local_pair_payload(name, key, true)?;
+                continue;
+            }
+            if name == "Pair" && !self.local_pair_keys.is_empty() {
+                return Err("E_PAIR_SCOPE_UNSUPPORTED: competing Pair name".into());
+            }
             let initializer = self.expr(0, 0)?;
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
