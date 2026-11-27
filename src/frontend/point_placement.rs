@@ -74,7 +74,7 @@ pub(crate) struct Plan {
     root: usize,
     parameters: Vec<(String,Kind)>,
     pub steps: Vec<Step>,
-    pub result: Vec<usize>,
+    pub result: Vec<(usize, bool)>, // (copy index, subtract from preceding result)
 }
 fn err() -> String { "E_POINTER_PLACEMENT: invalid closed typed nested struct placement profile".into() }
 impl Plan {
@@ -96,7 +96,7 @@ impl Plan {
         self.physical_slots()?;
         let leaves=self.leaves()?;
         let bad=err;
-        if self.steps.is_empty() || self.steps.len()>32 || self.result.is_empty() || self.result.len()>8 {
+        if self.steps.is_empty() || self.steps.len()>32 || self.result.is_empty() || self.result.len()>8 || self.result[0].1 {
             return Err(bad());
         }
         #[derive(PartialEq,Eq)]
@@ -125,9 +125,12 @@ impl Plan {
         }
         if state!=State::Freed || bound.is_some() {return Err(bad());}
         let mut sum=Some(0i64);
-        for i in &self.result {
-            let value=*copies.get(*i).ok_or_else(bad)?;
-            sum=match (sum,value){(Some(a),Some(b))=>Some(a.checked_add(b).ok_or_else(bad)?),_=>None};
+        for &(i,subtract) in &self.result {
+            let value=*copies.get(i).ok_or_else(bad)?;
+            sum=match (sum,value){
+                (Some(a),Some(b))=>Some(if subtract{a.checked_sub(b)}else{a.checked_add(b)}.ok_or_else(bad)?),
+                _=>None,
+            };
         }
         Ok(copies.len())
     }
@@ -294,11 +297,13 @@ impl PointParser<'_> {
             else{return Err(err());};
             self.need(Token::Punct(b';'))?;steps.push(step);
         }
-        self.word("return")?;let mut result=Vec::new();
+        self.word("return")?;let mut result=Vec::new();let mut subtract=false;
         loop {
             if result.len()==8{return Err(err());}
-            let n=self.ident()?;result.push(*names.get(&n).ok_or_else(err)?);
-            if !self.p.take(Token::Punct(b'+'))?{break;}
+            let n=self.ident()?;result.push((*names.get(&n).ok_or_else(err)?,subtract));
+            if self.p.take(Token::Punct(b'+'))?{subtract=false;}
+            else if self.p.take(Token::Punct(b'-'))?{subtract=true;}
+            else{break;}
         }
         self.need(Token::Punct(b';'))?;self.need(Token::Punct(b'}'))?;self.need(Token::End)?;
         
