@@ -831,21 +831,21 @@ fn prepare_ir_inner(
         let layout=crate::frontend::physical_layout::point_layout()?;
         let size=u32::try_from(layout.storage.size).map_err(|_|"E_LAYOUT_LIMIT")?;
         let align=u8::try_from(layout.storage.align.trailing_zeros()).map_err(|_|"E_LAYOUT_LIMIT")?;
-        let x=i32::try_from(layout.project(&[],&[0])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
-        let y=i32::try_from(layout.project(&[],&[1])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
-        let offsets=[x,y];
+        let x_offset=i32::try_from(layout.project(&[],&[0])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let y_offset=i32::try_from(layout.project(&[],&[1])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let offsets=[x_offset,y_offset];
         let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,size,align));
         let mut copies=Vec::new();
         for step in &plan.steps {
             match *step {
                 Step::Construct(x,y)=>{
                     let a=b.ins().iconst(types::I64,x);let z=b.ins().iconst(types::I64,y);
-                    b.ins().stack_store(ptr,a,storage,x);b.ins().stack_store(ptr,z,storage,y);
+                    b.ins().stack_store(ptr,a,storage,x_offset);b.ins().stack_store(ptr,z,storage,y_offset);
                 }
                 Step::CopyField(f)=>copies.push(b.ins().stack_load(ptr,types::I64,storage,offsets[usize::from(f)])),
                 Step::Destroy|Step::Free=>{
                     let zero=b.ins().iconst(types::I64,0);
-                    b.ins().stack_store(ptr,zero,storage,x);b.ins().stack_store(ptr,zero,storage,y);
+                    b.ins().stack_store(ptr,zero,storage,x_offset);b.ins().stack_store(ptr,zero,storage,y_offset);
                 }
                 Step::Bind|Step::Detach=>{}
             }
