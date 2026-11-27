@@ -220,6 +220,7 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    UnicodeNot,
     End,
 }
 
@@ -357,6 +358,20 @@ struct Parser<'a> {
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
     entry_scope_checked: bool,
+    unsigned_scalar: bool,
+    attached_struct_target: bool,
+}
+
+fn identifier_start_width(text: &str, at: usize) -> usize {
+    text.get(at..).and_then(|tail| tail.chars().next())
+        .filter(|c| c.is_alphabetic() || *c == '_' || *c == '〇')
+        .map_or(0, char::len_utf8)
+}
+
+fn identifier_part_width(text: &str, at: usize) -> usize {
+    text.get(at..).and_then(|tail| tail.chars().next())
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '〇')
+        .map_or(0, char::len_utf8)
 }
 
 fn is_comparison_bang(suffix: &str) -> bool {
@@ -365,7 +380,7 @@ fn is_comparison_bang(suffix: &str) -> bool {
             !tail
                 .chars()
                 .next()
-                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '〇')
         })
 }
 
@@ -424,6 +439,8 @@ impl<'a> Parser<'a> {
             local_initializers: Vec::new(),
             pair_scope_checked: false,
             entry_scope_checked: false,
+            unsigned_scalar: false,
+            attached_struct_target: false,
         };
         p.next()?;
         Ok(p)
@@ -490,8 +507,7 @@ impl<'a> Parser<'a> {
             }
             let word = expected.as_bytes();
             return b.get(at..at.saturating_add(word.len())) == Some(word)
-                && b.get(at + word.len())
-                    .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_');
+                && identifier_part_width(self.input, at + word.len()) == 0;
         }
     }
 
@@ -536,6 +552,21 @@ impl<'a> Parser<'a> {
             self.current = Token::Word("suspends");
             return Ok(());
         }
+        if self.attached_struct_target && self.input[start..].starts_with('•') {
+            self.pos += '•'.len_utf8();
+            self.current = Token::Word("•");
+            return Ok(());
+        }
+        if self.attached_struct_target && self.input[start..].starts_with("<-") {
+            self.pos += 2;
+            self.current = Token::Word("<-");
+            return Ok(());
+        }
+        if self.attached_struct_target && self.input[start..].starts_with("->") {
+            self.pos += 2;
+            self.current = Token::Word("->");
+            return Ok(());
+        }
         let first = b[self.pos];
         self.pos += 1;
         // Stage-0 cannot bind injected state lifetimes or borrow authority.
@@ -563,10 +594,12 @@ impl<'a> Parser<'a> {
                 "ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"
             ));
         }
-        if first.is_ascii_alphabetic() || first == b'_' {
-            while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
-            {
-                self.pos += 1;
+        if identifier_start_width(self.input, start) != 0 {
+            self.pos = start + identifier_start_width(self.input, start);
+            loop {
+                let width = identifier_part_width(self.input, self.pos);
+                if width == 0 { break; }
+                self.pos += width;
             }
             let spelling = &self.input[start..self.pos];
             self.current = Token::Word(if spelling == "susp" {
@@ -798,6 +831,9 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if self.input[start..].starts_with('¬') {
+            self.pos = start + '¬'.len_utf8();
+            self.current = Token::UnicodeNot;
         } else if first == b'~' {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
@@ -808,10 +844,17 @@ impl<'a> Parser<'a> {
             return Err(
                 "E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into(),
             );
+        } else if first == b'!' && self.strict_fixed_arrays &&
+            matches!(self.current, Token::Word("if") | Token::Punct(b'(' | b'&' | b'|') | Token::UnicodeNot) &&
+            b.get(self.pos) != Some(&b'=') && !self.input[self.pos..].starts_with("eq")
+        {
+            // Only the strict typed predicate parser consumes this token.
+            // A preceding callable/ownership name never enters this branch.
+            self.current = Token::UnicodeNot;
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if (self.closed_option_profile && first == b'?')
+        } else if ((self.closed_option_profile || self.attached_struct_target) && first == b'?')
             || b"()+-*/{}[];:,><=.!&|".contains(&first)
         {
             self.current = Token::Punct(first);
@@ -982,6 +1025,41 @@ impl<'a> Parser<'a> {
     }
 
     fn atom(&mut self, depth: usize) -> Result<Expr, String> {
+        if self.unsigned_scalar {
+            if depth > MAX_DEPTH {
+                return Err("expression depth budget exceeded".into());
+            }
+            if self.take(Token::Punct(b'+'))? {
+                return self.atom(depth + 1);
+            }
+            if self.take(Token::Punct(b'('))? {
+                let value = self.expr(0, depth + 1)?;
+                self.expect(Token::Punct(b')'))?;
+                return Ok(value);
+            }
+            return match self.current {
+                Token::Number(n) => {
+                    let value = integer_digits(n)?
+                        .parse::<u64>()
+                        .map_err(|_| "u64 literal out of range")?;
+                    self.next()?;
+                    self.node(Expr::Literal(value as i64))
+                }
+                Token::Word(name) => {
+                    let index = self
+                        .parameters
+                        .iter()
+                        .position(|p| p == name)
+                        .ok_or("unsupported unsigned operand")?;
+                    self.next()?;
+                    self.node(Expr::Param(index))
+                }
+                _ => Err(
+                    "unsigned scalar requires a literal, parameter or parenthesized expression"
+                        .into(),
+                ),
+            };
+        }
         let value = self.atom_base(depth)?;
         while self.current == Token::Punct(b':')
             && self.input.as_bytes().get(self.pos) == Some(&b':')
@@ -1310,7 +1388,7 @@ impl<'a> Parser<'a> {
             // continue to reject before executable code is generated.
             // Bind more tightly than multiplication, without changing the
             // underlying i64 value or using an unchecked reinterpretation.
-            if self.current == Token::Word("as") && min_bp <= 5 {
+            if !self.unsigned_scalar && self.current == Token::Word("as") && min_bp <= 5 {
                 self.next()?;
                 self.checked_i64_cast_target()?;
                 continue;
@@ -1320,7 +1398,7 @@ impl<'a> Parser<'a> {
                 Token::Punct(b'-') => (1, 2, b'-'),
                 Token::Punct(b'*') => (3, 4, b'*'),
                 Token::Punct(b'/') => (3, 4, b'/'),
-                Token::Punct(b'>') => (0, 1, b'>'),
+                Token::Punct(b'>') if !self.unsigned_scalar => (0, 1, b'>'),
                 _ => break,
             };
             if l_bp < min_bp {
@@ -1858,13 +1936,6 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         Sym(u8),
     }
 
-    fn is_ident_start(byte: u8) -> bool {
-        byte.is_ascii_alphabetic() || byte == b'_'
-    }
-    fn is_ident_continue(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric() || byte == b'_'
-    }
-
     let bytes = text.as_bytes();
     let mut index = 0usize;
     let mut previous: Option<Tok<'_>> = None;
@@ -1919,11 +1990,13 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         }
 
         let token_start = index;
-        let current = if is_ident_start(byte) {
+        let current = if identifier_start_width(text, index) != 0 {
             let start = index;
-            index += 1;
-            while index < bytes.len() && is_ident_continue(bytes[index]) {
-                index += 1;
+            index += identifier_start_width(text, index);
+            loop {
+                let width = identifier_part_width(text, index);
+                if width == 0 { break; }
+                index += width;
             }
             Tok::Id(&text[start..index])
         } else {
@@ -2252,11 +2325,130 @@ fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Separate bounded declaration-header probe. Never emits a Program or
+// bypasses the existing executable nominal/ownership admission gate.
+fn reject_attached_struct_target(text: &str) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let mut p = match Parser::new(text) {
+        Ok(p) if matches!(p.current, Token::Word("type" | "define")) => p,
+        _ => return Ok(()),
+    };
+    fn syntax() -> String { "E_STRUCT_WITH_SYNTAX: invalid attached struct header".into() }
+    fn scalar(p: &mut Parser<'_>, void: bool) -> Result<String, String> {
+        if !matches!(p.current, Token::Word("int" | "bool"))
+            && !(void && p.current == Token::Word("void")) {
+            return Err(syntax());
+        }
+        p.name()
+    }
+    fn formals(p: &mut Parser<'_>) -> Result<Vec<String>, String> {
+        p.expect(Token::Punct(b'(')).map_err(|_| syntax())?;
+        let mut types = Vec::new();
+        let mut names = BTreeSet::new();
+        if p.current != Token::Punct(b')') {
+            loop {
+                types.push(scalar(p, false)?);
+                if !names.insert(p.name().map_err(|_| syntax())?) {
+                    return Err("E_STRUCT_WITH_DUPLICATE: duplicate parameter".into());
+                }
+                if types.len() > 32 { return Err(syntax()); }
+                if !p.take(Token::Punct(b','))? { break; }
+            }
+        }
+        p.expect(Token::Punct(b')')).map_err(|_| syntax())?;
+        Ok(types)
+    }
+    fn body(p: &mut Parser<'_>) -> Result<(), String> {
+        p.expect(Token::Punct(b'{')).map_err(|_| syntax())?;
+        let mut depth = 1usize;
+        while depth > 0 {
+            match p.current {
+                Token::End => return Err(syntax()),
+                Token::Punct(b'{') => { depth += 1; if depth > MAX_DEPTH { return Err(syntax()); } }
+                Token::Punct(b'}') => depth -= 1,
+                _ => {}
+            }
+            p.next()?;
+        }
+        Ok(())
+    }
+    // Probe with a private lexer mode only for a direct file-initial
+    // type Name = struct { ... } header. Other source keeps original behavior.
+    p.attached_struct_target = true;
+    let prefix = (|| -> Result<bool, String> {
+        let direct = p.current == Token::Word("define");
+        p.next()?;
+        if direct && !p.take(Token::Word("struct"))? { return Ok(false); }
+        p.name()?;
+        if !direct && (!p.take(Token::Punct(b'='))? || !p.take(Token::Word("struct"))?) { return Ok(false); }
+        if !p.take(Token::Punct(b'{'))? { return Ok(false); }
+        Ok(true)
+    })();
+    if !matches!(prefix, Ok(true)) { return Ok(()); }
+    let mut fields = Vec::new();
+    let mut depth = 1usize;
+    while depth > 0 {
+        match p.current {
+            Token::End => return Ok(()),
+            Token::Punct(b'{') => { depth += 1; if depth > MAX_DEPTH { return Ok(()); } }
+            Token::Punct(b'}') => depth -= 1,
+            _ => {}
+        }
+        if depth > 0 { fields.push(p.current); }
+        if p.next().is_err() { return Ok(()); }
+    }
+    if p.current != Token::Word("with") { return Ok(()); }
+    if fields.len() % 3 != 0 || fields.len() > 192 { return Err(syntax()); }
+    let mut field_names = BTreeSet::new();
+    for field in fields.chunks_exact(3) {
+        match field {
+            [Token::Word("int" | "bool"), Token::Word(name), Token::Punct(b';')] => {
+                if !field_names.insert(*name) { return Err("E_STRUCT_WITH_DUPLICATE: duplicate field".into()); }
+            }
+            _ => return Err(syntax()),
+        }
+    }
+    fn member(p: &mut Parser<'_>, signatures: &mut BTreeSet<(String, Vec<String>)>) -> Result<(), String> {
+        if matches!(p.current, Token::Word("pub" | "private")) { p.next()?; }
+        let mutable = p.take(Token::Word("mut"))?;
+        let key = if p.take(Token::Word("constructor"))? {
+            if mutable { return Err(syntax()); }
+            ("$constructor".to_owned(), formals(p)?)
+        } else {
+            p.expect(Token::Word("mtd")).map_err(|_| syntax())?;
+            let first = p.name().map_err(|_| syntax())?;
+            if matches!(p.current, Token::Word("•" | "<-")) {
+                if !matches!(first.as_str(), "int" | "bool" | "void") { return Err(syntax()); }
+                p.next()?;
+                (p.name().map_err(|_| syntax())?, formals(p)?)
+            } else {
+                let types = formals(p)?;
+                if !p.take(Token::Punct(b':'))? && !p.take(Token::Word("->"))? { return Err(syntax()); }
+                scalar(p, true)?;
+                (first, types)
+            }
+        };
+        if !signatures.insert(key) { return Err("E_STRUCT_WITH_DUPLICATE: duplicate member signature".into()); }
+        if signatures.len() > 64 { return Err(syntax()); }
+        body(p)
+    }
+    let mut signatures = BTreeSet::new();
+    while p.take(Token::Word("with"))? {
+        if p.take(Token::Punct(b'{'))? {
+            if p.current == Token::Punct(b'}') { return Err(syntax()); }
+            while p.current != Token::Punct(b'}') { member(&mut p, &mut signatures)?; }
+            p.next()?;
+        } else { member(&mut p, &mut signatures)?; }
+    }
+    Err("E_STRUCT_WITH_NATIVE_UNSUPPORTED: attached struct headers validated; nominal value layout, ownership and native CLIF lowering required".into())
+}
+
 pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
+    reject_attached_struct_target(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -2275,6 +2467,74 @@ pub fn parse_verified_strict_i64(text: &str) -> Result<Program, String> {
     let mut p = Parser::new(text)?;
     p.strict_fixed_arrays = true;
     quantity_scalar::parse_mode(p, true)
+}
+
+// Closed uniform unsigned scalar program. Its raw i64 literal storage is a
+// bit pattern only; this wrapper cannot enter the signed frontend API.
+pub(crate) struct UnsignedProgram(Program);
+impl UnsignedProgram {
+    pub(crate) fn inner(&self) -> &Program {
+        &self.0
+    }
+}
+pub(crate) fn parse_unsigned(text: &str) -> Result<UnsignedProgram, String> {
+    validate_source_envelope(text)?;
+    let mut p = Parser::new(text)?;
+    p.unsigned_scalar = true;
+    p.expect(Token::Word("pub"))?;
+    p.expect(Token::Word("fnc"))?;
+    p.expect(Token::Word("main"))?;
+    p.expect(Token::Punct(b'('))?;
+    fn ty(p: &mut Parser<'_>) -> Result<(), String> {
+        if matches!(p.current, Token::Word("u64" | "uint")) {
+            p.next()
+        } else {
+            Err("explicit u64 or uint required".into())
+        }
+    }
+    if !p.take(Token::Punct(b')'))? {
+        loop {
+            let name = if matches!(p.current, Token::Word("u64" | "uint")) {
+                ty(&mut p)?;
+                p.name()?
+            } else {
+                let name = p.name()?;
+                p.expect(Token::Punct(b':'))?;
+                ty(&mut p)?;
+                name
+            };
+            if p.parameters.len() >= MAX_PARAMS
+                || p.parameters.contains(&name)
+                || is_java_v1_reserved_parameter_name(&name)
+                || matches!(name.as_str(), "u64" | "uint" | "int" | "main" | "Integer")
+            {
+                return Err("invalid unsigned parameter".into());
+            }
+            p.parameters.push(name);
+            if !p.take(Token::Punct(b','))? {
+                break;
+            }
+        }
+        p.expect(Token::Punct(b')'))?;
+    }
+    if !p.take(Token::Punct(b':'))? {
+        p.expect(Token::Punct(b'-'))?;
+        p.expect(Token::Punct(b'>'))?;
+    }
+    ty(&mut p)?;
+    p.expect(Token::Punct(b'{'))?;
+    p.expect(Token::Word("return"))?;
+    let result = p.expr(0, 0)?;
+    p.expect(Token::Punct(b';'))?;
+    p.expect(Token::Punct(b'}'))?;
+    p.expect(Token::End)?;
+    validate_ast_depth(&result)?;
+    Ok(UnsignedProgram(Program {
+        parameters: p.parameters,
+        locals: vec![],
+        result,
+        trace_steps: vec![],
+    }))
 }
 
 pub fn parse(text: &str) -> Result<Program, String> {
@@ -2325,7 +2585,58 @@ pub fn parse(text: &str) -> Result<Program, String> {
 }
 
 #[cfg(test)]
+mod attached_struct_target_tests {
+    use super::parse;
+    const GROUPED: &str = "type Point = struct { int x; int y; } with { constructor(int x, int y) { self.x = x; self.y = y; } mtd int • sum() { return self.x + self.y; } mtd int <- product() { return self.x * self.y; } mtd is_origin() : bool { return self.x == 0 && self.y == 0; } } pub fnc main():int { return 0; }";
+    #[test]
+    fn attached_struct_headers_are_checked_but_never_emitted() {
+        let chained = GROUPED.replace("} with { constructor", "} with constructor")
+            .replace("} mtd", "} with mtd")
+            .replace("} } pub fnc", "} pub fnc");
+        for source in [GROUPED.to_owned(), chained.clone(),
+            GROUPED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+            chained.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+            GROUPED.replace("int • sum()", "sum():int"),
+            GROUPED.replace("int <- product()", "int • product()"),
+            GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
+            GROUPED.replace("mtd int • sum()", "mut mtd shift(int n):void { self.x = n; } mtd int • sum()")] {
+            let err = parse(&source).err().expect("must fail closed");
+            assert!(err.contains("E_STRUCT_WITH_NATIVE_UNSUPPORTED"), "{err}");
+        }
+    }
+    #[test]
+    fn invalid_attachments_do_not_reach_value_gate() {
+        for (source, code) in [
+            (GROUPED.replace("is_origin() : bool", "bool * is_origin()"), "E_STRUCT_WITH_SYNTAX"),
+            (GROUPED.replace("int <- product()", "int <- sum()"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("type Point = struct", "define struct Point").replace("int <- product()", "sum() -> int"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("int y;", "int x;"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("constructor(int x, int y)", "mut constructor(int x, int y)"), "E_STRUCT_WITH_SYNTAX"),
+        ] {
+            let err = parse(&source).err().expect("must reject invalid header");
+            assert!(err.contains(code), "{err}");
+        }
+        assert!(parse("/* type Point = struct { int x; } with {} */ pub fnc main():int { return 42; }").is_ok());
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn unicode_scalar_identifiers_are_distinct_and_resolve() {
+        let source = "pub fnc main(int Φ, int φ, int 数量, int 𠮷): int { return Φ + φ + 数量 + 𠮷; }";
+        let ascii = "pub fnc main(int a, int b, int c, int d): int { return a + b + c + d; }";
+        assert!(super::parse(source).is_ok());
+        assert_eq!(format!("{:?}", super::parse(source).unwrap().result),
+                   format!("{:?}", super::parse(ascii).unwrap().result));
+        for source in [
+            "pub fnc main(): int { return 未定義; }",
+            "pub fnc main(int ρ, int ρ): int { return ρ; }",
+            "pub fnc main(): int { return 42; } // \u{202e}",
+        ] { assert!(super::parse(source).is_err(), "{source}"); }
+        assert!(super::parse("pub fnc main(): int { val int 価格 = 20; val int 價格 = 22; return 価格 + 價格; }").is_ok());
+    }
+
     #[test]
     fn strict_refinement_admission() {
         let pre = "type Bounded = int where self >= 1 and self <= 42;";
