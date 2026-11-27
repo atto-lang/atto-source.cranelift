@@ -16,7 +16,7 @@ pub(crate) struct Layout { pub identity:String,pub storage:Storage,pub fields:Ve
 pub(crate) struct Limits { pub max_size:u64,pub max_align:u64,pub max_owners:usize,pub max_fields:usize }
 fn err(code:&str)->String{format!("E_LAYOUT_{code}")}
 fn valid(s:Storage,l:Limits)->Result<(),String>{
-    if s.size==0||!s.align.is_power_of_two()||s.align>l.max_align||s.size%s.align!=0{return Err(err("INVALID_STORAGE"));}
+    if s.size==0||!s.align.is_power_of_two()||s.align>l.max_align||!s.size.is_multiple_of(s.align){return Err(err("INVALID_STORAGE"));}
     if s.size>l.max_size{return Err(err("LIMIT"));}Ok(())
 }
 fn round(v:u64,a:u64)->Result<u64,String>{
