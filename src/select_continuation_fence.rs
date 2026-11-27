@@ -350,7 +350,11 @@ mod tests {
                             assert_eq!(lease.generation(), 1);
                             panic!("expected callback failure");
                         });
-                        assert!(result.is_err());
+                        let failure = result.unwrap_err();
+                        assert_eq!(
+                            failure.downcast_ref::<&str>().copied(),
+                            Some("expected callback failure")
+                        );
                     }));
                 }
                 entered.wait();
