@@ -874,11 +874,12 @@ fn prepare_ir_inner(
                 Step::Bind|Step::Detach=>{}
             }
         }
-        // Checked runtime addition; the static verifier still rejects known
-        // overflowing literal-only prefixes. Failure leaves the output untouched.
-        let mut result=copies[plan.result[0]];
-        for &i in &plan.result[1..] {
-            let (sum,overflow)=b.ins().sadd_overflow(result,copies[i]);
+        // Checked runtime arithmetic; known overflowing prefixes are rejected
+        // statically, and runtime failure leaves the output untouched.
+        let mut result=copies[plan.result[0].0];
+        for &(i,subtract) in &plan.result[1..] {
+            let (sum,overflow)=if subtract{b.ins().ssub_overflow(result,copies[i])}
+                else{b.ins().sadd_overflow(result,copies[i])};
             let next=b.create_block();
             b.ins().brif(overflow,failure,&[],next,&[]);
             b.switch_to_block(next);b.seal_block(next);result=sum;
