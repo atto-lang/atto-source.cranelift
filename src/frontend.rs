@@ -2934,15 +2934,12 @@ fn requests_measure_prelude(text: &str) -> Result<bool, String> {
         window.push(p.current);
         ends.push(p.pos);
         if window.len() == 4 {
-            if let [Token::Number(_), Token::Punct(b'<'), Token::Word(name), Token::Punct(b'>')] = window.as_slice() {
-                if ends[0]+1==ends[1] && known("define unit ",name) { return Ok(true); }
-            }
-            if let [Token::Word("val"), Token::Word(name), Token::Word(_), Token::Punct(b'=')] = window.as_slice() {
-                if known("type ",name) { return Ok(true); }
-            }
-            if let [Token::Word("val"), Token::Word(_), Token::Punct(b':'), Token::Word(name)] = window.as_slice() {
-                if known("type ",name) { return Ok(true); }
-            }
+            if let [Token::Number(_), Token::Punct(b'<'), Token::Word(name), Token::Punct(b'>')] = window.as_slice()
+                && ends[0]+1==ends[1] && known("define unit ",name) { return Ok(true); }
+            if let [Token::Word("val"), Token::Word(name), Token::Word(_), Token::Punct(b'=')] = window.as_slice()
+                && known("type ",name) { return Ok(true); }
+            if let [Token::Word("val"), Token::Word(_), Token::Punct(b':'), Token::Word(name)] = window.as_slice()
+                && known("type ",name) { return Ok(true); }
             window.remove(0); ends.remove(0);
         }
         p.next()?;
