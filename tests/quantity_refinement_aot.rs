@@ -329,3 +329,54 @@ fn exclusion_contract_native_guests() {
     }
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn strict_snapshots_across_assignments_and_loops_preserve_values() {
+    let dir = std::env::temp_dir().join(format!("atto-strict-current-snapshots-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let source = dir.join("guest.atto");
+    let object = dir.join("guest.o");
+    let harness = dir.join("host.c");
+    let binary = dir.join("guest");
+    let pre = "type Bounded = int where self >= 1 and self <= 42;";
+    let compile = |body: &str| {
+        fs::write(&source, format!("{pre} pub fnc main() -> int {{{body}}}")).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_orescranelift"))
+            .arg("emit-object-strict")
+            .arg(&source)
+            .output()
+            .unwrap()
+    };
+    for (body, expected) in [
+        ("let Bounded x = 1; x = 2; val before = x; while x < 42 { x = x + 1; } val after = x; x = 1; return before + after + x;", 45),
+        ("let Bounded x = 2; val before = x; while x < 2 { x = x + 1; } val after = x; x = 1; return before + after + x;", 5),
+        ("let Bounded x = 1; while x < 3 { x = x + 1; } val first = x; while x < 5 { x = x + 1; } val second = x; x = 1; return first + second + x;", 9),
+    ] {
+        let out = compile(body);
+        assert!(out.status.success(), "{body}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!out.stdout.is_empty(), "{body}: no object emitted");
+        fs::write(&object, out.stdout).unwrap();
+        fs::write(&harness, format!("#include <stdint.h>\n#include <unistd.h>\nextern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);\nint main(void){{alarm(5);int64_t out=0;int32_t status=oreslang_scalar_entry(0,0,0,0,&out);return status==0 && out=={expected} ? 0 : 1;}}\n")).unwrap();
+        let link = Command::new("cc")
+            .args(["-std=c11", "-Wall", "-Werror"])
+            .arg(&harness)
+            .arg(&object)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(link.status.success(), "{body}: {}", String::from_utf8_lossy(&link.stderr));
+        assert!(Command::new(&binary).status().unwrap().success(), "{body}: wrong guest result or timeout");
+    }
+    for body in [
+        "let Bounded x = 1; x = 2; val before = x; x = 1; return 10 / (x - 1);",
+        "let Bounded x = 42; while x <= 42 { x = x + 1; } return x;",
+    ] {
+        let denied = compile(body);
+        assert!(!denied.status.success(), "{body}: unexpectedly admitted");
+        assert!(denied.stdout.is_empty(), "{body}: rejected source emitted an artifact");
+        assert!(!denied.stderr.is_empty(), "{body}: missing diagnostic");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
