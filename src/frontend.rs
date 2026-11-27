@@ -220,6 +220,7 @@ enum Token<'a> {
     Number(&'a str),
     Quoted(&'a str),
     Punct(u8),
+    UnicodeNot,
     End,
 }
 
@@ -361,13 +362,25 @@ struct Parser<'a> {
     attached_struct_target: bool,
 }
 
+fn identifier_start_width(text: &str, at: usize) -> usize {
+    text.get(at..).and_then(|tail| tail.chars().next())
+        .filter(|c| c.is_alphabetic() || *c == '_' || *c == '〇')
+        .map_or(0, char::len_utf8)
+}
+
+fn identifier_part_width(text: &str, at: usize) -> usize {
+    text.get(at..).and_then(|tail| tail.chars().next())
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '〇')
+        .map_or(0, char::len_utf8)
+}
+
 fn is_comparison_bang(suffix: &str) -> bool {
     suffix.starts_with("!=")
         || suffix.strip_prefix("!eq").is_some_and(|tail| {
             !tail
                 .chars()
                 .next()
-                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '〇')
         })
 }
 
@@ -494,8 +507,7 @@ impl<'a> Parser<'a> {
             }
             let word = expected.as_bytes();
             return b.get(at..at.saturating_add(word.len())) == Some(word)
-                && b.get(at + word.len())
-                    .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_');
+                && identifier_part_width(self.input, at + word.len()) == 0;
         }
     }
 
@@ -577,10 +589,12 @@ impl<'a> Parser<'a> {
                 "ANNOTATION_UNSUPPORTED: @{name} requires typed annotation lowering"
             ));
         }
-        if first.is_ascii_alphabetic() || first == b'_' {
-            while self.pos < b.len() && (b[self.pos].is_ascii_alphanumeric() || b[self.pos] == b'_')
-            {
-                self.pos += 1;
+        if identifier_start_width(self.input, start) != 0 {
+            self.pos = start + identifier_start_width(self.input, start);
+            loop {
+                let width = identifier_part_width(self.input, self.pos);
+                if width == 0 { break; }
+                self.pos += width;
             }
             let spelling = &self.input[start..self.pos];
             self.current = Token::Word(if spelling == "susp" {
@@ -812,6 +826,9 @@ impl<'a> Parser<'a> {
                 "source annotations require checked compiler lowering; unsupported in Cranelift"
                     .into(),
             );
+        } else if self.input[start..].starts_with('¬') {
+            self.pos = start + '¬'.len_utf8();
+            self.current = Token::UnicodeNot;
         } else if first == b'~' {
             return Err(format!(
                 "TILDE_AGGREGATE_BACKEND_UNSUPPORTED: typed Map/Record requires validated aggregate layout and ownership at byte {start}"
@@ -822,6 +839,13 @@ impl<'a> Parser<'a> {
             return Err(
                 "E_REFINEMENT_CAST: optional checked casts are not admitted in this profile".into(),
             );
+        } else if first == b'!' && self.strict_fixed_arrays &&
+            matches!(self.current, Token::Word("if") | Token::Punct(b'(' | b'&' | b'|') | Token::UnicodeNot) &&
+            b.get(self.pos) != Some(&b'=') && !self.input[self.pos..].starts_with("eq")
+        {
+            // Only the strict typed predicate parser consumes this token.
+            // A preceding callable/ownership name never enters this branch.
+            self.current = Token::UnicodeNot;
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
@@ -1907,13 +1931,6 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         Sym(u8),
     }
 
-    fn is_ident_start(byte: u8) -> bool {
-        byte.is_ascii_alphabetic() || byte == b'_'
-    }
-    fn is_ident_continue(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric() || byte == b'_'
-    }
-
     let bytes = text.as_bytes();
     let mut index = 0usize;
     let mut previous: Option<Tok<'_>> = None;
@@ -1968,11 +1985,13 @@ fn has_unsupported_actor_surface(text: &str, detect_pipe: bool) -> bool {
         }
 
         let token_start = index;
-        let current = if is_ident_start(byte) {
+        let current = if identifier_start_width(text, index) != 0 {
             let start = index;
-            index += 1;
-            while index < bytes.len() && is_ident_continue(bytes[index]) {
-                index += 1;
+            index += identifier_start_width(text, index);
+            loop {
+                let width = identifier_part_width(text, index);
+                if width == 0 { break; }
+                index += width;
             }
             Tok::Id(&text[start..index])
         } else {
@@ -2593,6 +2612,21 @@ mod attached_struct_target_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unicode_scalar_identifiers_are_distinct_and_resolve() {
+        let source = "pub fnc main(int Φ, int φ, int 数量, int 𠮷): int { return Φ + φ + 数量 + 𠮷; }";
+        let ascii = "pub fnc main(int a, int b, int c, int d): int { return a + b + c + d; }";
+        assert!(super::parse(source).is_ok());
+        assert_eq!(format!("{:?}", super::parse(source).unwrap().result),
+                   format!("{:?}", super::parse(ascii).unwrap().result));
+        for source in [
+            "pub fnc main(): int { return 未定義; }",
+            "pub fnc main(int ρ, int ρ): int { return ρ; }",
+            "pub fnc main(): int { return 42; } // \u{202e}",
+        ] { assert!(super::parse(source).is_err(), "{source}"); }
+        assert!(super::parse("pub fnc main(): int { val int 価格 = 20; val int 價格 = 22; return 価格 + 價格; }").is_ok());
+    }
+
     #[test]
     fn strict_refinement_admission() {
         let pre = "type Bounded = int where self >= 1 and self <= 42;";
