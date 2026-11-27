@@ -544,3 +544,44 @@ int main(void){for(int i=0;i<100;i++){
         for mode in ["check","ir","emit-object"]{let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");}
     }
 }
+
+#[test]
+fn local_pair_const_native_cli() {
+    for body in [
+        "const x:=42;const Pair<int> p=x;return p.value;",
+        "const x=x:=42;const Pair<int> p=x;return p.value;",
+        "const x=Pair.of(\"x\",42);const Pair<int> p=x;return p.value;",
+        "const x=\"x\":=42;return x.value;",
+        "const x=y:=42;return x.value;",
+        "const x:=40;const y:=x.value+2;return y.value;",
+    ] {
+        let source = format!("pub fnc main():int{{{body}}}");
+        let output = run_source(&source,"run");
+        assert!(output.status.success(), "{source}: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+        let ir = run_source(&source,"ir");
+        assert!(ir.status.success(), "{source}: {}", String::from_utf8_lossy(&ir.stderr));
+        assert!(!ir.stdout.is_empty());
+    }
+    for body in [
+        "const x:=42;return x;",
+        "const x:=42;return x.key;",
+        "const x:=42;const x:=1;return x.value;",
+        "const x=x:=x;return x.value;",
+        "const x:=x;return x.value;",
+        "const x:=true;return x.value;",
+        "const x: =42;return x.value;",
+        "const x:=42;x.value=7;return x.value;",
+        "const int x=42;const Pair<int> p=x;return 0;",
+        "const x=Pair.of(7,42);return x.value;",
+        "const x:=9223372036854775807+1;return x.value;",
+        "val y=42;const x:=y;return x.value;",
+    ] {
+        let source = format!("pub fnc main():int{{{body}}}");
+        for mode in ["check","run","ir"] {
+            let output = run_source(&source,mode);
+            assert!(!output.status.success(), "{mode}: {source}");
+            assert!(output.stdout.is_empty(), "{mode}: {source}");
+        }
+    }
+}
