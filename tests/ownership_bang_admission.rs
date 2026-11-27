@@ -291,7 +291,41 @@ fn placement_point_native_memory_and_rejections(){
     assert!(clif.contains("stack_store")&&clif.contains("stack_load"),"{clif}");
     let object=run_source(good,"emit-object");
     assert!(object.status.success()&&!object.stdout.is_empty());
-    for (from,to) in [("unref! p;","p = null;"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;")]{
+    // An emitted object is not evidence of native execution by itself.
+    // Link an observer that checks the full signed result and repeatability.
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let second=run_source(good,"emit-object");
+        assert!(second.status.success());
+        assert_eq!(object.stdout,second.stdout);
+        let dir=std::env::temp_dir().join(format!("atto-placement-link-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).expect("exclusive native link directory");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.0); } }
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        std::fs::write(&obj,&object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){
+    for(int i=0;i<100;i++){
+        int64_t out=-17;
+        if(oreslang_scalar_entry(0,0,0,0,&out)!=0||out!=42)return 1;
+    }
+    return 0;
+}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("POINT_PLACEMENT_LINKED_NATIVE_PASS result=42 repetitions=100 observer_opt={opt}");
+        }
+    }
+
+    for (from,to) in [("unref! p;","p = null;"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;"),("new Point(40, 1) at s;","new Point(9223372036854775807, 1) at s;"),("ref! p to s;","ref! p to s; ref! p to s;"),("unref! p;","unref! p; unref! p;"),("destroy! s;","destroy! s; destroy! s;")]{
         let bad=good.replacen(from,to,1);
         for mode in ["run","ir","check","emit-object"]{
             let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
