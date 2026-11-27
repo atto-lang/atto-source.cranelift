@@ -609,6 +609,21 @@ int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entr
             println!("NOMINAL_ARRAY_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
         }
     }
+    for alias in ["make","new"]{
+        let src=good.replace("Payload(",&format!("Payload.{alias}("));
+        let out=run_source(&src,"run");assert!(out.status.success(),"{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+        let ir=run_source(&src,"ir");assert!(ir.status.success());assert_eq!(ir.stdout,clif.as_bytes());
+        let object=run_source(&src,"emit-object");assert!(object.status.success());
+        assert_eq!(object.stdout,run_source(good,"emit-object").stdout);
+        println!("NOMINAL_CONSTRUCTOR_ALIAS_NATIVE_OBJECT_EQUIVALENT {alias}");
+    }
+    for (from,to) in [("Payload(10,2)","Payload.fake(10,2)"),("Payload(10,2)","Other.make(10,2)"),("Payload(10,2)","Payload.new(10)"),("Payload(10,2)","Payload.make(10,128)"),("new Packet(","new Packet.make(")]{
+        let bad=good.replacen(from,to,1);
+        for mode in ["check","run","ir","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
     for (from,to) in [("Array<Payload,2> items;","Array<Packet,2> items;"),("Array<Payload,2> items;","Array<Missing,2> items;"),("Array<Payload,2> items;","Array<Payload,0> items;"),("Array<Payload,2> items;","Array<Payload,8> items;"),("Array<Payload,2> items,","Array<Payload,1> items,"),("Payload(20,3)","Payload(20,128)"),("Payload(20,3)","Other(20,3)"),(",Payload(20,3)",""),(".items[1].flag",".items[2].flag"),(".items[1].flag",".items[1]"),(".items[1].flag",".items[1].missing"),(".items[1].flag",".items[1].flag[0]") ]{
         let bad=good.replacen(from,to,1);assert_ne!(bad,good);
         for mode in ["check","run","ir","emit-object"]{
