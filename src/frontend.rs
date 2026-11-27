@@ -2912,8 +2912,48 @@ fn parse_reusable_slot(text: &str) -> Result<Program, String> {
     Ok(Program { parameters: vec![], locals, result, trace_steps: vec![] })
 }
 
+// Exact compiler-owned common-source #164 catalog; no runtime I/O.
+const MEASURE_SOURCE: &str = include_str!("../stdlib/core/measure.atto");
+fn requests_measure_prelude(text: &str) -> Result<bool, String> {
+    let mut p = Parser::new(text)?;
+    for word in ["pub", "fnc", "main"] {
+        if p.current != Token::Word(word) { return Ok(false); }
+        p.next()?;
+    }
+    if p.current != Token::Punct(b'(') { return Ok(false); }
+    let known = |prefix: &str, name: &str| MEASURE_SOURCE.lines().any(|line|
+        line.strip_prefix(prefix).is_some_and(|rest|
+            rest.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_').next() == Some(name)));
+    // Bounded rolling lexer window. The parser is still authoritative.
+    let mut window = Vec::new();
+    let mut ends = Vec::new();
+    let mut count = 0usize;
+    while p.current != Token::End {
+        count += 1;
+        if count > 8192 { return Ok(false); }
+        window.push(p.current);
+        ends.push(p.pos);
+        if window.len() == 4 {
+            if let [Token::Number(_), Token::Punct(b'<'), Token::Word(name), Token::Punct(b'>')] = window.as_slice()
+                && ends[0]+1==ends[1] && known("define unit ",name) { return Ok(true); }
+            if let [Token::Word("val"), Token::Word(name), Token::Word(_), Token::Punct(b'=')] = window.as_slice()
+                && known("type ",name) { return Ok(true); }
+            if let [Token::Word("val"), Token::Word(_), Token::Punct(b':'), Token::Word(name)] = window.as_slice()
+                && known("type ",name) { return Ok(true); }
+            window.remove(0); ends.remove(0);
+        }
+        p.next()?;
+    }
+    Ok(false)
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
+    if requests_measure_prelude(text).unwrap_or(false) {
+        let expanded = format!("{MEASURE_SOURCE}\n{text}");
+        validate_source_envelope(&expanded)?;
+        return quantity_scalar::parse_mode(Parser::new(&expanded)?, false);
+    }
     // Text is merely a dispatch hint. Only the canonical lexer and complete
     // isolated grammar may authorize erasure. Failed attempts retain the
     // ordinary parser's existing fail-closed ownership diagnostics.
