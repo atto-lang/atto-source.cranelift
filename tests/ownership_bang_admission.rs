@@ -288,7 +288,12 @@ fn placement_point_native_memory_and_rejections(){
     let ir=run_source(good,"ir");
     assert!(ir.status.success());
     let clif=String::from_utf8_lossy(&ir.stdout);
-    assert!(clif.contains("stack_store")&&clif.contains("stack_load"),"{clif}");
+    // Current CLIF builder canonicalizes stack_load/store into stack_addr
+    // plus nontrapping memory operations. Require the concrete slot and
+    // both field addresses, not the spelling of a pre-canonicalized opcode.
+    assert!(clif.contains("explicit_slot 16, align = 8"),"{clif}");
+    assert!(clif.contains("stack_addr.i64 ss0")&&clif.contains("stack_addr.i64 ss0+8"),"{clif}");
+    assert!(clif.matches("store notrap").count()>=8 && clif.matches("load.i64 notrap").count()>=2,"{clif}");
     let object=run_source(good,"emit-object");
     assert!(object.status.success()&&!object.stdout.is_empty());
     // An emitted object is not evidence of native execution by itself.
