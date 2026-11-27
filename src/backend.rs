@@ -696,6 +696,16 @@ fn prepare_ir(
     linkage: Linkage,
     unsigned: bool,
 ) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
+    prepare_ir_inner(source,module,linkage,unsigned,None)
+}
+fn prepare_ir_inner(
+    source: &Program,
+    module: &mut impl Module,
+    linkage: Linkage,
+    unsigned: bool,
+    placement: Option<&crate::frontend::point_placement::Plan>,
+) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
+    if let Some(plan)=placement {plan.verify()?;}
     validate_guest_program(source)?;
     validate_trace_steps(source)?;
     let mut sig = module.make_signature();
@@ -812,7 +822,37 @@ fn prepare_ir(
         let value = emit(initializer, &mut b, &p[..4], &locals, errors);
         locals.push(value);
     }
-    let value = emit(&source.result, &mut b, &p[..4], &locals, errors);
+    let value = if let Some(plan)=placement {
+        use crate::frontend::point_placement::Step;
+        use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
+        // This closed Point lane is admitted only on the verified 64-bit
+        // native storage profile. The planner owns size/alignment/offsets.
+        if ptr != types::I64 {return Err("E_LAYOUT_TARGET: 64-bit native placement required".into());}
+        let layout=crate::frontend::physical_layout::point_layout()?;
+        let size=u32::try_from(layout.storage.size).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let align=u8::try_from(layout.storage.align.trailing_zeros()).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let x_offset=i32::try_from(layout.project(&[],&[0])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let y_offset=i32::try_from(layout.project(&[],&[1])?.0).map_err(|_|"E_LAYOUT_LIMIT")?;
+        let offsets=[x_offset,y_offset];
+        let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,size,align));
+        let mut copies=Vec::new();
+        for step in &plan.steps {
+            match *step {
+                Step::Construct(x,y)=>{
+                    let a=b.ins().iconst(types::I64,x);let z=b.ins().iconst(types::I64,y);
+                    b.ins().stack_store(ptr,a,storage,x_offset);b.ins().stack_store(ptr,z,storage,y_offset);
+                }
+                Step::CopyField(f)=>copies.push(b.ins().stack_load(ptr,types::I64,storage,offsets[usize::from(f)])),
+                Step::Destroy|Step::Free=>{
+                    let zero=b.ins().iconst(types::I64,0);
+                    b.ins().stack_store(ptr,zero,storage,x_offset);b.ins().stack_store(ptr,zero,storage,y_offset);
+                }
+                Step::Bind|Step::Detach=>{}
+            }
+        }
+        let a=copies[plan.result[0]];
+        if plan.result.len()==2 {b.ins().iadd(a,copies[plan.result[1]])}else{a}
+    } else {emit(&source.result, &mut b, &p[..4], &locals, errors)};
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
     for (block, status) in [
@@ -1777,4 +1817,136 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
             .map_err(|e| e.to_string())?;
     }
     module.finish().emit().map_err(|e| e.to_string())
+}
+
+pub(crate) fn placement_command(plan:&crate::frontend::point_placement::Plan,mode:&str)->Result<(),String>{
+    use std::io::Write;
+    plan.verify()?;
+    let source=Program{parameters:vec![],locals:vec![],result:Expr::Literal(0),trace_steps:vec![]};
+    match mode {
+        "check"=>Ok(()),
+        "ir"=>{
+            let mut module=jit_module()?;
+            let (ctx,_)=prepare_ir_inner(&source,&mut module,Linkage::Local,false,Some(plan))?;
+            print!("{}",ctx.func.display());Ok(())
+        }
+        "run"=>{
+            let mut module=jit_module()?;
+            let (mut ctx,id)=prepare_ir_inner(&source,&mut module,Linkage::Local,false,Some(plan))?;
+            #[cfg(test)] let clif=ctx.func.display().to_string();
+            module.define_function(id,&mut ctx).map_err(|e|e.to_string())?;
+            module.clear_context(&mut ctx);
+            module.finalize_definitions().map_err(|e|e.to_string())?;
+            let compiled=Compiled{module,id,arity:0,#[cfg(test)]clif};
+            println!("{}",compiled.run(&[])?);Ok(())
+        }
+        "emit-object"=>{
+            let mut flags=settings::builder();
+            flags.set("is_pic","true").map_err(|e|e.to_string())?;
+            let isa=cranelift_native::builder().map_err(|e|e.to_string())?.finish(settings::Flags::new(flags)).map_err(|e|e.to_string())?;
+            let builder=ObjectBuilder::new(isa,"atto_placement",default_libcall_names()).map_err(|e|e.to_string())?;
+            let mut module=ObjectModule::new(builder);
+            let (mut ctx,id)=prepare_ir_inner(&source,&mut module,Linkage::Export,false,Some(plan))?;
+            module.define_function(id,&mut ctx).map_err(|e|e.to_string())?;
+            let bytes=module.finish().emit().map_err(|e|e.to_string())?;
+            std::io::stdout().lock().write_all(&bytes).map_err(|e|e.to_string())
+        }
+        _=>Err("E_POINTER_PLACEMENT: unsupported invocation mode".into()),
+    }
+}
+
+
+#[cfg(all(test,target_os="linux",target_arch="x86_64"))]
+mod physical_layout_native_witness {
+    use super::*;
+    use crate::frontend::physical_layout::{plan,tests::mixed};
+    use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
+    use std::{fs,process::Command};
+    #[test]
+    fn nested_mixed_layout_emits_real_native_object() {
+        let (owners,limits)=mixed();
+        let layouts=plan(&owners,limits).unwrap();
+        let layout=&layouts[0];
+        let mut flags=settings::builder();
+        flags.set("is_pic","true").unwrap();
+        let isa=cranelift_native::builder().unwrap().finish(settings::Flags::new(flags)).unwrap();
+        let mut module=ObjectModule::new(ObjectBuilder::new(isa,"atto_layout_witness",default_libcall_names()).unwrap());
+        let ptr=module.target_config().pointer_type();
+        assert_eq!(ptr,types::I64);
+        let mut sig=module.make_signature();
+        sig.params.push(AbiParam::new(ptr));sig.returns.push(AbiParam::new(types::I64));
+        let id=module.declare_function("atto_layout_witness",Linkage::Export,&sig).unwrap();
+        let mut ctx=module.make_context();ctx.func.signature=sig;
+        let mut fbctx=FunctionBuilderContext::new();
+        let mut b=FunctionBuilder::new(&mut ctx.func,&mut fbctx);
+        let entry=b.create_block();b.append_block_params_for_function_params(entry);b.switch_to_block(entry);
+        let output=b.block_params(entry)[0];
+        let slot=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,u32::try_from(layout.storage.size).unwrap(),u8::try_from(layout.storage.align.trailing_zeros()).unwrap()));
+        let fields:[(&[usize],i64);4]=[(&[0],3),(&[1,0],0x12345678),(&[1,1],1),(&[2],0x4321)];
+        let mut sum=b.ins().iconst(types::I64,0);
+        for (field,value) in fields {
+            let (offset,storage)=layout.project(&layouts,field).unwrap();
+            let offset=i32::try_from(offset).unwrap();
+            let ty=match storage.size{1=>types::I8,2=>types::I16,8=>types::I64,_=>panic!("unadmitted storage")};
+            let v=b.ins().iconst(ty,value);
+            b.ins().stack_store(ptr,v,slot,offset);
+        }
+        // Return actual loaded data, and copy only initialized leaf bytes to
+        // caller storage. No padding is loaded or copied to the observer.
+        for (field,_) in fields {
+            let (offset,storage)=layout.project(&layouts,field).unwrap();
+            let offset=i32::try_from(offset).unwrap();
+            let ty=match storage.size{1=>types::I8,2=>types::I16,8=>types::I64,_=>unreachable!()};
+            let v=b.ins().stack_load(ptr,ty,slot,offset);
+            b.ins().store(MemFlagsData::new(),v,output,offset);
+            let n=if ty==types::I64{v}else{b.ins().uextend(types::I64,v)};
+            sum=b.ins().iadd(sum,n);
+        }
+        b.ins().return_(&[sum]);b.seal_all_blocks();b.finalize(module.target_config());
+        validate_ir(&ctx.func,module.isa()).unwrap();
+        let ir=ctx.func.display().to_string();
+        assert!(ir.contains("explicit_slot 32, align = 8"),"{ir}");
+        module.define_function(id,&mut ctx).unwrap();
+        let object=module.finish().emit().unwrap();
+        let dir=std::env::temp_dir().join(format!("atto-physical-layout-{}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("layout.o");let host=dir.join("observer.c");let exe=dir.join("observer");
+        fs::write(&obj,object).unwrap();
+        fs::write(&host,r#"
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <assert.h>
+struct Pair { uint64_t x; uint8_t flag; };
+struct Packet { uint8_t tag; struct Pair pair; uint16_t tail; };
+_Static_assert(sizeof(struct Packet)==32,"size");
+_Static_assert(_Alignof(struct Packet)==8,"align");
+_Static_assert(offsetof(struct Packet,pair)==8,"nested");
+_Static_assert(offsetof(struct Pair,flag)==8,"inner field");
+_Static_assert(offsetof(struct Packet,tail)==24,"tail");
+extern uint64_t atto_layout_witness(uint8_t*);
+int main(void) {
+    _Alignas(8) uint8_t bytes[32];
+    uint8_t want[32];
+    memset(bytes,0xA5,32);memset(want,0xA5,32);
+    uint64_t x=0x12345678;uint16_t tail=0x4321;
+    want[0]=3;memcpy(want+8,&x,8);want[16]=1;memcpy(want+24,&tail,2);
+    for(int i=0;i<100;i++){
+        memset(bytes,0xA5,32);
+        assert(atto_layout_witness(bytes)==x+tail+4);
+        assert(memcmp(bytes,want,32)==0);
+    }
+    return 0;
+}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&exe).output().unwrap();
+            assert!(link.status.success(),"{link:?}");
+            assert!(Command::new(&exe).status().unwrap().success());
+            println!("MIXED_LAYOUT_NATIVE_WITNESS_PASS size=32 align=8 offsets=0,8,16,24 padding_untouched=true calls=100 observer_opt={opt}");
+        }
+    }
 }
