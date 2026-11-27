@@ -393,7 +393,7 @@ int main(void){
         }
     }
 
-    for (from,to) in [("unref! p;","p = null;"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;"),("new Point(40, 1) at s;","new Point(9223372036854775807, 1) at s;"),("ref! p to s;","ref! p to s; ref! p to s;"),("unref! p;","unref! p; unref! p;"),("destroy! s;","destroy! s; destroy! s;")]{
+    for (from,to) in [("unref! p;","p = null;"),("self.y = y;","self.x = y;"),("self.y = y;",""),("int y;","int x;"),("new Point(40, 1) at s;","new Point(40, 1);"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;"),("new Point(40, 1) at s;","new Point(9223372036854775807, 1) at s;"),("ref! p to s;","ref! p to s; ref! p to s;"),("unref! p;","unref! p; unref! p;"),("destroy! s;","destroy! s; destroy! s;")]{
         let bad=good.replacen(from,to,1);
         for mode in ["run","ir","check","emit-object"]{
             let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");

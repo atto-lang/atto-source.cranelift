@@ -118,7 +118,7 @@ impl PointParser<'_> {
 }
 
 pub(crate) fn parse(text:&str)->Result<Plan,String>{
-    super::validate_source_envelope(text)?;
+    super::validate_source_envelope_impl(text, false)?;
     let mut p=Parser::new(text)?;
     p.reusable_slot_profile=true;
     // Only this complete closed placement grammar can admit `new`.

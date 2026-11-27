@@ -2644,11 +2644,18 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
+    validate_source_envelope_impl(text, true)
+}
+
+// The isolated placement grammar checks every declaration and lifecycle token
+// itself. Only it may omit the generic header-only denial; all other envelope
+// gates remain mandatory, including limits, Unicode and actor surfaces.
+fn validate_source_envelope_impl(text: &str, check_attached_header: bool) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
-    reject_attached_struct_target(text)?;
+    if check_attached_header { reject_attached_struct_target(text)?; }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
