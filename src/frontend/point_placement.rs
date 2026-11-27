@@ -44,19 +44,24 @@ fn leaves(owners:&[Decl],root:usize)->Result<Vec<Leaf>,String>{
     let mut result=Vec::new();visit(owners,root,"",&mut Vec::new(),&mut result)?;
     if result.is_empty(){return Err(err());}Ok(result)
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Operand { Literal(i64), Parameter(usize) }
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
-    Construct(Vec<i64>), Bind, CopyField(u8), Detach, Destroy, Free,
+    Construct(Vec<Operand>), Bind, CopyField(u8), Detach, Destroy, Free,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Plan {
     owners: Vec<Decl>,
     root: usize,
+    parameters: Vec<(String,Kind)>,
     pub steps: Vec<Step>,
     pub result: Vec<usize>,
 }
 fn err() -> String { "E_POINTER_PLACEMENT: invalid closed typed nested struct placement profile".into() }
 impl Plan {
+    pub(crate) fn parameter_names(&self)->Vec<String>{self.parameters.iter().map(|(n,_)|n.clone()).collect()}
+    pub(crate) fn parameter_sizes(&self)->Vec<u64>{self.parameters.iter().map(|(_,k)|k.size()).collect()}
     fn leaves(&self) -> Result<Vec<Leaf>,String> { leaves(&self.owners,self.root) }
     pub(crate) fn physical_slots(&self) -> Result<(Storage,Vec<(u64,Storage)>),String> {
         let leaves=self.leaves()?;
@@ -81,15 +86,16 @@ impl Plan {
         let mut state=State::Empty;
         let mut generation=0u32;
         let mut bound=None;
-        let mut fields=vec![0i64;leaves.len()];
+        if self.parameters.len()>4{return Err(bad());}
+        let mut fields=vec![None;leaves.len()];
         let mut copies=Vec::new();
         for step in &self.steps {
             match step {
                 Step::Construct(values) if state==State::Empty && bound.is_none()
                     && values.len()==leaves.len()
-                    && values.iter().zip(&leaves).all(|(&v,l)| l.kind.fits(v)) => {
+                    && values.iter().zip(&leaves).all(|(v,l)|match v{Operand::Literal(n)=>l.kind.fits(*n),Operand::Parameter(i)=>self.parameters.get(*i).is_some_and(|(_,k)|*k==l.kind)}) => {
                     generation=generation.checked_add(1).ok_or_else(bad)?;
-                    fields.clone_from(values); state=State::Live;
+                    fields=values.iter().map(|v|match v{Operand::Literal(n)=>Some(*n),Operand::Parameter(_)=>None}).collect(); state=State::Live;
                 }
                 Step::Bind if state==State::Live && bound.is_none() => bound=Some(generation),
                 Step::CopyField(f) if state==State::Live && bound==Some(generation) && usize::from(*f)<fields.len() => copies.push(fields[usize::from(*f)]),
@@ -100,9 +106,10 @@ impl Plan {
             }
         }
         if state!=State::Freed || bound.is_some() {return Err(bad());}
-        let mut sum=0i64;
+        let mut sum=Some(0i64);
         for i in &self.result {
-            sum=sum.checked_add(*copies.get(*i).ok_or_else(bad)?).ok_or_else(bad)?;
+            let value=*copies.get(*i).ok_or_else(bad)?;
+            sum=match (sum,value){(Some(a),Some(b))=>Some(a.checked_add(b).ok_or_else(bad)?),_=>None};
         }
         Ok(copies.len())
     }
@@ -167,15 +174,15 @@ impl PointParser<'_> {
         self.need(Token::Punct(b'}'))?;self.need(Token::Punct(b'}'))?;
         Ok(Decl{name:owner,fields})
     }
-    fn arguments(&mut self,owners:&[Decl],id:usize,depth:usize,values:&mut Vec<i64>)->Result<(),String>{
+    fn arguments(&mut self,owners:&[Decl],id:usize,depth:usize,parameters:&[(String,Kind)],values:&mut Vec<Operand>)->Result<(),String>{
         if depth>=8{return Err(err());}
         let owner=owners.get(id).ok_or_else(err)?;
         self.word(&owner.name)?;self.need(Token::Punct(b'('))?;
         for (i,(_,kind)) in owner.fields.iter().enumerate(){
             if i>0{self.need(Token::Punct(b','))?;}
             match kind{
-                FieldKind::Scalar(k)=>{let v=self.number()?;if !k.fits(v)||values.len()>=8{return Err(err());}values.push(v);}
-                FieldKind::Inline(n) if *n<id=>self.arguments(owners,*n,depth+1,values)?,
+                FieldKind::Scalar(k)=>{if values.len()>=8{return Err(err());}let v=if matches!(self.p.current,Token::Word(_)){let name=self.ident()?;let i=parameters.iter().position(|(n,ty)|n==&name&&ty==k).ok_or_else(err)?;Operand::Parameter(i)}else{let n=self.number()?;if !k.fits(n){return Err(err());}Operand::Literal(n)};values.push(v);}
+                FieldKind::Inline(n) if *n<id=>self.arguments(owners,*n,depth+1,parameters,values)?,
                 FieldKind::Inline(_)=>return Err(err()),
             }
         }
@@ -192,7 +199,19 @@ impl PointParser<'_> {
         let owner=owners[root].name.clone();
         let fields=&owners[root].fields;
         let flat=leaves(&owners,root)?;
-        self.word("pub")?;self.word("fnc")?;self.word("main")?;self.need(Token::Punct(b'('))?;self.need(Token::Punct(b')'))?;
+        self.word("pub")?;self.word("fnc")?;self.word("main")?;self.need(Token::Punct(b'('))?;
+        let mut parameters=Vec::new();
+        if !self.p.take(Token::Punct(b')'))? {
+            loop {
+                if parameters.len()>=4{return Err(err());}
+                let kind=Kind::parse(&self.p.name()?).ok_or_else(err)?;
+                let name=self.ident()?;
+                if fields.iter().any(|(f,_)|f==&name)||parameters.iter().any(|(n,_)|n==&name){return Err(err());}
+                parameters.push((name,kind));
+                if self.p.take(Token::Punct(b')'))?{break;}
+                self.need(Token::Punct(b','))?;
+            }
+        }
         self.need(Token::Punct(b':'))?;self.word("int")?;self.need(Token::Punct(b'{'))?;
         self.word("let")?;self.word("Storage")?;self.need(Token::Punct(b'<'))?;self.word(&owner)?;self.need(Token::Punct(b'>'))?;
         self.word("s")?;self.need(Token::Punct(b'='))?;self.op("alloc")?;self.word(&owner)?;self.need(Token::Punct(b';'))?;
@@ -204,13 +223,13 @@ impl PointParser<'_> {
             if steps.len()>=32{return Err(err());}
             let step=if self.word_is("new") {
                 self.word("new")?;let mut values=Vec::new();
-                self.arguments(&owners,root,0,&mut values)?;
+                self.arguments(&owners,root,0,&parameters,&mut values)?;
                 self.word("at")?;self.word("s")?;Step::Construct(values)
             } else if self.word_is("ref!") {
                 self.op("ref")?;self.word("p")?;self.word("to")?;self.word("s")?;Step::Bind
             } else if self.word_is("val") {
                 self.word("val")?;let n=self.ident()?;
-                let i=names.len();if fields.iter().any(|(f,_)|f==&n)||names.insert(n,i).is_some(){return Err(err());}
+                let i=names.len();if fields.iter().any(|(f,_)|f==&n)||parameters.iter().any(|(p,_)|p==&n)||names.insert(n,i).is_some(){return Err(err());}
                 self.need(Token::Punct(b'='))?;self.need(Token::Punct(b'('))?;self.op("deref")?;self.word("p")?;self.need(Token::Punct(b')'))?;self.need(Token::Punct(b'.'))?;
                 let mut field=self.p.name()?;
                 for _ in 1..8{
@@ -232,7 +251,7 @@ impl PointParser<'_> {
         }
         self.need(Token::Punct(b';'))?;self.need(Token::Punct(b'}'))?;self.need(Token::End)?;
         
-        let p=Plan{owners,root,steps,result};p.verify()?;Ok(p)
+        let p=Plan{owners,root,parameters,steps,result};p.verify()?;Ok(p)
     }
 }
 
