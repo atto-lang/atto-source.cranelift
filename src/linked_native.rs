@@ -216,7 +216,7 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
             return Err("E_LINK_DUP_FUNCTION".into());
         }
         if func.params.len() != func.param_types.len()
-            || func.params.len() > 4
+            || func.params.len() > crate::functional_pipelines::LINKED_MAX_ARITY
             || func.locals.len() > MAX_LOCALS
         {
             return Err("E_LINK_FUNCTION_ARITY_OR_LOCAL_BUDGET".into());
