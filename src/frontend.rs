@@ -2638,11 +2638,41 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
     Err("E_STRUCT_WITH_NATIVE_UNSUPPORTED: attached struct headers validated; nominal value layout, ownership and native CLIF lowering required".into())
 }
 
+// The scalar profile does not own a process-output capability. Scan exact
+// lexer tokens, ignoring comments, quoted text and qualified property chains.
+fn has_canonical_stdout_call(text: &str) -> bool {
+    if !text.contains("write") || !(text.contains("stdio") || text.contains("process")) {
+        return false;
+    }
+    let Ok(mut scan) = Parser::new(text) else { return false; };
+    let mut window = [Token::End; 7];
+    while scan.current != Token::End {
+        window.rotate_left(1);
+        window[6] = scan.current;
+        if window[0] != Token::Punct(b'.') && window[0] != Token::Punct(b':')
+            && matches!((window[1], window[3]),
+                (Token::Word("stdio"), Token::Word("out")) |
+                (Token::Word("process"), Token::Word("stdout")))
+            && window[2] == Token::Punct(b'.')
+            && window[4] == Token::Punct(b'.')
+            && window[5] == Token::Word("write")
+            && window[6] == Token::Punct(b'(')
+        {
+            return true;
+        }
+        if scan.next().is_err() { return false; }
+    }
+    false
+}
+
 pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
+    if has_canonical_stdout_call(text) {
+        return Err("E_STDOUT_PROFILE_UNSUPPORTED: scalar profile has no process stdout capability".into());
+    }
     reject_attached_struct_target(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
@@ -4595,3 +4625,28 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
 
 #[path = "scalar_library.rs"]
 pub mod scalar_library;
+
+#[cfg(test)]
+mod canonical_stdout_scalar_admission_tests {
+    use super::{has_canonical_stdout_call, parse, parse_verified_strict_i64};
+    #[test]
+    fn canonical_aliases_are_denied_before_scalar_lowering() {
+        for call in ["stdio.out.write(\"A\")", "process.stdout.write(\"A\")",
+                     "stdio /* nested /* comment */ */ .out.write(\"A\")", "process.stdout . write(\"A\")"] {
+            let source = format!("pub fnc main():int {{ {call}; return 42; }}");
+            for result in [parse(&source), parse_verified_strict_i64(&source)] {
+                assert!(result.err().expect("must reject").contains("E_STDOUT_PROFILE_UNSUPPORTED"));
+            }
+        }
+    }
+    #[test]
+    fn stdout_detection_does_not_match_inert_or_qualified_tokens() {
+        for source in ["// stdio.out.write(42)\nfnc main():int{return 42;}",
+                       "/* process.stdout.write(42) */ fnc main():int{return 42;}",
+                       "fnc main():int{return \"stdio.out.write(42)\";}",
+                       "fnc main():int{return obj.process.stdout.write(42);}"] {
+            assert!(!has_canonical_stdout_call(source));
+        }
+        assert!(parse("fnc main():int{return 42; /* process.stdout.write(42) */}").is_ok());
+    }
+}
