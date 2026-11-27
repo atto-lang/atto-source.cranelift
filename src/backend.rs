@@ -1766,6 +1766,31 @@ mod parameter_rebind_tests {
     }
 
     #[test]
+    fn explicit_parameter_updates_preserve_checked_ssa() {
+        for source in [
+            "fnc main(rebind int n):int{set n++;set ++n;return n;}",
+            "fnc main(rebind int n):int{set n += 4;set n--;set --n;return n;}",
+            "fnc main(rebind int n):int{set! (n = n + 2);return n;}",
+        ] {
+            let program = parse(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+            let ir = render_ir(&program).unwrap();
+            assert!(!ir.contains("stack_slot"), "{ir}");
+            let guest = compile(&program).unwrap();
+            assert_eq!(guest.run(&[40]), Ok(42));
+            assert!(guest.run(&[i64::MAX]).is_err());
+            assert_eq!(guest.run(&[40]), Ok(42));
+        }
+        for source in [
+            "fnc main(int n):int{set n++;return n;}",
+            "fnc main(rebind int n):int{set missing++;return n;}",
+            "fnc main(rebind int n):int{set n + = 2;return n;}",
+            "fnc main(rebind int n):int{set ++n++;return n;}",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
     fn fixed_parameters_and_contextual_marker() {
         assert!(parse("fnc main(int n):int{n=42;return n;}")
             .unwrap_err().contains("E_IMMUTABLE_REBIND"));
