@@ -1854,3 +1854,99 @@ pub(crate) fn placement_command(plan:&crate::frontend::point_placement::Plan,mod
         _=>Err("E_POINTER_PLACEMENT: unsupported invocation mode".into()),
     }
 }
+
+
+#[cfg(all(test,target_os="linux",target_arch="x86_64"))]
+mod physical_layout_native_witness {
+    use super::*;
+    use crate::frontend::physical_layout::{plan,tests::mixed};
+    use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
+    use std::{fs,process::Command};
+    #[test]
+    fn nested_mixed_layout_emits_real_native_object() {
+        let (owners,limits)=mixed();
+        let layouts=plan(&owners,limits).unwrap();
+        let layout=&layouts[0];
+        let mut flags=settings::builder();
+        flags.set("is_pic","true").unwrap();
+        let isa=cranelift_native::builder().unwrap().finish(settings::Flags::new(flags)).unwrap();
+        let mut module=ObjectModule::new(ObjectBuilder::new(isa,"atto_layout_witness",default_libcall_names()).unwrap());
+        let ptr=module.target_config().pointer_type();
+        assert_eq!(ptr,types::I64);
+        let mut sig=module.make_signature();
+        sig.params.push(AbiParam::new(ptr));sig.returns.push(AbiParam::new(types::I64));
+        let id=module.declare_function("atto_layout_witness",Linkage::Export,&sig).unwrap();
+        let mut ctx=module.make_context();ctx.func.signature=sig;
+        let mut fbctx=FunctionBuilderContext::new();
+        let mut b=FunctionBuilder::new(&mut ctx.func,&mut fbctx);
+        let entry=b.create_block();b.append_block_params_for_function_params(entry);b.switch_to_block(entry);
+        let output=b.block_params(entry)[0];
+        let slot=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,u32::try_from(layout.storage.size).unwrap(),u8::try_from(layout.storage.align.trailing_zeros()).unwrap()));
+        let fields:[(&[usize],i64);4]=[(&[0],3),(&[1,0],0x12345678),(&[1,1],1),(&[2],0x4321)];
+        let mut sum=b.ins().iconst(types::I64,0);
+        for (field,value) in fields {
+            let (offset,storage)=layout.project(&layouts,field).unwrap();
+            let offset=i32::try_from(offset).unwrap();
+            let ty=match storage.size{1=>types::I8,2=>types::I16,8=>types::I64,_=>panic!("unadmitted storage")};
+            let v=b.ins().iconst(ty,value);
+            b.ins().stack_store(ptr,v,slot,offset);
+        }
+        // Return actual loaded data, and copy only initialized leaf bytes to
+        // caller storage. No padding is loaded or copied to the observer.
+        for (field,_) in fields {
+            let (offset,storage)=layout.project(&layouts,field).unwrap();
+            let offset=i32::try_from(offset).unwrap();
+            let ty=match storage.size{1=>types::I8,2=>types::I16,8=>types::I64,_=>unreachable!()};
+            let v=b.ins().stack_load(ptr,ty,slot,offset);
+            b.ins().store(MemFlagsData::new(),v,output,offset);
+            let n=if ty==types::I64{v}else{b.ins().uextend(types::I64,v)};
+            sum=b.ins().iadd(sum,n);
+        }
+        b.ins().return_(&[sum]);b.seal_all_blocks();b.finalize(module.target_config());
+        validate_ir(&ctx.func,module.isa()).unwrap();
+        let ir=ctx.func.display().to_string();
+        assert!(ir.contains("explicit_slot 32, align = 8"),"{ir}");
+        module.define_function(id,&mut ctx).unwrap();
+        let object=module.finish().emit().unwrap();
+        let dir=std::env::temp_dir().join(format!("atto-physical-layout-{}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("layout.o");let host=dir.join("observer.c");let exe=dir.join("observer");
+        fs::write(&obj,object).unwrap();
+        fs::write(&host,r#"
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <assert.h>
+struct Pair { uint64_t x; uint8_t flag; };
+struct Packet { uint8_t tag; struct Pair pair; uint16_t tail; };
+_Static_assert(sizeof(struct Packet)==32,"size");
+_Static_assert(_Alignof(struct Packet)==8,"align");
+_Static_assert(offsetof(struct Packet,pair)==8,"nested");
+_Static_assert(offsetof(struct Pair,flag)==8,"inner field");
+_Static_assert(offsetof(struct Packet,tail)==24,"tail");
+extern uint64_t atto_layout_witness(uint8_t*);
+int main(void) {
+    _Alignas(8) uint8_t bytes[32];
+    uint8_t want[32];
+    memset(bytes,0xA5,32);memset(want,0xA5,32);
+    uint64_t x=0x12345678;uint16_t tail=0x4321;
+    want[0]=3;memcpy(want+8,&x,8);want[16]=1;memcpy(want+24,&tail,2);
+    for(int i=0;i<100;i++){
+        memset(bytes,0xA5,32);
+        assert(atto_layout_witness(bytes)==x+tail+4);
+        assert(memcmp(bytes,want,32)==0);
+    }
+    return 0;
+}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&exe).output().unwrap();
+            assert!(link.status.success(),"{link:?}");
+            assert!(Command::new(&exe).status().unwrap().success());
+            println!("MIXED_LAYOUT_NATIVE_WITNESS_PASS size=32 align=8 offsets=0,8,16,24 padding_untouched=true calls=100 observer_opt={opt}");
+        }
+    }
+}
