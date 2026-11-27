@@ -831,12 +831,12 @@ fn prepare_ir_inner(
             match *step {
                 Step::Construct(x,y)=>{
                     let a=b.ins().iconst(types::I64,x);let z=b.ins().iconst(types::I64,y);
-                    b.ins().stack_store(a,storage,0);b.ins().stack_store(z,storage,8);
+                    b.ins().stack_store(ptr,a,storage,0);b.ins().stack_store(ptr,z,storage,8);
                 }
-                Step::CopyField(f)=>copies.push(b.ins().stack_load(types::I64,storage,i32::from(f)*8)),
+                Step::CopyField(f)=>copies.push(b.ins().stack_load(ptr,types::I64,storage,i32::from(f)*8)),
                 Step::Destroy|Step::Free=>{
                     let zero=b.ins().iconst(types::I64,0);
-                    b.ins().stack_store(zero,storage,0);b.ins().stack_store(zero,storage,8);
+                    b.ins().stack_store(ptr,zero,storage,0);b.ins().stack_store(ptr,zero,storage,8);
                 }
                 Step::Bind|Step::Detach=>{}
             }
