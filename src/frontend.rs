@@ -354,6 +354,7 @@ struct Parser<'a> {
     mutex_scan: bool,
     strict_fixed_arrays: bool,
     closed_option_profile: bool,
+    reusable_slot_profile: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     pair_scope_checked: bool,
@@ -434,6 +435,7 @@ impl<'a> Parser<'a> {
             mutex_scan,
             strict_fixed_arrays: false,
             closed_option_profile: false,
+            reusable_slot_profile: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             pair_scope_checked: false,
@@ -597,6 +599,21 @@ impl<'a> Parser<'a> {
             // Distinguish contextual bangs from comparisons.
             let suffix = &self.input[self.pos..];
             let comparison = is_comparison_bang(suffix);
+            // Only the isolated slot parser may lex these exact operators.
+            // Its mode cannot flow into the ordinary scalar parser.
+            if self.reusable_slot_profile && !comparison && b.get(self.pos) == Some(&b'!') {
+                let op = match self.current {
+                    Token::Word("ref") => Some("ref!"),
+                    Token::Word("deref") => Some("deref!"),
+                    Token::Word("unref") => Some("unref!"),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    self.pos += 1;
+                    self.current = Token::Word(op);
+                    return Ok(());
+                }
+            }
             // Enforce the complete contextual suffix before semantic denial.
             if matches!(
                 self.current,
@@ -2401,8 +2418,133 @@ pub(crate) fn parse_unsigned(text: &str) -> Result<UnsignedProgram, String> {
     }))
 }
 
+
+// An isolated proof-and-erasure profile for reusable, non-owning scalar slots.
+// Every accepted source is closed and straight-line; the normal native scalar
+// backend receives only immutable i64 locals, copied reads and checked arithmetic.
+fn parse_reusable_slot(text: &str) -> Result<Program, String> {
+    let mut p = Parser::new(text)?;
+    p.reusable_slot_profile = true;
+    const ERR: &str = "E_POINTER_SLOT_PROFILE";
+    const LIMIT: usize = 32;
+    fn id(p: &mut Parser<'_>) -> Result<String, String> {
+        let Token::Word(word) = p.current else { return Err(ERR.into()); };
+        if word.is_empty() || !word.as_bytes()[0].is_ascii_lowercase()
+            || !word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || matches!(word, "pub" | "fnc" | "main" | "let" | "mut" | "val" | "int"
+                | "ref" | "deref" | "unref" | "null" | "true" | "false" | "to" | "empty"
+                | "return" | "await" | "suspends" | "rt" | "if" | "else" | "end" | "actor"
+                | "class" | "struct" | "define" | "new" | "copy" | "borrow" | "drop"
+                | "take" | "share" | "freeze" | "weak" | "pin" | "while" | "for" | "task"
+                | "select" | "defer" | "recover" | "throw" | "raise" | "panic" | "trap")
+        {
+            return Err(ERR.into());
+        }
+        p.name()
+    }
+    fn literal(p: &mut Parser<'_>) -> Result<Expr, String> {
+        let Token::Number(n) = p.current else { return Err(ERR.into()); };
+        if !n.bytes().all(|b| b.is_ascii_digit()) { return Err(ERR.into()); }
+        let value = n.parse::<i64>().map_err(|_| ERR.to_owned())?;
+        p.next()?;
+        Ok(Expr::Literal(value))
+    }
+    for token in [Token::Word("pub"), Token::Word("fnc"), Token::Word("main"),
+        Token::Punct(b'('), Token::Punct(b')'), Token::Punct(b':'),
+        Token::Word("int"), Token::Punct(b'{')]
+    {
+        p.expect(token)?;
+    }
+    let mut locals = Vec::new();
+    let mut values = std::collections::BTreeMap::<String, usize>::new();
+    let mut owners = std::collections::BTreeMap::<String, usize>::new();
+    p.expect(Token::Word("let"))?;
+    while p.current != Token::Word("mut") {
+        if owners.len() >= 16 { return Err(ERR.into()); }
+        let name = id(&mut p)?;
+        if values.contains_key(&name) { return Err(ERR.into()); }
+        p.expect(Token::Punct(b':'))?;
+        p.expect(Token::Word("int"))?;
+        p.expect(Token::Punct(b'='))?;
+        let value = literal(&mut p)?;
+        p.expect(Token::Punct(b';'))?;
+        owners.insert(name.clone(), locals.len());
+        values.insert(name, locals.len());
+        locals.push(value);
+        p.expect(Token::Word("let"))?;
+    }
+    for token in [Token::Word("mut"), Token::Word("RawPointer"), Token::Punct(b'<'),
+        Token::Word("int"), Token::Punct(b'>')]
+    {
+        p.expect(token)?;
+    }
+    let slot = id(&mut p)?;
+    if values.contains_key(&slot) { return Err(ERR.into()); }
+    for token in [Token::Punct(b'='), Token::Word("RawPointer"), Token::Punct(b'.'),
+        Token::Word("empty"), Token::Punct(b'<'), Token::Word("int"),
+        Token::Punct(b'>'), Token::Punct(b'('), Token::Punct(b')'), Token::Punct(b';')]
+    {
+        p.expect(token)?;
+    }
+    let mut bound = None;
+    let mut ops = 0;
+    while p.current != Token::Word("return") {
+        ops += 1;
+        if ops > LIMIT { return Err(ERR.into()); }
+        if p.take(Token::Word("ref!"))? {
+            if bound.is_some() || id(&mut p)? != slot { return Err(ERR.into()); }
+            p.expect(Token::Word("to"))?;
+            let owner = id(&mut p)?;
+            bound = Some(*owners.get(&owner).ok_or(ERR)?);
+        } else if p.take(Token::Word("val"))? {
+            let read = id(&mut p)?;
+            if read == slot || values.contains_key(&read) { return Err(ERR.into()); }
+            p.expect(Token::Punct(b'='))?;
+            p.expect(Token::Word("deref!"))?;
+            if id(&mut p)? != slot { return Err(ERR.into()); }
+            let owner = bound.ok_or(ERR)?;
+            values.insert(read, locals.len());
+            locals.push(Expr::Local(owner));
+        } else if p.take(Token::Word("unref!"))? {
+            if id(&mut p)? != slot || bound.take().is_none() { return Err(ERR.into()); }
+        } else {
+            return Err(ERR.into());
+        }
+        p.expect(Token::Punct(b';'))?;
+    }
+    if bound.is_some() { return Err(ERR.into()); }
+    p.expect(Token::Word("return"))?;
+    let scalar = |p: &mut Parser<'_>| -> Result<Expr, String> {
+        if matches!(p.current, Token::Number(_)) { return literal(p); }
+        let name = id(p)?;
+        Ok(Expr::Local(*values.get(&name).ok_or(ERR)?))
+    };
+    let mut result = scalar(&mut p)?;
+    let mut links = 0;
+    while matches!(p.current, Token::Punct(b'+' | b'-')) {
+        links += 1;
+        if links >= LIMIT { return Err(ERR.into()); }
+        let add = p.take(Token::Punct(b'+'))?;
+        if !add { p.expect(Token::Punct(b'-'))?; }
+        let rhs = scalar(&mut p)?;
+        result = if add { Expr::Add(Box::new(result), Box::new(rhs)) }
+            else { Expr::Sub(Box::new(result), Box::new(rhs)) };
+    }
+    p.expect(Token::Punct(b';'))?;
+    p.expect(Token::Punct(b'}'))?;
+    p.expect(Token::End)?;
+    validate_ast_depth(&result)?;
+    Ok(Program { parameters: vec![], locals, result, trace_steps: vec![] })
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
+    // Text is merely a dispatch hint. Only the canonical lexer and complete
+    // isolated grammar may authorize erasure. Failed attempts retain the
+    // ordinary parser's existing fail-closed ownership diagnostics.
+    if text.contains("RawPointer") {
+        if let Ok(program) = parse_reusable_slot(text) { return Ok(program); }
+    }
     let original = Parser::new(text)?.program();
     // Only a complete, independently typed closed Option program can enter
     // the fused scalar lowering. Preserve all ordinary parser denials otherwise.

@@ -246,3 +246,35 @@ fn exact_separator_matrix_denies_before_check_run_or_ir() {
         );
     }
 }
+
+#[test]
+fn bounded_reusable_slots_native_cli() {
+    let good = [
+        "pub fnc main(): int { let a: int = 40; let b: int = 2; let mut RawPointer<int> p = RawPointer.empty<int>(); ref! p to a; val first = deref! p; unref! p; ref! p to b; val second = deref! p; unref! p; return first + second; }",
+        "pub fnc main(): int { let mut RawPointer<int> p = RawPointer.empty<int>(); return 42; }",
+        "pub fnc main(): int { let a: int = 42; let mut RawPointer<int> p = RawPointer.empty<int>(); ref! p to a; unref! p; return a; }",
+    ];
+    for source in good {
+        let run = run_source(source, "run");
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
+        let ir = run_source(source, "ir");
+        assert!(ir.status.success() && !ir.stdout.is_empty());
+    }
+    for body in [
+        "val x = deref! p; return x;",
+        "p = null; return 42;",
+        "ref! p to a; unref! p; unref! p; return 42;",
+        "ref! p to a; ref! p to a; unref! p; return 42;",
+        "ref! p to a; return 42;",
+        "return p;",
+        "ref ! p to a; unref! p; return 42;",
+        "ref! p to missing; unref! p; return 42;",
+    ] {
+        let source = format!("pub fnc main(): int {{ let a: int = 42; let mut RawPointer<int> p = RawPointer.empty<int>(); {body} }}");
+        for mode in ["check", "run", "ir"] {
+            let out = run_source(&source, mode);
+            assert!(!out.status.success() && out.stdout.is_empty(), "{mode}: {body}");
+        }
+    }
+}
