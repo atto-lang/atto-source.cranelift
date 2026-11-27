@@ -306,6 +306,9 @@ impl<'a> Quantities<'a> {
     }
     fn declarations(&mut self) -> Result<(), String> {
         while self.p.take(Token::Word("define"))? {
+            if self.units.len() + self.dimensions.len() >= 128 {
+                return Err("E_UNIT_LIMIT: declarations".into());
+            }
             let dimension = self.p.take(Token::Word("dimension"))?;
             if !dimension {
                 self.p.expect(Token::Word("unit"))?;
@@ -317,9 +320,6 @@ impl<'a> Quantities<'a> {
                 }
                 self.dimensions.push(name);
             } else {
-                if self.units.len() == 32 {
-                    return Err("E_UNIT_LIMIT: units".into());
-                }
                 self.p.expect(Token::Punct(b':'))?;
                 let target = self.p.name()?;
                 let index = self
