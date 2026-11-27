@@ -1984,3 +1984,30 @@ int main(void) {
         }
     }
 }
+
+
+#[cfg(test)]
+mod incoming_scalar_ssa_evidence {
+    use super::{compile, emit_object, render_ir};
+    use crate::frontend::parse;
+
+    #[test]
+    fn scalar_incoming_values_do_not_materialize_binding_slots() {
+        let program = parse("fnc main(a:int,b:int):int{val x=a+1;return x+b;}")
+            .expect("closed copied scalar source");
+        let ir = render_ir(&program).expect("verified CLIF");
+        assert!(!ir.contains("stack_slot"), "{ir}");
+        assert!(!ir.contains("stack_store"), "{ir}");
+        assert!(!ir.contains("stack_load"), "{ir}");
+        let guest = compile(&program).expect("real native JIT");
+        assert_eq!(guest.run(&[20, 21]), Ok(42));
+        assert!(guest.run(&[i64::MAX, 0]).is_err());
+        assert_eq!(guest.run(&[20, 21]), Ok(42));
+        assert!(!emit_object(&program).expect("native AOT object").is_empty());
+    }
+
+    #[test]
+    fn unmarked_scalar_formal_is_not_an_assignable_slot() {
+        assert!(parse("fnc main(a:int):int{a=a+2;return a;}").is_err());
+    }
+}
