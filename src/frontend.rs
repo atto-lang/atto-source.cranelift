@@ -4255,4 +4255,5 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
 #[path = "scalar_library.rs"]
 pub mod scalar_library;
 
+#[path = "frontend/point_placement.rs"]
 pub(crate) mod point_placement;
