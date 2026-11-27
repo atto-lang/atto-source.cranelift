@@ -606,9 +606,15 @@ impl<'a> Parser<'a> {
                     Token::Word("ref") => Some("ref!"),
                     Token::Word("deref") => Some("deref!"),
                     Token::Word("unref") => Some("unref!"),
+                    Token::Word("alloc") => Some("alloc!"),
+                    Token::Word("destroy") => Some("destroy!"),
+                    Token::Word("free") => Some("free!"),
                     _ => None,
                 };
                 if let Some(op) = op {
+                    if !b.get(self.pos + 1).is_some_and(|c| b" \t\r\n\x0b\x0c".contains(c)) {
+                        return Err("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword".into());
+                    }
                     self.pos += 1;
                     self.current = Token::Word(op);
                     return Ok(());
@@ -4246,3 +4252,5 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
 
 #[path = "scalar_library.rs"]
 pub mod scalar_library;
+
+pub(crate) mod point_placement;

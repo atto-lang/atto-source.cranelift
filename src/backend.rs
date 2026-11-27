@@ -696,6 +696,16 @@ fn prepare_ir(
     linkage: Linkage,
     unsigned: bool,
 ) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
+    prepare_ir_inner(source,module,linkage,unsigned,None)
+}
+fn prepare_ir_inner(
+    source: &Program,
+    module: &mut impl Module,
+    linkage: Linkage,
+    unsigned: bool,
+    placement: Option<&crate::frontend::point_placement::Plan>,
+) -> Result<(cranelift_codegen::Context, cranelift_module::FuncId), String> {
+    if let Some(plan)=placement {plan.verify()?;}
     validate_guest_program(source)?;
     validate_trace_steps(source)?;
     let mut sig = module.make_signature();
@@ -812,7 +822,28 @@ fn prepare_ir(
         let value = emit(initializer, &mut b, &p[..4], &locals, errors);
         locals.push(value);
     }
-    let value = emit(&source.result, &mut b, &p[..4], &locals, errors);
+    let value = if let Some(plan)=placement {
+        use crate::frontend::point_placement::Step;
+        use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
+        let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,16,3));
+        let mut copies=Vec::new();
+        for step in &plan.steps {
+            match *step {
+                Step::Construct(x,y)=>{
+                    let a=b.ins().iconst(types::I64,x);let z=b.ins().iconst(types::I64,y);
+                    b.ins().stack_store(a,storage,0);b.ins().stack_store(z,storage,8);
+                }
+                Step::CopyField(f)=>copies.push(b.ins().stack_load(types::I64,storage,i32::from(f)*8)),
+                Step::Destroy|Step::Free=>{
+                    let zero=b.ins().iconst(types::I64,0);
+                    b.ins().stack_store(zero,storage,0);b.ins().stack_store(zero,storage,8);
+                }
+                Step::Bind|Step::Detach=>{}
+            }
+        }
+        let a=copies[plan.result[0]];
+        if plan.result.len()==2 {b.ins().iadd(a,copies[plan.result[1]])}else{a}
+    } else {emit(&source.result, &mut b, &p[..4], &locals, errors)};
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
     return_status(&mut b, 0, cleanup);
     for (block, status) in [
@@ -1777,4 +1808,40 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
             .map_err(|e| e.to_string())?;
     }
     module.finish().emit().map_err(|e| e.to_string())
+}
+
+pub(crate) fn placement_command(plan:&crate::frontend::point_placement::Plan,mode:&str)->Result<(),String>{
+    use std::io::Write;
+    plan.verify()?;
+    let source=Program{parameters:vec![],locals:vec![],result:Expr::Literal(0),trace_steps:vec![]};
+    match mode {
+        "check"=>Ok(()),
+        "ir"=>{
+            let mut module=jit_module()?;
+            let (ctx,_)=prepare_ir_inner(&source,&mut module,Linkage::Local,false,Some(plan))?;
+            print!("{}",ctx.func.display());Ok(())
+        }
+        "run"=>{
+            let mut module=jit_module()?;
+            let (mut ctx,id)=prepare_ir_inner(&source,&mut module,Linkage::Local,false,Some(plan))?;
+            #[cfg(test)] let clif=ctx.func.display().to_string();
+            module.define_function(id,&mut ctx).map_err(|e|e.to_string())?;
+            module.clear_context(&mut ctx);
+            module.finalize_definitions().map_err(|e|e.to_string())?;
+            let compiled=Compiled{module,id,arity:0,#[cfg(test)]clif};
+            println!("{}",compiled.run(&[])?);Ok(())
+        }
+        "emit-object"=>{
+            let mut flags=settings::builder();
+            flags.set("is_pic","true").map_err(|e|e.to_string())?;
+            let isa=cranelift_native::builder().map_err(|e|e.to_string())?.finish(settings::Flags::new(flags)).map_err(|e|e.to_string())?;
+            let builder=ObjectBuilder::new(isa,"atto_placement",default_libcall_names()).map_err(|e|e.to_string())?;
+            let mut module=ObjectModule::new(builder);
+            let (mut ctx,id)=prepare_ir_inner(&source,&mut module,Linkage::Export,false,Some(plan))?;
+            module.define_function(id,&mut ctx).map_err(|e|e.to_string())?;
+            let bytes=module.finish().emit().map_err(|e|e.to_string())?;
+            std::io::stdout().lock().write_all(&bytes).map_err(|e|e.to_string())
+        }
+        _=>Err("E_POINTER_PLACEMENT: unsupported invocation mode".into()),
+    }
 }

@@ -329,6 +329,12 @@ fn run() -> Result<(), String> {
             .write_all(&object)
             .map_err(|e| e.to_string());
     }
+    if source.contains("Storage") && source.contains("RawPointer")
+        && let Ok(plan)=frontend::point_placement::parse(source)
+    {
+        if !values.is_empty() {return Err("placement expects no runtime arguments".into());}
+        return backend::placement_command(&plan,&mode);
+    }
     let linked_source = has_real_import_header(source);
     if linked_source {
         // Module graphs must not enter the experimental host-mediated

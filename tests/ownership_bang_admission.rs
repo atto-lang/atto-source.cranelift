@@ -278,3 +278,23 @@ fn bounded_reusable_slots_native_cli() {
         }
     }
 }
+
+#[test]
+fn placement_point_native_memory_and_rejections(){
+    let good="// expect-exit: 42\ndefine struct Point { int x; int y; } with { constructor(int x, int y) { self.x = x; self.y = y; } } pub fnc main(): int { let Storage<Point> s = alloc! Point; let mut RawPointer<Point> p = RawPointer.empty<Point>(); new Point(40, 1) at s; ref! p to s; val first = (deref! p).x; unref! p; destroy! s; new Point(99, 2) at s; ref! p to s; val second = (deref! p).y; unref! p; destroy! s; free! s; return first + second; }\n";
+    let run=run_source(good,"run");
+    assert!(run.status.success(),"{}",String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(),"42");
+    let ir=run_source(good,"ir");
+    assert!(ir.status.success());
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("stack_store")&&clif.contains("stack_load"),"{clif}");
+    let object=run_source(good,"emit-object");
+    assert!(object.status.success()&&!object.stdout.is_empty());
+    for (from,to) in [("unref! p;","p = null;"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;")]{
+        let bad=good.replacen(from,to,1);
+        for mode in ["run","ir","check","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
