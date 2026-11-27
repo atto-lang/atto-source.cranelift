@@ -2400,7 +2400,7 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
     if p.current != Token::Word("with") { return Ok(()); }
     if fields.len() % 3 != 0 || fields.len() > 192 { return Err(syntax()); }
     let mut field_names = BTreeSet::new();
-    for field in fields.chunks_exact(3) {
+    for field in fields.as_chunks::<3>().0 {
         match field {
             [Token::Word("int" | "bool"), Token::Word(name), Token::Punct(b';')] => {
                 if !field_names.insert(*name) { return Err("E_STRUCT_WITH_DUPLICATE: duplicate field".into()); }
@@ -2600,7 +2600,7 @@ mod attached_struct_target_tests {
             GROUPED.replace("int <- product()", "int • product()"),
             GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
             GROUPED.replace("mtd int • sum()", "mut mtd shift(int n):void { self.x = n; } mtd int • sum()")] {
-            let err = parse(&source).err().expect("must fail closed");
+            let err = parse(&source).expect_err("must fail closed");
             assert!(err.contains("E_STRUCT_WITH_NATIVE_UNSUPPORTED"), "{err}");
         }
     }
@@ -2613,7 +2613,7 @@ mod attached_struct_target_tests {
             (GROUPED.replace("int y;", "int x;"), "E_STRUCT_WITH_DUPLICATE"),
             (GROUPED.replace("constructor(int x, int y)", "mut constructor(int x, int y)"), "E_STRUCT_WITH_SYNTAX"),
         ] {
-            let err = parse(&source).err().expect("must reject invalid header");
+            let err = parse(&source).expect_err("must reject invalid header");
             assert!(err.contains(code), "{err}");
         }
         assert!(parse("/* type Point = struct { int x; } with {} */ pub fnc main():int { return 42; }").is_ok());

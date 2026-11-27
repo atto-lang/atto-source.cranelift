@@ -892,6 +892,13 @@ pub fn emit_object(source: &Program) -> Result<Vec<u8>, String> {
     emit_scalar_object(source, false)
 }
 
+/// Compile verified unsigned source to a host-target object without exposing
+/// the unsigned bit-pattern AST to the signed compiler API.
+pub fn compile_unsigned_object(source: &str) -> Result<Vec<u8>, String> {
+    let parsed = crate::frontend::parse_unsigned(source)?;
+    emit_unsigned_object(&parsed)
+}
+
 pub(crate) fn emit_unsigned_object(
     source: &crate::frontend::UnsignedProgram,
 ) -> Result<Vec<u8>, String> {

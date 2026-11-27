@@ -342,8 +342,7 @@ fn run() -> Result<(), String> {
     // Strict AOT admission is isolated from ordinary and linked-native dispatch.
     // Never emit bytes until the complete source proof has succeeded.
     if mode == "emit-object-u64" {
-        let parsed = frontend::parse_unsigned(source)?;
-        let object = backend::emit_unsigned_object(&parsed)?;
+        let object = backend::compile_unsigned_object(source)?;
         return std::io::stdout()
             .lock()
             .write_all(&object)
