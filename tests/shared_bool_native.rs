@@ -163,7 +163,9 @@ fn named_scalar_reductions_use_typed_native_boolean_operations() {
         "fnc gate(bool a, bool b):bool{return Xor(a,b) && !And(a,b) && Or(a,b);} pub fnc main():int{if gate(true,false) && gate(false,true) && !gate(true,true) && !gate(false,false) && Xor(true,true,true) && !Xor(true,true) && And(true,true,true,true) && !Or(false,false,false,false) then return 42; fi return 7;}",
         b"42\n",
     );
-    let single = Source::new("pub fnc main():int{if And(true,true) && Xor(false,true) then return 42; fi return 7;}");
+    let single = Source::new(
+        "pub fnc main():int{if And(true,true) && Xor(false,true) then return 42; fi return 7;}",
+    );
     assert!(single.invoke("check").status.success());
     let run = single.invoke("run");
     assert_eq!(run.status.code(), Some(0));
@@ -175,11 +177,19 @@ fn named_scalar_reductions_use_typed_native_boolean_operations() {
 fn named_scalar_short_circuit_and_ordinary_resolution() {
     let helper = "fnc risky(int n):bool{return 9223372036854775807+n eq 0;}";
     succeeds(
-        &format!("{helper} pub fnc main():int{{if !And(false,risky(1),true) && Or(true,risky(1),false) then return 42; fi return 7;}}"),
+        &format!(
+            "{helper} pub fnc main():int{{if !And(false,risky(1),true) && Or(true,risky(1),false) then return 42; fi return 7;}}"
+        ),
         b"42\n",
     );
-    for expr in ["And(true,risky(1))", "Or(false,risky(1))", "Xor(false,risky(1))"] {
-        let source = Source::new(&format!("{helper} pub fnc main():int{{if {expr} then return 42; fi return 7;}}"));
+    for expr in [
+        "And(true,risky(1))",
+        "Or(false,risky(1))",
+        "Xor(false,risky(1))",
+    ] {
+        let source = Source::new(&format!(
+            "{helper} pub fnc main():int{{if {expr} then return 42; fi return 7;}}"
+        ));
         assert!(source.invoke("check").status.success());
         let run = source.invoke("run");
         assert_eq!(run.status.code(), Some(1), "{expr}");
@@ -188,12 +198,15 @@ fn named_scalar_short_circuit_and_ordinary_resolution() {
     }
     // User-defined And is an ordinary eager function, including a
     // non-Boolean signature; its arguments are not rewritten as gates.
-    let shadow = Source::new("fnc And(int a,int b):int{return a+b;} pub fnc main():int{return And(20,22);}");
+    let shadow =
+        Source::new("fnc And(int a,int b):int{return a+b;} pub fnc main():int{return And(20,22);}");
     let run = shadow.invoke("run");
     assert_eq!(run.status.code(), Some(0));
     assert_eq!(run.stdout, b"42\n");
     assert!(run.stderr.is_empty());
-    let eager = Source::new(&format!("{helper} fnc And(bool a,bool b):bool{{return a;}} pub fnc main():int{{if And(false,risky(1)) then return 42; fi return 7;}}"));
+    let eager = Source::new(&format!(
+        "{helper} fnc And(bool a,bool b):bool{{return a;}} pub fnc main():int{{if And(false,risky(1)) then return 42; fi return 7;}}"
+    ));
     assert!(eager.invoke("check").status.success());
     let run = eager.invoke("run");
     assert_eq!(run.status.code(), Some(1));
@@ -211,7 +224,9 @@ fn named_scalar_reductions_reject_arity_types_and_shadowed_local() {
             ("false,1", "E_LINK_BOOLEAN_OPERANDS"),
         ] {
             rejects(
-                &format!("fnc bad():bool{{return {name}({args});}} pub fnc main():int{{return 42;}}"),
+                &format!(
+                    "fnc bad():bool{{return {name}({args});}} pub fnc main():int{{return 42;}}"
+                ),
                 diagnostic,
             );
         }
@@ -226,7 +241,9 @@ fn named_scalar_reductions_reject_arity_types_and_shadowed_local() {
 fn lexical_noncallable_gate_name_does_not_fall_through_to_declared_function() {
     for name in ["And", "Or", "Xor"] {
         rejects(
-            &format!("fnc {name}(bool a,bool b):bool{{return a;}} fnc bad(bool {name}):bool{{return {name}(true,false);}} pub fnc main():int{{return 42;}}"),
+            &format!(
+                "fnc {name}(bool a,bool b):bool{{return a;}} fnc bad(bool {name}):bool{{return {name}(true,false);}} pub fnc main():int{{return 42;}}"
+            ),
             "E_LINK_BOOLEAN_SHADOW",
         );
     }

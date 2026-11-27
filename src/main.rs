@@ -14,6 +14,9 @@ mod module_link;
 mod owned_region;
 #[allow(dead_code)]
 mod result_int_parse_v1;
+// Host-only continuation lease; compiler guest lowering remains gated.
+#[allow(dead_code)]
+mod select_continuation_fence;
 // Backend-local trusted host primitive; guest lowering pending.
 mod owned_bytes_v1;
 mod state_region;
@@ -205,7 +208,7 @@ fn run() -> Result<(), String> {
     let mut argv = std::env::args_os();
     let _ = argv.next();
     let mode = argv.next().ok_or(
-        "usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object|emit-counted-static-ready-object <file.atto|file.ores> [i64 args...] or hotload-capabilities",
+        "usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-u64|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object|emit-counted-static-ready-object <file.atto|file.ores> [i64 args...] or hotload-capabilities",
     )?.into_string().map_err(|_| "invalid command mode encoding")?;
     if mode == "hotload-capabilities" {
         if argv.next().is_some() {
@@ -229,12 +232,13 @@ fn run() -> Result<(), String> {
             | "isolate"
             | "check"
             | "emit-object"
+            | "emit-object-u64"
             | "emit-object-strict"
             | "emit-durable-counter-object"
             | "emit-durable-scalar-object"
             | "emit-counted-static-ready-object"
     ) {
-        return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object|emit-counted-static-ready-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
+        return Err("usage: orescranelift run|run-traced|ir|isolate|check|emit-object|emit-object-u64|emit-object-strict|emit-durable-counter-object|emit-durable-scalar-object|emit-counted-static-ready-object <file.atto|file.ores> [i64 args...] or hotload-capabilities".into());
     }
     let path = std::path::PathBuf::from(argv.next().ok_or("missing source file")?);
     // The stage-0 JIT ABI takes at most four i64 arguments. Reject surplus
@@ -246,6 +250,7 @@ fn run() -> Result<(), String> {
         mode.as_str(),
         "ir" | "check"
             | "emit-object"
+            | "emit-object-u64"
             | "emit-object-strict"
             | "emit-durable-counter-object"
             | "emit-durable-scalar-object"
@@ -290,6 +295,14 @@ fn run() -> Result<(), String> {
     }
     // Strict AOT admission is isolated from ordinary and linked-native dispatch.
     // Never emit bytes until the complete source proof has succeeded.
+    if mode == "emit-object-u64" {
+        let parsed = frontend::parse_unsigned(source)?;
+        let object = backend::emit_unsigned_object(&parsed)?;
+        return std::io::stdout()
+            .lock()
+            .write_all(&object)
+            .map_err(|e| e.to_string());
+    }
     if mode == "emit-object-strict" {
         let parsed = frontend::parse_verified_strict_i64(source)?;
         let object = backend::emit_object(&parsed)?;

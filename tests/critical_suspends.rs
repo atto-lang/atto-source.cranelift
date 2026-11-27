@@ -75,3 +75,37 @@ fn comments_cannot_inject_rejected_modifiers_and_scalar_guest_still_executes() {
     );
     assert_eq!(output.stdout, b"42\n");
 }
+
+#[test]
+fn every_suspension_alias_fails_closed_without_continuation_lowering() {
+    for spelling in ["suspends", "susp", "⧖", "∂"] {
+        for (source, diagnostic) in [
+            (
+                format!("define pub {spelling} fnc main():int{{return 42;}}"),
+                "E_SUSPENDS_UNSUPPORTED",
+            ),
+            (
+                format!("critical {spelling} fnc main():int{{return 42;}}"),
+                "E_CALLABLE_MODIFIERS",
+            ),
+            (
+                format!("{spelling} critical fnc main():int{{return 42;}}"),
+                "E_CALLABLE_MODIFIERS",
+            ),
+        ] {
+            for mode in ["run", "ir"] {
+                let result = cli(&source, mode);
+                assert_eq!(result.status.code(), Some(1), "{source}");
+                assert!(result.stdout.is_empty(), "{source}");
+                assert!(
+                    String::from_utf8_lossy(&result.stderr).contains(diagnostic),
+                    "{source}: {:?}",
+                    result.stderr
+                );
+            }
+        }
+    }
+    let result = cli("fnc main():int{return 42;} // susp ⧖ ∂", "run");
+    assert!(result.status.success());
+    assert_eq!(result.stdout, b"42\n");
+}
