@@ -1137,7 +1137,7 @@ impl<'a> Parser<'a> {
             introduce = self.take(Token::Word("infer"))?;
             let name = self.aggregate_name()?;
             self.expect(Token::Punct(b'>'))?;
-            if introduce && self.named_aggregate_types.contains_key(&name) {
+            if introduce && (self.named_aggregate_types.contains_key(&name) || self.named_aggregate_locals.contains_key(&name) || self.parameters.contains(&name) || self.bindings.iter().any(|(n,_,_)| n == &name)) {
                 return Err("E_DUPLICATE_TYPE: aggregate alias already declared".into());
             }
             if !introduce {
@@ -1151,26 +1151,46 @@ impl<'a> Parser<'a> {
         }
         let name = self.aggregate_name()?;
         if self.parameters.contains(&name) || self.bindings.iter().any(|(n,_,_)| n == &name)
-            || self.named_aggregate_locals.contains_key(&name) {
+            || self.named_aggregate_locals.contains_key(&name) || self.named_aggregate_types.contains_key(&name) || alias.as_ref().is_some_and(|a| a == &name) {
             return Err("duplicate aggregate local".into());
         }
         if self.named_aggregate_locals.len() + self.bindings.len() >= MAX_LOCALS {
             return Err("local binding count exceeds 64".into());
         }
         self.expect(Token::Punct(b'='))?;
-        self.expect(Token::Punct(if kind == "struct" { b'{' } else { b'(' }))?;
+        let brace = kind == "struct" || (kind == "Record" && self.current == Token::Punct(b'{'));
+        let close = Token::Punct(if brace { b'}' } else { b')' });
+        self.expect(Token::Punct(if brace { b'{' } else { b'(' }))?;
         let mut fields = std::collections::BTreeMap::new();
-        loop {
+        let mut comma = false;
+        if kind == "struct" && self.current == close {
+            return Err("E_EMPTY_AGGREGATE: empty Struct not admitted".into());
+        }
+        while self.current != close {
             if fields.len() >= 64 { return Err("aggregate field budget exceeded".into()); }
             let key = if kind == "Tuple" { fields.len().to_string() } else { self.aggregate_name()? };
-            if kind != "Tuple" {
-                self.expect(Token::Punct(if kind == "struct" { b':' } else { b'=' }))?;
+            if kind == "Record" {
+                // Only explicit Record wrappers enter this path. A contiguous
+                // := is a field separator, not a standalone Pair value.
+                if self.current == Token::Punct(b':') {
+                    let pair = self.input.as_bytes().get(self.pos) == Some(&b'=');
+                    self.next()?;
+                    if pair { self.expect(Token::Punct(b'='))?; }
+                } else {
+                    self.expect(Token::Punct(b'='))?;
+                }
+            } else if kind == "struct" {
+                self.expect(Token::Punct(b':'))?;
             }
             if fields.contains_key(&key) { return Err("E_DUPLICATE_FIELD: duplicate field".into()); }
             fields.insert(key, self.aggregate_literal_field()?);
-            if !self.take(Token::Punct(b','))? { break; }
+            comma = self.take(Token::Punct(b','))?;
+            if !comma { break; }
         }
-        self.expect(Token::Punct(if kind == "struct" { b'}' } else { b')' }))?;
+        if kind == "Tuple" && fields.len() == 1 && !comma {
+            return Err("E_TUPLE_ARITY: singleton tuple requires trailing comma".into());
+        }
+        self.expect(close)?;
         self.expect(Token::Punct(b';'))?;
         let row = NamedAggregate { kind, fields };
         if let Some(alias) = alias {
@@ -1928,6 +1948,7 @@ impl<'a> Parser<'a> {
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
                 || self.named_aggregate_locals.contains_key(&name)
+                || self.named_aggregate_types.contains_key(&name)
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
