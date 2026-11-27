@@ -799,6 +799,7 @@ pub(crate) fn parse_named_recursive(source: &str) -> Result<Option<Vec<Fn>>, Str
     }
     if !p.eat(":"){p.need("->")?;}p.need("int")?;p.need("{")?;
     if !p.eat("return"){p.need("^")?;}
+    let body_start=p.at;
     let mut nodes=0;
     let result=if p.eat("match") {
         p.need(&param)?;p.need("over")?;
@@ -832,6 +833,12 @@ pub(crate) fn parse_named_recursive(source: &str) -> Result<Option<Vec<Fn>>, Str
         close_named(&mut value,&param,&own,0,&mut nodes)?;
         value
     };
+    // The general scalar expression parser may desugar pipelines into
+    // calls. This profile admits only direct source self calls, not nested
+    // pipelines, tuple patterns, or alternative callable forms.
+    if p.tokens[body_start..p.at].iter().any(|t|matches!(t.as_str(),"|>"|"<|"|"|")){
+        return Err("E_NAMED_STAGE_NESTED_PIPE".into());
+    }
     p.eat(";");p.need("}")?;p.eat(";");p.need("}")?;
     if p.peek()!="<eof>" {return Err("E_NAMED_STAGE_TRAILING".into());}
     Ok(Some(vec![
