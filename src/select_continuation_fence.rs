@@ -378,11 +378,9 @@ mod tests {
                         assert!(fence.retirement_ready());
                         assert_eq!(fence.counts(), (0, 0));
                     }
-                    if index > 0 {
-                        if let Some(peer) = &owners[index - 1] {
-                            assert_eq!(peer.counts(), (0, 1));
-                            assert!(!peer.retirement_ready());
-                        }
+                    if let Some(peer) = index.checked_sub(1).and_then(|i| owners[i].as_ref()) {
+                        assert_eq!(peer.counts(), (0, 1));
+                        assert!(!peer.retirement_ready());
                     }
                     let fresh = Fence::new(2, 2).unwrap();
                     assert!(fresh.claim(&pending[index]).is_none());
