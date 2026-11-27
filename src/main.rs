@@ -5,6 +5,8 @@ mod backend;
 mod counted_static_ready;
 pub mod critical_gate;
 mod frontend;
+// Internal analysis only; no guest parking lowering.
+pub mod runtime_parking_effects;
 mod functional_pipelines;
 mod isolate;
 pub mod layout;
@@ -321,9 +323,7 @@ fn run() -> Result<(), String> {
             .write_all(&object)
             .map_err(|e| e.to_string());
     }
-    // The placement parser proves the complete closed grammar and enforces
-    // the shared envelope before this narrowly scoped dispatch. Generic
-    // attached-header denials remain authoritative for all other paths.
+    // Complete typed placement grammar, retaining the shared source envelope.
     if matches!(mode.as_str(), "run" | "ir" | "check" | "emit-object")
         && source.contains("Storage") && source.contains("RawPointer")
         && let Ok(plan)=frontend::point_placement::parse(source)
