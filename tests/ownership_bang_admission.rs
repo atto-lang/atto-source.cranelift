@@ -633,3 +633,39 @@ int main(void){for(int i=0;i<100;i++){
         }
     }
 }
+
+#[test]
+fn fixed_nominal_array_placement_native_memory_and_rejections(){
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Array<Payload,2> items; i16 tail; } with { constructor(i8 tag, Array<Payload,2> items, i16 tail) { self.tag = tag; self.items = items; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-1, Array.of(Payload(10,2),Payload(20,3)), 8) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).items[0].count; val c = (deref! p).items[0].flag; val d = (deref! p).items[1].count; val e = (deref! p).items[1].flag; val f = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d + e + f; }";
+    let out=run_source(good,"run");assert!(out.status.success(),"{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{ir:?}");
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 48, align = 8"),"{clif}");
+    for offset in [8,16,24,32,40]{assert!(clif.contains(&format!("stack_addr.i64 ss0+{offset}")),"{clif}");}
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-nominal-array-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{object:?}");
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0 && out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{link:?}");assert!(Command::new(&bin).status().unwrap().success());
+            println!("NOMINAL_ARRAY_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [("Array<Payload,2> items;","Array<Packet,2> items;"),("Array<Payload,2> items;","Array<Missing,2> items;"),("Array<Payload,2> items;","Array<Payload,0> items;"),("Array<Payload,2> items;","Array<Payload,8> items;"),("Array<Payload,2> items,","Array<Payload,1> items,"),("Payload(20,3)","Payload(20,128)"),("Payload(20,3)","Other(20,3)"),(",Payload(20,3)",""),(".items[1].flag",".items[2].flag"),(".items[1].flag",".items[1]"),(".items[1].flag",".items[1].missing"),(".items[1].flag",".items[1].flag[0]") ]{
+        let bad=good.replacen(from,to,1);assert_ne!(bad,good);
+        for mode in ["check","run","ir","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
