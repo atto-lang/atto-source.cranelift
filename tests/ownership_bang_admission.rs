@@ -453,7 +453,7 @@ int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entr
 
 #[test]
 fn source_defined_nested_placement() {
-    let good="define struct Pair { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Pair pair; i16 tail; } with { constructor(i8 tag, Pair pair, i16 tail) { self.tag = tag; self.pair = pair; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, Pair(40, -2), 7) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).pair.count; val c = (deref! p).pair.flag; val d = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d; }";
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Payload pair; i16 tail; } with { constructor(i8 tag, Payload pair, i16 tail) { self.tag = tag; self.pair = pair; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, Payload(40, -2), 7) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).pair.count; val c = (deref! p).pair.flag; val d = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d; }";
     let out=run_source(good,"run");assert!(out.status.success(),"{:?}",out);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
     let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
@@ -484,11 +484,11 @@ int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entr
         }
     }
     for (from,to) in [
-        ("Pair pair;","Packet pair;"),("Pair pair;","Missing pair;"),
-        ("Pair(40, -2)","Other(40, -2)"),("Pair(40, -2)","Pair(40, 128)"),
+        ("Payload pair;","Packet pair;"),("Payload pair;","Missing pair;"),
+        ("Payload(40, -2)","Other(40, -2)"),("Payload(40, -2)","Payload(40, 128)"),
         (".pair.count;",".pair;"),(".pair.flag;",".pair.missing;"),
         (".pair.count;",".tag.count;"),("self.pair = pair;","self.pair = tail;"),
-        ("Pair pair, i16 tail","int pair, i16 tail"),("Pair(40, -2)","Pair(40)")
+        ("Payload pair, i16 tail","int pair, i16 tail"),("Payload(40, -2)","Payload(40)")
     ]{
         let bad=good.replacen(from,to,1);assert_ne!(bad,good);
         for mode in ["check","run","ir","emit-object"]{
