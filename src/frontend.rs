@@ -562,6 +562,11 @@ impl<'a> Parser<'a> {
             self.current = Token::Word("<-");
             return Ok(());
         }
+        if self.attached_struct_target && self.input[start..].starts_with("->") {
+            self.pos += 2;
+            self.current = Token::Word("->");
+            return Ok(());
+        }
         let first = b[self.pos];
         self.pos += 1;
         // Stage-0 cannot bind injected state lifetimes or borrow authority.
@@ -2325,7 +2330,7 @@ fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
 fn reject_attached_struct_target(text: &str) -> Result<(), String> {
     use std::collections::BTreeSet;
     let mut p = match Parser::new(text) {
-        Ok(p) if p.current == Token::Word("type") => p,
+        Ok(p) if matches!(p.current, Token::Word("type" | "define")) => p,
         _ => return Ok(()),
     };
     fn syntax() -> String { "E_STRUCT_WITH_SYNTAX: invalid attached struct header".into() }
@@ -2371,10 +2376,12 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
     // type Name = struct { ... } header. Other source keeps original behavior.
     p.attached_struct_target = true;
     let prefix = (|| -> Result<bool, String> {
+        let direct = p.current == Token::Word("define");
         p.next()?;
+        if direct && !p.take(Token::Word("struct"))? { return Ok(false); }
         p.name()?;
-        if !p.take(Token::Punct(b'='))? || !p.take(Token::Word("struct"))? ||
-            !p.take(Token::Punct(b'{'))? { return Ok(false); }
+        if !direct && (!p.take(Token::Punct(b'='))? || !p.take(Token::Word("struct"))?) { return Ok(false); }
+        if !p.take(Token::Punct(b'{'))? { return Ok(false); }
         Ok(true)
     })();
     if !matches!(prefix, Ok(true)) { return Ok(()); }
@@ -2416,7 +2423,7 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
                 (p.name().map_err(|_| syntax())?, formals(p)?)
             } else {
                 let types = formals(p)?;
-                p.expect(Token::Punct(b':')).map_err(|_| syntax())?;
+                if !p.take(Token::Punct(b':'))? && !p.take(Token::Word("->"))? { return Err(syntax()); }
                 scalar(p, true)?;
                 (first, types)
             }
@@ -2586,7 +2593,9 @@ mod attached_struct_target_tests {
         let chained = GROUPED.replace("} with { constructor", "} with constructor")
             .replace("} mtd", "} with mtd")
             .replace("} } pub fnc", "} pub fnc");
-        for source in [GROUPED.to_owned(), chained,
+        for source in [GROUPED.to_owned(), chained.clone(),
+            GROUPED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+            chained.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
             GROUPED.replace("int • sum()", "sum():int"),
             GROUPED.replace("int <- product()", "int • product()"),
             GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
@@ -2600,6 +2609,7 @@ mod attached_struct_target_tests {
         for (source, code) in [
             (GROUPED.replace("is_origin() : bool", "bool * is_origin()"), "E_STRUCT_WITH_SYNTAX"),
             (GROUPED.replace("int <- product()", "int <- sum()"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("type Point = struct", "define struct Point").replace("int <- product()", "sum() -> int"), "E_STRUCT_WITH_DUPLICATE"),
             (GROUPED.replace("int y;", "int x;"), "E_STRUCT_WITH_DUPLICATE"),
             (GROUPED.replace("constructor(int x, int y)", "mut constructor(int x, int y)"), "E_STRUCT_WITH_SYNTAX"),
         ] {
