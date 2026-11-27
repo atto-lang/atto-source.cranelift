@@ -328,8 +328,7 @@ fn run() -> Result<(), String> {
         && source.contains("Storage") && source.contains("RawPointer")
         && let Ok(plan)=frontend::point_placement::parse(source)
     {
-        if !values.is_empty() {return Err("placement expects no runtime arguments".into());}
-        return backend::placement_command(&plan,&mode);
+        return backend::placement_command(&plan,&mode,&values);
     }
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline

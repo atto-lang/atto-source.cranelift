@@ -823,7 +823,7 @@ fn prepare_ir_inner(
         locals.push(value);
     }
     let value = if let Some(plan)=placement {
-        use crate::frontend::point_placement::Step;
+        use crate::frontend::point_placement::{Step,Operand};
         use cranelift_codegen::ir::{StackSlotData,StackSlotKind};
         // Closed source-defined nested signed-integer structs. The layout planner,
         // not spelling or field count, supplies native sizes, alignment and offsets.
@@ -836,13 +836,27 @@ fn prepare_ir_inner(
             let ty=match storage.size {1=>types::I8,2=>types::I16,4=>types::I32,8=>types::I64,_=>return Err("E_LAYOUT_TARGET: unsupported field width".into())};
             Ok((offset,ty))
         }).collect::<Result<Vec<_>,String>>()?;
+        // Check the complete typed argument boundary before any construction
+        // store. Narrow host inputs cannot truncate or partially initialize storage.
+        for (i,size) in plan.parameter_sizes().into_iter().enumerate(){
+            let (lo,hi)=match size{1=>(i64::from(i8::MIN),i64::from(i8::MAX)),2=>(i64::from(i16::MIN),i64::from(i16::MAX)),4=>(i64::from(i32::MIN),i64::from(i32::MAX)),8=>continue,_=>return Err("E_LAYOUT_TARGET".into())};
+            let below=b.ins().icmp_imm_s(IntCC::SignedLessThan,p[i],lo);
+            let above=b.ins().icmp_imm_s(IntCC::SignedGreaterThan,p[i],hi);
+            let bad=b.ins().bor(below,above);
+            let next=b.create_block();
+            b.ins().brif(bad,failure,&[],next,&[]);
+            b.switch_to_block(next);b.seal_block(next);
+        }
         let storage=b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot,size,align));
         let mut copies=Vec::new();
         for step in &plan.steps {
             match step {
                 Step::Construct(values)=>{
-                    for (&v,&(offset,ty)) in values.iter().zip(&slots) {
-                        let value=b.ins().iconst(ty,v);
+                    for (v,&(offset,ty)) in values.iter().zip(&slots) {
+                        let value=match v{
+                            Operand::Literal(n)=>b.ins().iconst(ty,*n),
+                            Operand::Parameter(i)=>if ty==types::I64{p[*i]}else{b.ins().ireduce(ty,p[*i])},
+                        };
                         b.ins().stack_store(ptr,value,storage,offset);
                     }
                 }
@@ -860,9 +874,15 @@ fn prepare_ir_inner(
                 Step::Bind|Step::Detach=>{}
             }
         }
-        // verify() proves the exact constant sequence and checked sum before lowering.
+        // Checked runtime addition; the static verifier still rejects known
+        // overflowing literal-only prefixes. Failure leaves the output untouched.
         let mut result=copies[plan.result[0]];
-        for &i in &plan.result[1..] {result=b.ins().iadd(result,copies[i]);}
+        for &i in &plan.result[1..] {
+            let (sum,overflow)=b.ins().sadd_overflow(result,copies[i]);
+            let next=b.create_block();
+            b.ins().brif(overflow,failure,&[],next,&[]);
+            b.switch_to_block(next);b.seal_block(next);result=sum;
+        }
         result
     } else {emit(&source.result, &mut b, &p[..4], &locals, errors)};
     b.ins().store(MemFlagsData::new(), value, p[4], 0);
@@ -1831,10 +1851,11 @@ pub fn emit_durable_scalar_object(source: &str) -> Result<Vec<u8>, String> {
     module.finish().emit().map_err(|e| e.to_string())
 }
 
-pub(crate) fn placement_command(plan:&crate::frontend::point_placement::Plan,mode:&str)->Result<(),String>{
+pub(crate) fn placement_command(plan:&crate::frontend::point_placement::Plan,mode:&str,values:&[i64])->Result<(),String>{
     use std::io::Write;
     plan.verify()?;
-    let source=Program{parameters:vec![],locals:vec![],result:Expr::Literal(0),trace_steps:vec![]};
+    let source=Program{parameters:plan.parameter_names(),locals:vec![],result:Expr::Literal(0),trace_steps:vec![]};
+    if (mode=="run" && values.len()!=source.parameters.len())||(mode!="run"&&!values.is_empty()){return Err("placement runtime argument count mismatch".into());}
     match mode {
         "check"=>Ok(()),
         "ir"=>{
@@ -1849,8 +1870,8 @@ pub(crate) fn placement_command(plan:&crate::frontend::point_placement::Plan,mod
             module.define_function(id,&mut ctx).map_err(|e|e.to_string())?;
             module.clear_context(&mut ctx);
             module.finalize_definitions().map_err(|e|e.to_string())?;
-            let compiled=Compiled{module,id,arity:0,#[cfg(test)]clif};
-            println!("{}",compiled.run(&[])?);Ok(())
+            let compiled=Compiled{module,id,arity:source.parameters.len(),#[cfg(test)]clif};
+            println!("{}",compiled.run(values)?);Ok(())
         }
         "emit-object"=>{
             let mut flags=settings::builder();
