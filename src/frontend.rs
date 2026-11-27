@@ -844,7 +844,7 @@ impl<'a> Parser<'a> {
                         | "ReadLoan"
                         | "WriteLoan"
                 )
-            ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
+            ) && !((self.strict_fixed_arrays || self.point_placement_profile) && self.current == Token::Word("Array"))
                 && !(self.current == Token::Word("Entry") && self.next_significant_is(b'.'))
                 && !(allow_aggregate_wrapper && matches!(self.current, Token::Word("Record" | "Tuple")))
             {
