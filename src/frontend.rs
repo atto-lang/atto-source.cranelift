@@ -360,6 +360,7 @@ struct Parser<'a> {
     pair_scope_checked: bool,
     entry_scope_checked: bool,
     unsigned_scalar: bool,
+    attached_struct_target: bool,
 }
 
 fn identifier_start_width(text: &str, at: usize) -> usize {
@@ -441,6 +442,7 @@ impl<'a> Parser<'a> {
             pair_scope_checked: false,
             entry_scope_checked: false,
             unsigned_scalar: false,
+            attached_struct_target: false,
         };
         p.next()?;
         Ok(p)
@@ -550,6 +552,21 @@ impl<'a> Parser<'a> {
         if self.input[start..].starts_with('⧖') || self.input[start..].starts_with('∂') {
             self.pos += 3;
             self.current = Token::Word("suspends");
+            return Ok(());
+        }
+        if self.attached_struct_target && self.input[start..].starts_with('•') {
+            self.pos += '•'.len_utf8();
+            self.current = Token::Word("•");
+            return Ok(());
+        }
+        if self.attached_struct_target && self.input[start..].starts_with("<-") {
+            self.pos += 2;
+            self.current = Token::Word("<-");
+            return Ok(());
+        }
+        if self.attached_struct_target && self.input[start..].starts_with("->") {
+            self.pos += 2;
+            self.current = Token::Word("->");
             return Ok(());
         }
         let first = b[self.pos];
@@ -854,7 +871,7 @@ impl<'a> Parser<'a> {
         } else if first == b'!' && b.get(self.pos) != Some(&b'=') {
             // Bang invocation is not a runtime scalar call.
             return Err("CRANELIFT_MACRO_EXPANDER_REQUIRED: bang invocation requires compile-time macro expansion before AOT/CLIF; no runtime/JIT fallback".into());
-        } else if (self.closed_option_profile && first == b'?')
+        } else if ((self.closed_option_profile || self.attached_struct_target) && first == b'?')
             || b"()+-*/{}[];:,><=.!&|".contains(&first)
         {
             self.current = Token::Punct(first);
@@ -2325,11 +2342,130 @@ fn reject_unimplemented_mutex_construction(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Separate bounded declaration-header probe. Never emits a Program or
+// bypasses the existing executable nominal/ownership admission gate.
+fn reject_attached_struct_target(text: &str) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let mut p = match Parser::new(text) {
+        Ok(p) if matches!(p.current, Token::Word("type" | "define")) => p,
+        _ => return Ok(()),
+    };
+    fn syntax() -> String { "E_STRUCT_WITH_SYNTAX: invalid attached struct header".into() }
+    fn scalar(p: &mut Parser<'_>, void: bool) -> Result<String, String> {
+        if !matches!(p.current, Token::Word("int" | "bool"))
+            && !(void && p.current == Token::Word("void")) {
+            return Err(syntax());
+        }
+        p.name()
+    }
+    fn formals(p: &mut Parser<'_>) -> Result<Vec<String>, String> {
+        p.expect(Token::Punct(b'(')).map_err(|_| syntax())?;
+        let mut types = Vec::new();
+        let mut names = BTreeSet::new();
+        if p.current != Token::Punct(b')') {
+            loop {
+                types.push(scalar(p, false)?);
+                if !names.insert(p.name().map_err(|_| syntax())?) {
+                    return Err("E_STRUCT_WITH_DUPLICATE: duplicate parameter".into());
+                }
+                if types.len() > 32 { return Err(syntax()); }
+                if !p.take(Token::Punct(b','))? { break; }
+            }
+        }
+        p.expect(Token::Punct(b')')).map_err(|_| syntax())?;
+        Ok(types)
+    }
+    fn body(p: &mut Parser<'_>) -> Result<(), String> {
+        p.expect(Token::Punct(b'{')).map_err(|_| syntax())?;
+        let mut depth = 1usize;
+        while depth > 0 {
+            match p.current {
+                Token::End => return Err(syntax()),
+                Token::Punct(b'{') => { depth += 1; if depth > MAX_DEPTH { return Err(syntax()); } }
+                Token::Punct(b'}') => depth -= 1,
+                _ => {}
+            }
+            p.next()?;
+        }
+        Ok(())
+    }
+    // Probe with a private lexer mode only for a direct file-initial
+    // type Name = struct { ... } header. Other source keeps original behavior.
+    p.attached_struct_target = true;
+    let prefix = (|| -> Result<bool, String> {
+        let direct = p.current == Token::Word("define");
+        p.next()?;
+        if direct && !p.take(Token::Word("struct"))? { return Ok(false); }
+        p.name()?;
+        if !direct && (!p.take(Token::Punct(b'='))? || !p.take(Token::Word("struct"))?) { return Ok(false); }
+        if !p.take(Token::Punct(b'{'))? { return Ok(false); }
+        Ok(true)
+    })();
+    if !matches!(prefix, Ok(true)) { return Ok(()); }
+    let mut fields = Vec::new();
+    let mut depth = 1usize;
+    while depth > 0 {
+        match p.current {
+            Token::End => return Ok(()),
+            Token::Punct(b'{') => { depth += 1; if depth > MAX_DEPTH { return Ok(()); } }
+            Token::Punct(b'}') => depth -= 1,
+            _ => {}
+        }
+        if depth > 0 { fields.push(p.current); }
+        if p.next().is_err() { return Ok(()); }
+    }
+    if p.current != Token::Word("with") { return Ok(()); }
+    if fields.len() % 3 != 0 || fields.len() > 192 { return Err(syntax()); }
+    let mut field_names = BTreeSet::new();
+    for field in fields.chunks_exact(3) {
+        match field {
+            [Token::Word("int" | "bool"), Token::Word(name), Token::Punct(b';')] => {
+                if !field_names.insert(*name) { return Err("E_STRUCT_WITH_DUPLICATE: duplicate field".into()); }
+            }
+            _ => return Err(syntax()),
+        }
+    }
+    fn member(p: &mut Parser<'_>, signatures: &mut BTreeSet<(String, Vec<String>)>) -> Result<(), String> {
+        if matches!(p.current, Token::Word("pub" | "private")) { p.next()?; }
+        let mutable = p.take(Token::Word("mut"))?;
+        let key = if p.take(Token::Word("constructor"))? {
+            if mutable { return Err(syntax()); }
+            ("$constructor".to_owned(), formals(p)?)
+        } else {
+            p.expect(Token::Word("mtd")).map_err(|_| syntax())?;
+            let first = p.name().map_err(|_| syntax())?;
+            if matches!(p.current, Token::Word("•" | "<-")) {
+                if !matches!(first.as_str(), "int" | "bool" | "void") { return Err(syntax()); }
+                p.next()?;
+                (p.name().map_err(|_| syntax())?, formals(p)?)
+            } else {
+                let types = formals(p)?;
+                if !p.take(Token::Punct(b':'))? && !p.take(Token::Word("->"))? { return Err(syntax()); }
+                scalar(p, true)?;
+                (first, types)
+            }
+        };
+        if !signatures.insert(key) { return Err("E_STRUCT_WITH_DUPLICATE: duplicate member signature".into()); }
+        if signatures.len() > 64 { return Err(syntax()); }
+        body(p)
+    }
+    let mut signatures = BTreeSet::new();
+    while p.take(Token::Word("with"))? {
+        if p.take(Token::Punct(b'{'))? {
+            if p.current == Token::Punct(b'}') { return Err(syntax()); }
+            while p.current != Token::Punct(b'}') { member(&mut p, &mut signatures)?; }
+            p.next()?;
+        } else { member(&mut p, &mut signatures)?; }
+    }
+    Err("E_STRUCT_WITH_NATIVE_UNSUPPORTED: attached struct headers validated; nominal value layout, ownership and native CLIF lowering required".into())
+}
+
 pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
+    reject_attached_struct_target(text)?;
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -2588,6 +2724,42 @@ pub fn parse(text: &str) -> Result<Program, String> {
         }
     }
     original
+}
+
+#[cfg(test)]
+mod attached_struct_target_tests {
+    use super::parse;
+    const GROUPED: &str = "type Point = struct { int x; int y; } with { constructor(int x, int y) { self.x = x; self.y = y; } mtd int • sum() { return self.x + self.y; } mtd int <- product() { return self.x * self.y; } mtd is_origin() : bool { return self.x == 0 && self.y == 0; } } pub fnc main():int { return 0; }";
+    #[test]
+    fn attached_struct_headers_are_checked_but_never_emitted() {
+        let chained = GROUPED.replace("} with { constructor", "} with constructor")
+            .replace("} mtd", "} with mtd")
+            .replace("} } pub fnc", "} pub fnc");
+        for source in [GROUPED.to_owned(), chained.clone(),
+            GROUPED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+            chained.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+            GROUPED.replace("int • sum()", "sum():int"),
+            GROUPED.replace("int <- product()", "int • product()"),
+            GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
+            GROUPED.replace("mtd int • sum()", "mut mtd shift(int n):void { self.x = n; } mtd int • sum()")] {
+            let err = parse(&source).err().expect("must fail closed");
+            assert!(err.contains("E_STRUCT_WITH_NATIVE_UNSUPPORTED"), "{err}");
+        }
+    }
+    #[test]
+    fn invalid_attachments_do_not_reach_value_gate() {
+        for (source, code) in [
+            (GROUPED.replace("is_origin() : bool", "bool * is_origin()"), "E_STRUCT_WITH_SYNTAX"),
+            (GROUPED.replace("int <- product()", "int <- sum()"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("type Point = struct", "define struct Point").replace("int <- product()", "sum() -> int"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("int y;", "int x;"), "E_STRUCT_WITH_DUPLICATE"),
+            (GROUPED.replace("constructor(int x, int y)", "mut constructor(int x, int y)"), "E_STRUCT_WITH_SYNTAX"),
+        ] {
+            let err = parse(&source).err().expect("must reject invalid header");
+            assert!(err.contains(code), "{err}");
+        }
+        assert!(parse("/* type Point = struct { int x; } with {} */ pub fnc main():int { return 42; }").is_ok());
+    }
 }
 
 #[cfg(test)]
