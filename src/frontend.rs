@@ -4635,7 +4635,7 @@ mod canonical_stdout_scalar_admission_tests {
                      "stdio /* nested /* comment */ */ .out.write(\"A\")", "process.stdout . write(\"A\")"] {
             let source = format!("pub fnc main():int {{ {call}; return 42; }}");
             for result in [parse(&source), parse_verified_strict_i64(&source)] {
-                assert!(result.err().expect("must reject").contains("E_STDOUT_PROFILE_UNSUPPORTED"));
+                assert!(result.expect_err("must reject").contains("E_STDOUT_PROFILE_UNSUPPORTED"));
             }
         }
     }
