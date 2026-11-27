@@ -108,7 +108,7 @@ impl PointParser<'_> {
         self.word("return")?;let mut result=Vec::new();
         loop {
             if result.len()==2{return Err(err());}
-            let n=self.ident()?;result.push(*names.get(&n).ok_or_else(||err())?);
+            let n=self.ident()?;result.push(*names.get(&n).ok_or_else(err)?);
             if !self.p.take(Token::Punct(b'+'))?{break;}
         }
         self.need(Token::Punct(b';'))?;self.need(Token::Punct(b'}'))?;self.need(Token::End)?;
