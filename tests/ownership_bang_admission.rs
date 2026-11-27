@@ -547,7 +547,10 @@ int main(void){for(int i=0;i<100;i++){
 
 #[test]
 fn placement_checked_subtraction_preserves_left_association_and_atomic_output() {
-    let source="define struct Pair { int left; int right; } with { constructor(int left, int right) { self.left = left; self.right = right; } } pub fnc main(int lhs, int rhs): int { let Storage<Pair> s = alloc! Pair; let mut RawPointer<Pair> p = RawPointer.empty<Pair>(); new Pair(lhs, rhs) at s; ref! p to s; val a = (deref! p).left; val b = (deref! p).right; unref! p; destroy! s; free! s; return a - b + b; }";
+    let source="define struct CoordPair { int left; int right; } with { constructor(int left, int right) { self.left = left; self.right = right; } } pub fnc main(int lhs, int rhs): int { let Storage<CoordPair> s = alloc! CoordPair; let mut RawPointer<CoordPair> p = RawPointer.empty<CoordPair>(); new CoordPair(lhs, rhs) at s; ref! p to s; val a = (deref! p).left; val b = (deref! p).right; unref! p; destroy! s; free! s; return a - b + b; }";
+    // Pair is a reserved built-in aggregate, not a nominal struct name.
+    let reserved=source.replace("CoordPair","Pair");
+    let denied=run_source(&reserved,"emit-object");assert!(!denied.status.success()&&denied.stdout.is_empty());
     let fixture=SourceFixture::create(source);
     for (args,expected) in [
         (["42","-3"],Some("42")),
@@ -562,7 +565,7 @@ fn placement_checked_subtraction_preserves_left_association_and_atomic_output() 
     }
     let ir=run_source(source,"ir");assert!(ir.status.success());
     let clif=String::from_utf8_lossy(&ir.stdout);assert!(clif.contains("ssub_overflow")&&clif.contains("sadd_overflow"),"{clif}");
-    let literal=source.replace("main(int lhs, int rhs)","main()").replace("Pair(lhs, rhs)","Pair(-9223372036854775808, 1)");
+    let literal=source.replace("main(int lhs, int rhs)","main()").replace("CoordPair(lhs, rhs)","CoordPair(-9223372036854775808, 1)");
     for mode in ["run","check","ir","emit-object"]{
         let out=run_source(&literal,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {out:?}");
     }
