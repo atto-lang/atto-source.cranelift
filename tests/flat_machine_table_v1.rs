@@ -47,7 +47,8 @@ fn exact_limits() {
     assert_eq!(Table::verify(0,&g).unwrap().events().len(),256);
     g[0].edges.push(("E256".into(),0)); assert!(Table::verify(0,&g).is_err());
     let mut g: Vec<_> = (0..256).map(|i| {
-        node(&format!("N{i:03}"),i==255,if i==255 { &[] } else { &[("Next",i+1)] })
+        let edge = [("Next", i + 1)];
+        node(&format!("N{i:03}"), i == 255, if i == 255 { &[] } else { &edge })
     }).collect();
     assert_eq!(Table::verify(0,&g).unwrap().names().len(),256);
     g.push(node("N256",true,&[])); assert!(Table::verify(0,&g).is_err());
