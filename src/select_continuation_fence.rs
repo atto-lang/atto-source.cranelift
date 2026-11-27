@@ -314,4 +314,85 @@ mod tests {
         assert!(fence.close());
         assert!(fence.retirement_ready());
     }
+
+    #[test]
+    fn multi_owner_close_and_drop_wait_for_physical_unwind() {
+        use std::sync::Barrier;
+        const OWNERS: usize = 64;
+        for round in 0..10 {
+            let mut owners: Vec<_> = (0..OWNERS)
+                .map(|_| Some(Fence::new(1, 2).unwrap()))
+                .collect();
+            let pending: Vec<_> = owners
+                .iter()
+                .map(|owner| owner.as_ref().unwrap().register(1).unwrap())
+                .collect();
+            let executing: Vec<_> = owners
+                .iter()
+                .map(|owner| {
+                    let owner = owner.as_ref().unwrap();
+                    let ticket = owner.register(1).unwrap();
+                    owner.claim(&ticket).unwrap()
+                })
+                .collect();
+            let entered = Barrier::new(OWNERS + 1);
+            let release = Barrier::new(OWNERS + 1);
+            std::thread::scope(|scope| {
+                let mut workers = Vec::with_capacity(OWNERS);
+                for execution in executing {
+                    let entered = &entered;
+                    let release = &release;
+                    workers.push(scope.spawn(move || {
+                        let result = std::panic::catch_unwind(move || {
+                            let lease = execution;
+                            entered.wait();
+                            release.wait();
+                            assert_eq!(lease.generation(), 1);
+                            panic!("expected callback failure");
+                        });
+                        assert!(result.is_err());
+                    }));
+                }
+                entered.wait();
+                for i in 0..OWNERS {
+                    let owner = owners[i].as_ref().unwrap();
+                    assert_eq!(owner.counts(), (1, 1));
+                    assert!(matches!(owner.register(1), Err(AdmissionError::Capacity)));
+                    assert_eq!(owner.advance(1), Ok(false));
+                    if let Some(neighbor) = owners[(i + 1) % OWNERS].as_ref() {
+                        assert!(neighbor.claim(&pending[i]).is_none());
+                    }
+                    if (i + round) % 2 == 0 {
+                        drop(owners[i].take());
+                    } else {
+                        assert!(owner.close());
+                        assert!(!owner.retirement_ready());
+                        assert_eq!(owner.counts(), (0, 1));
+                        assert!(owner.claim(&pending[i]).is_none());
+                    }
+                    assert!(!pending[i].close());
+                }
+                release.wait();
+                for worker in workers.into_iter().rev() {
+                    worker.join().unwrap();
+                }
+            });
+            for (owner, stale) in owners.iter().zip(pending.iter()) {
+                if let Some(owner) = owner {
+                    assert!(owner.retirement_ready());
+                    assert_eq!(owner.counts(), (0, 0));
+                }
+                let fresh = Fence::new(2, 1).unwrap();
+                assert!(fresh.claim(stale).is_none());
+                assert!(!stale.close());
+                let next = fresh.register(2).unwrap();
+                let lease = fresh.claim(&next).unwrap();
+                assert_eq!(lease.generation(), 2);
+                drop(lease);
+                assert!(fresh.close());
+                assert!(fresh.retirement_ready());
+            }
+        }
+        println!("CRANELIFT_MULTI_OWNER_RETIREMENT_PASS owners=640");
+    }
 }
