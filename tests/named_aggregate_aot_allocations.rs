@@ -13,6 +13,15 @@ fn aggregate_objects_are_memory_independent_and_execute() {
     let obj=dir.join("case.o");
     let c=dir.join("harness.c");
     let exe=dir.join("guest");
+    // Compile the test-only shared-contract preflight before compiling guests.
+    // This has no effect on release target eligibility.
+    let guard=dir.join("elf-guard");
+    let guard_source=std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/support/hosted_elf_object.c");
+    let build_guard=Command::new("cc")
+        .args(["-std=c11","-Wall","-Wextra","-Werror","-pedantic"])
+        .arg(&guard_source).arg("-o").arg(&guard).output().unwrap();
+    assert!(build_guard.status.success(), "{}", String::from_utf8_lossy(&build_guard.stderr));
     fs::write(&c, r#"
 #include <stdint.h>
 #include <stdlib.h>
@@ -43,8 +52,19 @@ int main(int argc, char **argv) {
         let output=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("emit-object").arg(&src).output().unwrap();
         assert!(output.status.success(), "{body}: {}", String::from_utf8_lossy(&output.stderr));
         assert!(output.stderr.is_empty());
-        assert!(output.stdout.starts_with(b"\x7fELF"));
-        fs::write(&obj, output.stdout).unwrap();
+        fs::write(&obj, &output.stdout).unwrap();
+        let identity=Command::new(&guard).arg(std::env::consts::ARCH).arg(&obj).output().unwrap();
+        assert!(identity.status.success(), "{}", String::from_utf8_lossy(&identity.stderr));
+        // A valid object must not be accepted as a different machine or
+        // when the section-table offset has been replaced by UINT_MAX.
+        let other=if std::env::consts::ARCH=="x86_64" { "aarch64" } else { "x86_64" };
+        assert_eq!(Command::new(&guard).arg(other).arg(&obj).status().unwrap().code(),Some(1));
+        let mut malformed=output.stdout;
+        let (offset, size)=if malformed[4]==2 {(40,8)} else {(32,4)};
+        malformed[offset..offset+size].fill(255);
+        let bad_obj=dir.join("malformed.o");
+        fs::write(&bad_obj, malformed).unwrap();
+        assert_eq!(Command::new(&guard).arg(std::env::consts::ARCH).arg(&bad_obj).status().unwrap().code(),Some(1));
         let symbols=Command::new("nm").arg("-u").arg(&obj).output().unwrap();
         assert!(symbols.status.success());
         assert!(symbols.stdout.is_empty(), "unexpected external symbol: {}",String::from_utf8_lossy(&symbols.stdout));
