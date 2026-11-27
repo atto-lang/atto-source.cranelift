@@ -86,11 +86,6 @@ impl Layout{
         Err(err("PROJECTION"))
     }
 }
-pub(crate) fn point_layout()->Result<Layout,String>{
-    let scalar=FieldType::Scalar(Storage{size:8,align:8});
-    let owners=[Owner{identity:"Point".into(),fields:vec![("x".into(),scalar.clone()),("y".into(),scalar)]}];
-    plan(&owners,Limits{max_size:65536,max_align:8,max_owners:16,max_fields:64})?.pop().ok_or_else(||err("UNRESOLVED"))
-}
 #[cfg(test)]
 pub(crate) mod tests{
     use super::*;

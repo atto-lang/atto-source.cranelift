@@ -400,3 +400,53 @@ int main(void){
         }
     }
 }
+
+#[test]
+fn source_defined_mixed_width_placement() {
+    let good="define struct Packet { i8 tag; int count; i16 tail; } with { constructor(i8 tag, int count, i16 tail) { self.tag = tag; self.count = count; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, 40, 5) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).count; val c = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c; }";
+    let out=run_source(good,"run");
+    assert!(out.status.success(),"{:?}",out);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 24, align = 8"),"{clif}");
+    assert!(clif.contains("stack_addr.i64 ss0+8")&&clif.contains("stack_addr.i64 ss0+16"),"{clif}");
+    assert!(clif.contains("sextend.i64"),"{clif}");
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let dir=std::env::temp_dir().join(format!("atto-mixed-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty());
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("SOURCE_MIXED_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [
+        ("-3, 40, 5","128, 40, 5"),("-3, 40, 5","-129, 40, 5"),
+        ("-3, 40, 5","-3, 40, 32768"),("Storage<Packet>","Storage<Other>"),
+        ("RawPointer.empty<Packet>","RawPointer.empty<Other>"),
+        ("i16 tail;","i16 tag;"),("self.tail = tail;","self.tag = tail;"),
+        ("(deref! p).tail","(deref! p).unknown"),("new Packet(","new Other("),
+        ("i8 tag, int count","i16 tag, int count"),("new Packet(-3, 40, 5)","new Packet(-3, 40)")
+    ] {
+        let bad=good.replacen(from,to,1);assert_ne!(good,bad);
+        for mode in ["check","run","ir","emit-object"] {
+            let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
