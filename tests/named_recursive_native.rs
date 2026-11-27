@@ -50,6 +50,7 @@ fn named_recursive_native_guests_and_denials() {
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {^ match v over on 0 -> 0, on 0 -> 1, on _ -> 2 end};}","E_NAMED_STAGE_DUP_PATTERN"),
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {return f(v);};} fnc x(): int {return 42;}","E_NAMED_STAGE_TRAILING"),
         ("pub fnc main(): int {return 1+2 |> fnc f(int v): int {return v;};}","E_NAMED_STAGE_LITERAL_UPSTREAM"),
+        ("pub fnc main(): int {return 1 |> fnc f(int v): int {return v |> f;};}","E_NAMED_STAGE_NESTED_PIPE"),
     ] {
         for mode in ["check","run","ir"]{
             let denied=run(mode,source);
