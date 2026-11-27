@@ -364,6 +364,7 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     closed_option_profile: bool,
     reusable_slot_profile: bool,
+    point_placement_profile: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     named_aggregate_types: std::collections::BTreeMap<String, NamedAggregate>,
@@ -450,6 +451,7 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays: false,
             closed_option_profile: false,
             reusable_slot_profile: false,
+            point_placement_profile: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             named_aggregate_types: Default::default(),
@@ -657,6 +659,9 @@ impl<'a> Parser<'a> {
                     Token::Word("ref") => Some("ref!"),
                     Token::Word("deref") => Some("deref!"),
                     Token::Word("unref") => Some("unref!"),
+                    Token::Word("alloc") if self.point_placement_profile => Some("alloc!"),
+                    Token::Word("destroy") if self.point_placement_profile => Some("destroy!"),
+                    Token::Word("free") if self.point_placement_profile => Some("free!"),
                     _ => None,
                 };
                 if let Some(op) = op {
@@ -766,7 +771,7 @@ impl<'a> Parser<'a> {
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
             }
-            if self.current == Token::Word("new") && !self.mutex_scan {
+            if self.current == Token::Word("new") && !self.mutex_scan && !self.point_placement_profile {
                 return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
             }
             if self.current == Token::Word("unsafe") {
@@ -2666,6 +2671,12 @@ fn has_canonical_stdout_call(text: &str) -> bool {
 }
 
 pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
+    validate_source_envelope_impl(text, true)
+}
+
+// Only the isolated complete placement grammar may bypass the generic attached-header denial.
+// All other envelope gates, including canonical stdout denial, remain mandatory.
+fn validate_source_envelope_impl(text: &str, check_attached_header: bool) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
@@ -2673,7 +2684,7 @@ pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
     if has_canonical_stdout_call(text) {
         return Err("E_STDOUT_PROFILE_UNSUPPORTED: scalar profile has no process stdout capability".into());
     }
-    reject_attached_struct_target(text)?;
+    if check_attached_header { reject_attached_struct_target(text)?; }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -4627,6 +4638,11 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
 
 #[path = "scalar_library.rs"]
 pub mod scalar_library;
+
+#[path = "frontend/point_placement.rs"]
+pub(crate) mod point_placement;
+#[path = "frontend/physical_layout.rs"]
+pub(crate) mod physical_layout;
 
 #[cfg(test)]
 mod canonical_stdout_scalar_admission_tests {

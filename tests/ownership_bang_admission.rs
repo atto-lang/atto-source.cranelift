@@ -341,3 +341,206 @@ int main(void) {
         assert!(!denied.status.success() && denied.stdout.is_empty(), "{body}");
     }
 }
+
+#[test]
+fn placement_point_native_memory_and_rejections(){
+    let good="// expect-exit: 42\ndefine struct Point { int x; int y; } with { constructor(int x, int y) { self.x = x; self.y = y; } } pub fnc main(): int { let Storage<Point> s = alloc! Point; let mut RawPointer<Point> p = RawPointer.empty<Point>(); new Point(40, 1) at s; ref! p to s; val first = (deref! p).x; unref! p; destroy! s; new Point(99, 2) at s; ref! p to s; val second = (deref! p).y; unref! p; destroy! s; free! s; return first + second; }\n";
+    let run=run_source(good,"run");
+    assert!(run.status.success(),"{}",String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(),"42");
+    let ir=run_source(good,"ir");
+    assert!(ir.status.success());
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    // Current CLIF builder canonicalizes stack_load/store into stack_addr
+    // plus nontrapping memory operations. Require the concrete slot and
+    // both field addresses, not the spelling of a pre-canonicalized opcode.
+    assert!(clif.contains("explicit_slot 16, align = 8"),"{clif}");
+    assert!(clif.contains("stack_addr.i64 ss0")&&clif.contains("stack_addr.i64 ss0+8"),"{clif}");
+    assert!(clif.matches("store notrap").count()>=8 && clif.matches("load.i64 notrap").count()>=2,"{clif}");
+    let object=run_source(good,"emit-object");
+    assert!(object.status.success()&&!object.stdout.is_empty());
+    // An emitted object is not evidence of native execution by itself.
+    // Link an observer that checks the full signed result and repeatability.
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let second=run_source(good,"emit-object");
+        assert!(second.status.success());
+        assert_eq!(object.stdout,second.stdout);
+        let dir=std::env::temp_dir().join(format!("atto-placement-link-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).expect("exclusive native link directory");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.0); } }
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        std::fs::write(&obj,&object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){
+    for(int i=0;i<100;i++){
+        int64_t out=-17;
+        if(oreslang_scalar_entry(0,0,0,0,&out)!=0||out!=42)return 1;
+    }
+    return 0;
+}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("POINT_PLACEMENT_LINKED_NATIVE_PASS result=42 repetitions=100 observer_opt={opt}");
+        }
+    }
+
+    for (from,to) in [("unref! p;","p = null;"),("self.y = y;","self.x = y;"),("self.y = y;",""),("int y;","int x;"),("new Point(40, 1) at s;","new Point(40, 1);"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;"),("new Point(40, 1) at s;","new Point(9223372036854775807, 1) at s;"),("ref! p to s;","ref! p to s; ref! p to s;"),("unref! p;","unref! p; unref! p;"),("destroy! s;","destroy! s; destroy! s;")]{
+        let bad=good.replacen(from,to,1);
+        for mode in ["run","ir","check","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn source_defined_mixed_width_placement() {
+    let good="define struct Packet { i8 tag; int count; i16 tail; } with { constructor(i8 tag, int count, i16 tail) { self.tag = tag; self.count = count; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, 40, 5) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).count; val c = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c; }";
+    let out=run_source(good,"run");
+    assert!(out.status.success(),"{:?}",out);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 24, align = 8"),"{clif}");
+    assert!(clif.contains("stack_addr.i64 ss0+8")&&clif.contains("stack_addr.i64 ss0+16"),"{clif}");
+    assert!(clif.contains("sextend.i64"),"{clif}");
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let dir=std::env::temp_dir().join(format!("atto-mixed-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty());
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("SOURCE_MIXED_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [
+        ("-3, 40, 5","128, 40, 5"),("-3, 40, 5","-129, 40, 5"),
+        ("-3, 40, 5","-3, 40, 32768"),("Storage<Packet>","Storage<Other>"),
+        ("RawPointer.empty<Packet>","RawPointer.empty<Other>"),
+        ("i16 tail;","i16 tag;"),("self.tail = tail;","self.tag = tail;"),
+        ("(deref! p).tail","(deref! p).unknown"),("new Packet(","new Other("),
+        ("i8 tag, int count","i16 tag, int count"),("new Packet(-3, 40, 5)","new Packet(-3, 40)")
+    ] {
+        let bad=good.replacen(from,to,1);assert_ne!(good,bad);
+        for mode in ["check","run","ir","emit-object"] {
+            let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn source_defined_nested_placement() {
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Payload pair; i16 tail; } with { constructor(i8 tag, Payload pair, i16 tail) { self.tag = tag; self.pair = pair; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, Payload(40, -2), 7) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).pair.count; val c = (deref! p).pair.flag; val d = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d; }";
+    let out=run_source(good,"run");assert!(out.status.success(),"{:?}",out);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 32, align = 8"),"{clif}");
+    for offset in [8,16,24]{assert!(clif.contains(&format!("stack_addr.i64 ss0+{offset}")),"{clif}");}
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let dir=std::env::temp_dir().join(format!("atto-nested-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{:?}",object);
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("SOURCE_NESTED_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [
+        ("Payload pair;","Packet pair;"),("Payload pair;","Missing pair;"),
+        ("Payload(40, -2)","Other(40, -2)"),("Payload(40, -2)","Payload(40, 128)"),
+        (".pair.count;",".pair;"),(".pair.flag;",".pair.missing;"),
+        (".pair.count;",".tag.count;"),("self.pair = pair;","self.pair = tail;"),
+        ("Payload pair, i16 tail","int pair, i16 tail"),("Payload(40, -2)","Payload(40)")
+    ]{
+        let bad=good.replacen(from,to,1);assert_ne!(bad,good);
+        for mode in ["check","run","ir","emit-object"]{
+            let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn typed_runtime_placement_arguments_and_atomic_failure() {
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Payload payload; i16 tail; } with { constructor(i8 tag, Payload payload, i16 tail) { self.tag = tag; self.payload = payload; self.tail = tail; } } pub fnc main(i8 tag_in, int count_in, i8 flag_in, i16 tail_in): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(tag_in, Payload(count_in, flag_in), tail_in) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).payload.count; val c = (deref! p).payload.flag; val d = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d; }";
+    let fixture=SourceFixture::create(good);
+    for (args,expected) in [(["-3","40","-2","7"],Some("42")),(["0","-10","1","2"],Some("-7")),(["128","40","-2","7"],None),(["0","9223372036854775807","1","0"],None)]{
+        let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("run").arg(&fixture.path).args(args).output().unwrap();
+        if let Some(n)=expected{assert!(out.status.success(),"{:?}",out);assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),n)}
+        else{assert!(!out.status.success()&&out.stdout.is_empty(),"{:?}",out)}
+    }
+    assert!(!run_source(good,"run").status.success());
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);assert!(clif.contains("sadd_overflow")&&clif.contains("ireduce"),"{clif}");
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-runtime-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{:?}",object);
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){
+  int64_t out=-999;
+  assert(oreslang_scalar_entry(-3,40,-2,7,&out)==0 && out==42);
+  assert(oreslang_scalar_entry(0,-10,1,2,&out)==0 && out==-7);
+  out=-999;
+  assert(oreslang_scalar_entry(128,40,-2,7,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(0,40,-129,7,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(0,40,1,32768,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(0,INT64_MAX,1,0,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(-1,INT64_MIN,0,0,&out)==1 && out==-999);
+}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);assert!(Command::new(&bin).status().unwrap().success());
+            println!("RUNTIME_PLACEMENT_NATIVE_PASS success=200 failure=500 observer_opt={opt}");
+        }
+    }
+    for (a,b) in [("i8 tag_in","int tag_in"),("i8 flag_in","i8 tag_in"),("Payload(count_in, flag_in)","Payload(count_in, missing)"),("new Packet(tag_in,","new Packet(count_in,"),("val a =","val tag_in =")]{
+        let bad=good.replacen(a,b,1);assert_ne!(good,bad);
+        for mode in ["check","ir","emit-object"]{let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");}
+    }
+}

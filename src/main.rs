@@ -323,6 +323,13 @@ fn run() -> Result<(), String> {
             .write_all(&object)
             .map_err(|e| e.to_string());
     }
+    // Complete typed placement grammar, retaining the shared source envelope.
+    if matches!(mode.as_str(), "run" | "ir" | "check" | "emit-object")
+        && source.contains("Storage") && source.contains("RawPointer")
+        && let Ok(plan)=frontend::point_placement::parse(source)
+    {
+        return backend::placement_command(&plan,&mode,&values);
+    }
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
