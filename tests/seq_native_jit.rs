@@ -37,19 +37,22 @@ fn program(expr: &str) -> String {
 #[test]
 fn source_ordered_seq_and_scoped_shorthand_generate_actual_native_jit_values() {
     for expression in [
-        "seq(42)",
-        "seq(1, 2, 42)",
+        "seq! (42)",
+        "seq! (1, 2, 42)",
+        "seq 1, 2, 42",
+        "seq! 1, 2, 42",
+        "seq!(1, 2, 42)",
         "(> 1, 2, 42)",
-        "seq(1, seq(2, 42))",
-        "seq(1, (> 2, 42))",
-        "(> 1, seq(2, 42))",
-        "seq(1, 2) + 40",
-        "seq(1, Integer.bitAnd(7,3), 42)",
-        "seq(1, Integer.rem(8,3), 42)",
-        "seq(1, 7 >> 8, 42)",
-        "seq(1, /* comma,is inert */ 42)",
-        "seq(1, // comma, in comment\n 42)",
-        "seq(1, 2) as int + 40",
+        "seq! (1, seq! (2, 42))",
+        "seq! (1, (> 2, 42))",
+        "(> 1, seq! (2, 42))",
+        "seq! (1, 2) + 40",
+        "seq! (1, Integer.bitAnd(7,3), 42)",
+        "seq! (1, Integer.rem(8,3), 42)",
+        "seq! (1, 7 >> 8, 42)",
+        "seq! (1, /* comma,is inert */ 42)",
+        "seq! (1, // comma, in comment\n 42)",
+        "seq! (1, 2) as int + 40",
     ] {
         let source = program(expression);
         let ir = guest("ir", &source);
@@ -76,12 +79,13 @@ fn source_ordered_seq_and_scoped_shorthand_generate_actual_native_jit_values() {
 #[test]
 fn discarded_prefix_must_still_trap_in_generated_native_code() {
     for (expression, expected_diagnostic) in [
-        ("seq(9223372036854775807 + 1, 42)", "overflow"),
+        ("seq! (9223372036854775807 + 1, 42)", "overflow"),
+        ("seq! 9223372036854775807 + 1, 42", "overflow"),
         ("(> 9223372036854775807 + 1, 42)", "overflow"),
-        ("seq(1, seq(9223372036854775807 + 1, 42))", "overflow"),
-        ("seq(Integer.rem(8, 0), 42)", "divisor zero"),
+        ("seq! (1, seq! (9223372036854775807 + 1, 42))", "overflow"),
+        ("seq! (Integer.rem(8, 0), 42)", "divisor zero"),
         ("(> Integer.mod(8, 0), 42)", "divisor zero"),
-        ("seq(Integer.pow(2, 63), 42)", "overflow"),
+        ("seq! (Integer.pow(2, 63), 42)", "overflow"),
     ] {
         let source = program(expression);
         let ir = guest("ir", &source);
@@ -111,26 +115,30 @@ fn discarded_prefix_must_still_trap_in_generated_native_code() {
 #[test]
 fn malformed_seq_and_unlowered_effects_fail_before_ir_or_jit() {
     let mut invalid: Vec<String> = [
-        "seq()",
+        "seq! ()",
         "(>)",
-        "seq(1,)",
+        "seq! (1,)",
         "(> 1,)",
-        "seq(,1)",
-        "seq(1,,2)",
-        "seq(1;2)",
-        "seq(1 2)",
+        "seq! (,1)",
+        "seq! (1,,2)",
+        "seq! (1;2)",
+        "seq! (1 2)",
         "(1,2)",
-        "seq 1,2",
-        "seq(1, seq())",
-        "seq(1, rt take x)",
-        "seq(1, \"a,b\")",
-        "seq(1, await x)",
+        "seq 1,",
+        "seq! 1,",
+        "seq(1,42)",
+        "seq (1,42)",
+        "seq !(1,42)",
+        "seq! (1, seq! ())",
+        "seq! (1, rt take x)",
+        "seq! (1, \"a,b\")",
+        "seq! (1, await x)",
     ]
     .iter()
     .map(|value| program(value))
     .collect();
     invalid.push(program(&format!(
-        "seq({})",
+        "seq! ({})",
         (0..17).map(|i| i.to_string()).collect::<Vec<_>>().join(",")
     )));
     for source in invalid {
