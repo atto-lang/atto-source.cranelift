@@ -578,10 +578,49 @@ fn local_pair_const_native_cli() {
         "val y=42;const x:=y;return x.value;",
     ] {
         let source = format!("pub fnc main():int{{{body}}}");
-        for mode in ["check","run","ir"] {
+        for mode in ["check","run","ir","emit-object"] {
             let output = run_source(&source,mode);
             assert!(!output.status.success(), "{mode}: {source}");
             assert!(output.stdout.is_empty(), "{mode}: {source}");
+        }
+    }
+}
+
+
+// AOT object proof is independent from JIT and scalar IR generation. Link
+// the actual generated object into a fixed observer at both host opt levels.
+#[cfg(all(unix,target_pointer_width="64"))]
+#[test]
+fn local_pair_const_native_cli_aot() {
+    let dir=std::env::temp_dir().join(format!("atto-stored-pair-aot-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+    std::fs::create_dir(&dir).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    let _cleanup=Cleanup(dir.clone());
+    let host=dir.join("host.c");
+    std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+    for (label,decl) in [
+        ("short","const x:=42;"),
+        ("expanded","const x=x:=42;"),
+        ("factory","const x=Pair.of(\"x\",42);")
+    ] {
+        let source=format!("pub fnc main():int{{{decl}const Pair<int> p=x;return p.value;}}");
+        let object=run_source(&source,"emit-object");
+        assert!(object.status.success()&&!object.stdout.is_empty(),"{label}: {:?}",object);
+        let obj=dir.join(format!("{label}.o"));
+        std::fs::write(&obj,object.stdout).unwrap();
+        for opt in ["-O0","-O2"] {
+            let bin=dir.join(format!("{label}{opt}"));
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{label}: {:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success(),"{label}/{opt}");
+            println!("STORED_PAIR_AOT_NATIVE_PASS {label} observer_opt={opt} repetitions=100");
         }
     }
 }
