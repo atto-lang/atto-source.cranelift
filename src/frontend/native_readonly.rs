@@ -80,7 +80,7 @@ impl Reader<'_>{
     }
 }
 pub(crate) fn parse(s:&str)->Result<Plan,String>{
-    if !selected(s)||s.len()>65536{return Err(err());}
+    if !selected(s)||s.len()>65536||!s.bytes().all(|b| matches!(b,9..=13|32..=126)){return Err(err());}
     super::validate_source_envelope(s)?;
     let mut p=Parser::new(s)?;
     // Existing scanner's new gate is lifted only for this complete grammar.
