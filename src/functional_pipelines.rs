@@ -788,7 +788,7 @@ pub(crate) fn parse_named_recursive(source: &str) -> Result<Option<Vec<Fn>>, Str
     validate_source_envelope(source)?;
     let tokens=match lex(source) { Ok(t)=>t, Err(_)=>return Ok(None) };
     if !tokens.windows(2).any(|w| w[0]=="|>" && w[1]=="fnc") { return Ok(None); }
-    let mut p=Parser{tokens,at:0};
+    let mut p=Parser{tokens,at:0,max_arity:1};
     p.need("pub")?;p.need("fnc")?;p.need("main")?;p.need("(")?;p.need(")")?;
     if !p.eat(":"){p.need("->")?;}p.need("int")?;p.need("{")?;
     if !p.eat("return"){p.need("^")?;}
