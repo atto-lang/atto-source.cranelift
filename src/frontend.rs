@@ -1578,6 +1578,10 @@ impl<'a> Parser<'a> {
                         None => Expr::Local(*runtime_slot),
                     }
                 } else {
+                    // Lexically valid non-ASCII names are not unsupported ASCII keywords.
+                    if !s.is_ascii() {
+                        return Err(format!("E_UNBOUND_LOCAL: unbound identifier: {s}"));
+                    }
                     return Err(format!("unbound or unsupported identifier: {s}"));
                 };
                 self.node(value)
@@ -2977,6 +2981,7 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if !original.as_ref().is_err_and(|err| {
         err.starts_with("unexpected token")
             || err.starts_with("unbound or unsupported identifier")
+            || err.starts_with("E_UNBOUND_LOCAL:")
             || err.starts_with("expected scalar expression")
             || err.starts_with("invalid character")
             || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
