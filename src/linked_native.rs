@@ -532,7 +532,7 @@ fn emit_expr(
                     builder.ins().brif(limit,failure,&[BlockArg::Value(status)],continuation,&[]);
                     builder.switch_to_block(continuation);
                     builder.seal_block(continuation);
-                    builder.ins().iadd_imm(current,1)
+                    builder.ins().iadd_imm_s(current,1)
                 } else {
                     builder.ins().iconst(types::I64,0)
                 };

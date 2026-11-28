@@ -27,7 +27,7 @@ fn expr(b:&mut FunctionBuilder<'_>,e:&Expr,values:&[Value],targets:&[FuncRef],fa
             let call=b.ins().call(targets[*i],&actual);
             let value=b.inst_results(call)[0];
             let status=b.inst_results(call)[1];
-            let bad=b.ins().icmp_imm(IntCC::NotEqual,status,0);
+            let bad=b.ins().icmp_imm_s(IntCC::NotEqual,status,0);
             require_ok(b,bad,failure);
             value
         }
