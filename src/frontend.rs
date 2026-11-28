@@ -2938,6 +2938,94 @@ fn parse_reusable_slot(text: &str) -> Result<Program, String> {
     Ok(Program { parameters: vec![], locals, result, trace_steps: vec![] })
 }
 
+// Closed straight-line i64 transfer pilot. Every update creates a fresh
+// SSA local; source reads refer to the slot visible before the update.
+// No owner handles, storage mutation, aliasing or control flow is admitted.
+fn parse_scalar_binding_transfer(text: &str) -> Result<Program, String> {
+    const ERR: &str = "E_BINDING_TRANSFER_PROFILE";
+    let mut p = Parser::new(text)?;
+    p.take(Token::Word("pub"))?;
+    for token in [Token::Word("fnc"), Token::Word("main"),
+        Token::Punct(b'('), Token::Punct(b')'), Token::Punct(b':'),
+        Token::Word("int"), Token::Punct(b'{')]
+    {
+        p.expect(token)?;
+    }
+    fn name(p: &mut Parser<'_>) -> Result<String, String> {
+        let Token::Word(word) = p.current else { return Err(ERR.into()); };
+        if !word.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            || !word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || is_java_v1_reserved_parameter_name(word)
+            || matches!(word, "set" | "main" | "int" | "bool" | "boolean" | "seq" | "sync" | "yield" | "ref" | "deref" | "unref" | "drop" | "move" | "pin" | "freeze" | "weak" | "share" | "borrow" | "copy" | "take")
+        { return Err(ERR.into()); }
+        p.name()
+    }
+    fn scalar(p: &mut Parser<'_>, slots: &std::collections::BTreeMap<String, usize>) -> Result<Expr, String> {
+        if let Token::Number(n) = p.current {
+            let value = integer_digits(n)?.parse::<i64>().map_err(|_| ERR.to_owned())?;
+            p.next()?;
+            return p.node(Expr::Literal(value));
+        }
+        let source = name(p)?;
+        p.node(Expr::Local(*slots.get(&source).ok_or(ERR)?))
+    }
+    fn sum(p: &mut Parser<'_>, slots: &std::collections::BTreeMap<String, usize>) -> Result<Expr, String> {
+        let mut result = scalar(p, slots)?;
+        for _ in 0..MAX_LOCALS {
+            if !matches!(p.current, Token::Punct(b'+' | b'-')) {
+                return Ok(result);
+            }
+            let add = p.take(Token::Punct(b'+'))?;
+            if !add { p.expect(Token::Punct(b'-'))?; }
+            let right = scalar(p, slots)?;
+            result = p.node(if add { Expr::Add(Box::new(result), Box::new(right)) }
+                else { Expr::Sub(Box::new(result), Box::new(right)) })?;
+        }
+        Err(ERR.into())
+    }
+    let mut slots = std::collections::BTreeMap::<String, usize>::new();
+    let mut locals = Vec::new();
+    let mut saw_arrow = false;
+    while p.current != Token::Word("return") {
+        if locals.len() >= MAX_LOCALS { return Err(ERR.into()); }
+        let declaration = p.take(Token::Word("let"))?;
+        if declaration {
+            p.take(Token::Word("int"))?;
+        } else {
+            p.expect(Token::Word("set"))?;
+        }
+        let target = name(&mut p)?;
+        if !declaration && !slots.contains_key(&target) { return Err(ERR.into()); }
+        // pos is immediately after the current '<' token. Trivia cannot
+        // manufacture an ownership arrow, and bullet is not an alias.
+        let arrow = p.current == Token::Punct(b'<')
+            && p.input.as_bytes().get(p.pos) == Some(&b'-');
+        if arrow {
+            p.expect(Token::Punct(b'<'))?;
+            p.expect(Token::Punct(b'-'))?;
+            saw_arrow = true;
+        } else {
+            p.expect(Token::Punct(b'='))?;
+        }
+        let rhs = sum(&mut p, &slots)?;
+        if arrow && !declaration && matches!(&rhs, Expr::Local(slot) if Some(slot) == slots.get(&target)) {
+            return Err(ERR.into());
+        }
+        validate_ast_depth(&rhs)?;
+        p.expect(Token::Punct(b';'))?;
+        slots.insert(target, locals.len());
+        locals.push(rhs);
+    }
+    if !saw_arrow { return Err(ERR.into()); }
+    p.expect(Token::Word("return"))?;
+    let result = sum(&mut p, &slots)?;
+    p.expect(Token::Punct(b';'))?;
+    p.expect(Token::Punct(b'}'))?;
+    p.expect(Token::End)?;
+    validate_ast_depth(&result)?;
+    Ok(Program { parameters: vec![], locals, result, trace_steps: vec![] })
+}
+
 // Exact compiler-owned common-source #164 catalog; no runtime I/O.
 const MEASURE_SOURCE: &str = include_str!("../stdlib/core/measure.atto");
 fn requests_measure_prelude(text: &str) -> Result<bool, String> {
@@ -2986,6 +3074,11 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if text.contains("RawPointer")
         && let Ok(program) = parse_reusable_slot(text)
     {
+        return Ok(program);
+    }
+    // Dispatch hint only; the closed grammar validates every token and
+    // requires a real arrow. Failed attempts preserve ordinary denials.
+    if text.contains("<-") && let Ok(program) = parse_scalar_binding_transfer(text) {
         return Ok(program);
     }
     let parser = Parser::new(text)?;
