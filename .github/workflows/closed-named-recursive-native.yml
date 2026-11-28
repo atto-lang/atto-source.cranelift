@@ -1,0 +1,39 @@
+name: Closed named recursive native guest proof
+on:
+  pull_request:
+    paths:
+      - 'src/functional_pipelines.rs'
+      - 'src/linked_native.rs'
+      - 'src/main.rs'
+      - 'src/backend.rs'
+      - 'src/frontend.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tests/named_recursive_native.rs'
+      - '.github/workflows/closed-named-recursive-native.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-guest:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact tree and execute native JIT and regression tests
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cranelift-named-stage
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD^{tree}
+          rustc --version
+          cargo test --locked --test named_recursive_native -- --nocapture
+          cargo test --locked --all-targets
+          test -z "$(git status --porcelain --untracked-files=all)"
