@@ -82,17 +82,17 @@ fn rejected(source: &str, expected_diag: &str) {
 #[test]
 fn constant_seq_and_runtime_val_share_scalar_native_backend() {
     admitted(
-        "fnc main(a:int):int{val int live=a+1;const expected: int=seq(1,40+2);return seq(live,expected);}",
+        "fnc main(a:int):int{val int live=a+1;const expected: int=seq! (1,40+2);return seq! (live,expected);}",
         &["40"],
         b"42\n",
     );
     admitted(
-        "fnc main():int{int answer=(> 1,2,42);val checked=seq(answer-1,answer);return checked;}",
+        "fnc main():int{int answer=(> 1,2,42);val checked=seq! (answer-1,answer);return checked;}",
         &[],
         b"42\n",
     );
     admitted(
-        "fnc main(a:int):int{val first=seq(1,a+2);val second=seq(first,42);return second;}",
+        "fnc main(a:int):int{val first=seq! (1,a+2);val second=seq! (first,42);return second;}",
         &["40"],
         b"42\n",
     );
@@ -101,22 +101,22 @@ fn constant_seq_and_runtime_val_share_scalar_native_backend() {
 #[test]
 fn static_const_seq_checks_every_discarded_element_before_ir() {
     rejected(
-        "fnc main():int{const x=seq(9223372036854775807+1,42);return x;}",
+        "fnc main():int{const x=seq! (9223372036854775807+1,42);return x;}",
         "E_CONST_OVERFLOW",
     );
     rejected(
-        "fnc main(a:int):int{const x=seq(a+1,42);return x;}",
+        "fnc main(a:int):int{const x=seq! (a+1,42);return x;}",
         "E_NON_CONST_INITIALIZER",
     );
     rejected(
-        "fnc main():int{const x=seq(Integer.rem(4,0),42);return x;}",
+        "fnc main():int{const x=seq! (Integer.rem(4,0),42);return x;}",
         "E_NON_CONST_INITIALIZER",
     );
 }
 
 #[test]
 fn unobserved_runtime_initializer_seq_must_not_erase_traps() {
-    let source = "fnc main(a:int):int{val ignored=seq(a+1,42);return 42;}";
+    let source = "fnc main(a:int):int{val ignored=seq! (a+1,42);return 42;}";
     let ir = execute("ir", source, &[]);
     assert_eq!(
         ir.status.code(),
@@ -149,7 +149,7 @@ fn pipeline_frontend_remains_native_and_mixed_profiles_fail_closed() {
 
     // A single-guest mixed pipeline + sequence requires a shared typed IR.
     // Until then it may not be guessed as a pure function or host-evaluated.
-    let mixed = "fnc double(int x):int{return x*2;} fnc main():int{return seq(1,21) |> double;}";
+    let mixed = "fnc double(int x):int{return x*2;} fnc main():int{return seq! (1,21) |> double;}";
     for mode in ["check", "ir", "run"] {
         let output = execute(mode, mixed, &[]);
         assert_eq!(
