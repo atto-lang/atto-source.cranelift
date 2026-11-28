@@ -1,0 +1,66 @@
+name: Closed readonly class reference exact-head native guest
+on:
+  pull_request:
+    paths: ['src/frontend/native_readonly.rs', 'src/backend/native_readonly.rs', 'src/frontend.rs', 'src/backend.rs', 'src/main.rs', '.github/workflows/native-readonly-class.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source and build native compiler
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD HEAD^{tree}
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 test --locked --bin orescranelift native_readonly -- --nocapture
+          cargo +1.99.1 test --locked --bin orescranelift
+          cargo +1.99.1 build --locked --release --bin orescranelift
+      - name: JIT and link actual Atto source native object
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          cat > "$work/guest.atto" <<'EOF'
+          // atto-ownership: borrow-default-v1
+          define class Parcel as pub let int padding = 99; pub let int value = 21; end
+          fnc get(Parcel p): int { return p.value; }
+          fnc forward(Parcel p): int { return get(p); }
+          pub fnc main(): int { let p = new Parcel(); return forward(p) + get(p); }
+          EOF
+          target/release/orescranelift check "$work/guest.atto"
+          test "$(target/release/orescranelift run "$work/guest.atto")" = 42
+          target/release/orescranelift emit-object "$work/guest.atto" > "$work/guest.o"
+          sed 's/value = 21/value = 9223372036854775807/' "$work/guest.atto" > "$work/overflow.atto"
+          if target/release/orescranelift run "$work/overflow.atto"; then exit 1; fi
+          target/release/orescranelift emit-object "$work/overflow.atto" > "$work/overflow.o"
+          cat > "$work/host.c" <<'EOF'
+          #include <stdint.h>
+          extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+          int main(void) { int64_t out=99; int32_t status=oreslang_scalar_entry(0,0,0,0,&out);
+          #ifdef OVERFLOW
+            return status==1 && out==99 ? 0 : 1;
+          #else
+            return status==0 && out==42 ? 0 : 1;
+          #endif
+          }
+          EOF
+          clang "$work/guest.o" "$work/host.c" -o "$work/guest"
+          "$work/guest"
+          clang -DOVERFLOW "$work/overflow.o" "$work/host.c" -o "$work/overflow"
+          "$work/overflow"
+          sed 's/return get(p);/return forward(p);/' "$work/guest.atto" > "$work/reject.atto"
+          if target/release/orescranelift emit-object "$work/reject.atto" > "$work/reject.o"; then exit 1; fi
+          test ! -s "$work/reject.o"
+          sha256sum "$work/guest.o" "$work/overflow.o"
