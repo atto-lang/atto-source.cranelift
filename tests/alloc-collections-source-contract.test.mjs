@@ -5,6 +5,14 @@ import {readFileSync} from 'node:fs';
 const source=(f)=>readFileSync(new URL('../stdlib/alloc/'+f+'.atto',import.meta.url),'utf8');
 const fixture=(f)=>readFileSync(new URL('./fixtures/alloc-collections-source/'+f+'.atto',import.meta.url),'utf8');
 
+// Ignore standalone comments; this guard is source inspection, not lexical proof.
+const sourceLines = text => text.split('\n').filter(line => !/^\s*\/\//.test(line)).join('\n');
+const forbiddenRaw = /unsafe|from_raw|transmute|raw_ptr/;
+test('standalone comments are not operations',()=>{
+ assert.doesNotMatch(sourceLines('// no unsafe pop or raw_ptr\nreturn None;'),forbiddenRaw);
+ for(const word of ['unsafe','from_raw','transmute','raw_ptr']) assert.match(sourceLines('// explanation\n'+word+'();'),forbiddenRaw);
+});
+
 test('Box requires explicit ownership transfer and forbids raw handle forging',()=>{
  const b=source('box');
  assert.match(b,/boxed<T>\(take! T value\)/);
@@ -14,7 +22,7 @@ test('Box requires explicit ownership transfer and forbids raw handle forging',(
  assert.match(b,/replace\(take! T next\)/);
  assert.match(b,/let Option<T> previous = take! self\.slot/);
  assert.match(b,/self\.slot = None/);
- assert.doesNotMatch(b,/unsafe|from_raw|transmute|raw_ptr/);
+ assert.doesNotMatch(sourceLines(b),forbiddenRaw);
 });
 test('Vec reserves actual ownership for consuming operation and Copy for reads',()=>{
  const v=source('vec');
@@ -27,7 +35,7 @@ test('Vec reserves actual ownership for consuming operation and Copy for reads',
  assert.doesNotMatch(v,/let int capacity = current;/,
    'immutable growth accumulator is a compiler admission bug');
  assert.match(v,/capacity > max_capacity - capacity/);
- assert.doesNotMatch(v,/unsafe|from_raw|transmute|raw_ptr/);
+ assert.doesNotMatch(sourceLines(v),forbiddenRaw);
 });
 test('String stages writes and admits only valid UTF-8 scalars',()=>{
  const s=source('string');
@@ -80,4 +88,16 @@ test('strict UTF-8 reference decoder vectors',()=>{
  const dec=(b)=>{try{new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(b));return true}catch{return false}};
  for(const b of mustReject)assert.equal(dec(b),false);
  for(const b of mustAccept)assert.equal(dec(b),true);
+});
+
+test('owned storage and UTF-8 loop state explicitly declare mutability',()=>{
+ const b=source('box'),s=source('string');
+ assert.match(b,/\blet mut Option<T> slot = None;/);
+ assert.doesNotMatch(b,/\blet Option<T> slot = None;/);
+ for(const [name,count] of [['i',3],['count',1],['width',1]]) {
+  const mutable=new RegExp('\\blet mut int '+name+' = [01];','g');
+  const immutable=new RegExp('\\blet int '+name+' = [01];','g');
+  assert.equal([...s.matchAll(mutable)].length,count,name+' mutable declaration count');
+  assert.equal([...s.matchAll(immutable)].length,0,name+' must not be immutable');
+ }
 });
