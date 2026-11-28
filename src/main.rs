@@ -24,6 +24,9 @@ mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
+// Host-only proxy mailbox tickets; never guest-exposed or a transport ABI.
+pub mod proxy_receipt_gate_v1;
+pub mod proxy_mailbox_ticket_v1;
 pub mod uhl1;
 use std::io::{Read, Write};
 
@@ -323,6 +326,13 @@ fn run() -> Result<(), String> {
             .write_all(&object)
             .map_err(|e| e.to_string());
     }
+    // Complete typed placement grammar, retaining the shared source envelope.
+    if matches!(mode.as_str(), "run" | "ir" | "check" | "emit-object")
+        && source.contains("Storage") && source.contains("RawPointer")
+        && let Ok(plan)=frontend::point_placement::parse(source)
+    {
+        return backend::placement_command(&plan,&mode,&values);
+    }
     // Imported and standalone multi-function scalar graphs use separate
     // checked native functions. Legacy single-main and strict pure-pipeline
     // paths continue to lower to the stage-0 scalar Program shape.
@@ -340,6 +350,11 @@ fn run() -> Result<(), String> {
             .lock()
             .write_all(&object)
             .map_err(|e| e.to_string());
+    }
+    if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
+        && let Some(functions) = functional_pipelines::parse_named_recursive(source)?
+    {
+        return run_linked_native(&mode, &values, &functions);
     }
     let linked_source = has_real_import_header(source);
     if linked_source {

@@ -41,6 +41,18 @@ fn rejects_every_unsupported_nominal_declaration_without_output() {
         "define record Pair as\nend\n",
         "define interface Message as\nend\n",
         "define trait Sendable as\nend\n",
+        // Contract declarations must remain distinct from executable scalar
+        // functions even when a valid scalar main follows them.
+        "define contract Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define pub contract Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "pub define contract Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define contract ShopApi for namespace as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define interface Api as run():int; end\npub fnc main():int{return 42;}\n",
+        "define interface Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define interface Api as mtd run():int; end\npub fnc main():int{return 42;}\n",
+        "define trait Api as run():int; end\npub fnc main():int{return 42;}\n",
+        "define trait Api as fnc run():int; end\npub fnc main():int{return 42;}\n",
+        "define trait Api as mtd run():int; end\npub fnc main():int{return 42;}\n",
         "define protocol Wire as\nend\n",
         "define service Router as\nend\n",
         "define actor A extends B implements I as\nend\n",
@@ -75,5 +87,31 @@ fn scalar_main_remains_executable_after_declaration_guard() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(!output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn nominal_method_spelling_cannot_escape_unsupported_profile() {
+    // This tests the current declaration-kind gate, not syntax support.
+    // When nominal lowering is implemented, replace these unsupported
+    // expectations with compiler-backed positive and syntax-negative cases.
+    for kind in ["class", "actor", "struct", "interface", "trait"] {
+        for prefix in ["", "fnc ", "mtd ", "method "] {
+            let member = if matches!(kind, "interface" | "trait") {
+                format!("{prefix}ping():int;")
+            } else {
+                format!("{prefix}ping():int{{return 42;}}")
+            };
+            let source = format!(
+                "define {kind} C as {member} end\npub fnc main():int{{return 0;}}\n"
+            );
+            for mode in ["run", "ir"] {
+                let output = run_source(&source, mode);
+                assert!(!output.status.success(), "{mode} accepted {source}");
+                assert!(output.stdout.is_empty(), "{mode} emitted output for {source}");
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains("DECL_KIND_UNSUPPORTED"), "{mode}: {stderr}");
+            }
+        }
     }
 }

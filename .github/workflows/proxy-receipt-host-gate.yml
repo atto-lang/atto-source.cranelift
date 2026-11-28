@@ -1,0 +1,25 @@
+name: Cranelift proxy ACK host-only receipt gate
+on:
+  pull_request:
+    paths: [ 'src/proxy_receipt_gate_v1.rs', 'tests/proxy_receipt_gate_v1.rs', 'src/proxy_mailbox_ticket_v1.rs', 'tests/proxy_mailbox_ticket_v1.rs', '.github/workflows/proxy-receipt-host-gate.yml' ]
+  push:
+    paths: [ 'src/proxy_receipt_gate_v1.rs', 'tests/proxy_receipt_gate_v1.rs', 'src/proxy_mailbox_ticket_v1.rs', 'tests/proxy_mailbox_ticket_v1.rs', '.github/workflows/proxy-receipt-host-gate.yml' ]
+permissions:
+  contents: read
+jobs:
+  host-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact commit
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - run: |
+          rustup toolchain install stable --profile minimal
+          cargo test --locked --test proxy_receipt_gate_v1
+          cargo test --locked --test proxy_mailbox_ticket_v1
+      - run: echo 'HOST_ONLY; no compiled Atto remote actor proof'

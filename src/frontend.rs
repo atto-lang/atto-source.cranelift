@@ -364,6 +364,7 @@ struct Parser<'a> {
     strict_fixed_arrays: bool,
     closed_option_profile: bool,
     reusable_slot_profile: bool,
+    point_placement_profile: bool,
     bindings: Vec<(String, Option<i64>, usize)>,
     local_initializers: Vec<Expr>,
     named_aggregate_types: std::collections::BTreeMap<String, NamedAggregate>,
@@ -450,6 +451,7 @@ impl<'a> Parser<'a> {
             strict_fixed_arrays: false,
             closed_option_profile: false,
             reusable_slot_profile: false,
+            point_placement_profile: false,
             bindings: Vec::new(),
             local_initializers: Vec::new(),
             named_aggregate_types: Default::default(),
@@ -650,6 +652,11 @@ impl<'a> Parser<'a> {
             // Distinguish contextual bangs from comparisons.
             let suffix = &self.input[self.pos..];
             let comparison = is_comparison_bang(suffix);
+            if self.current == Token::Word("seq") && !comparison && b.get(self.pos) == Some(&b'!') {
+                self.pos += 1;
+                self.current = Token::Word("seq!");
+                return Ok(());
+            }
             // Only the isolated slot parser may lex these exact operators.
             // Its mode cannot flow into the ordinary scalar parser.
             if self.reusable_slot_profile && !comparison && b.get(self.pos) == Some(&b'!') {
@@ -657,6 +664,9 @@ impl<'a> Parser<'a> {
                     Token::Word("ref") => Some("ref!"),
                     Token::Word("deref") => Some("deref!"),
                     Token::Word("unref") => Some("unref!"),
+                    Token::Word("alloc") if self.point_placement_profile => Some("alloc!"),
+                    Token::Word("destroy") if self.point_placement_profile => Some("destroy!"),
+                    Token::Word("free") if self.point_placement_profile => Some("free!"),
                     _ => None,
                 };
                 if let Some(op) = op {
@@ -766,11 +776,11 @@ impl<'a> Parser<'a> {
                     return Err("OWNERSHIP_BANG_BACKEND_UNSUPPORTED: typed ownership and native JIT lowering required".into());
                 }
             }
-            if self.current == Token::Word("new") && !self.mutex_scan {
+            if self.current == Token::Word("new") && !self.mutex_scan && !self.point_placement_profile {
                 return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
             }
             if self.current == Token::Word("unsafe") {
-                return Err("unsafe source is not supported".into());
+                return Err(format!("E_UNSAFE_UNSUPPORTED: unsafe effects and native grants are unavailable at byte {start}"));
             }
             // Match requires a typed CFG and exhaustive pattern lowering.
             if !self.closed_option_profile && self.current == Token::Word("match") {
@@ -839,7 +849,7 @@ impl<'a> Parser<'a> {
                         | "ReadLoan"
                         | "WriteLoan"
                 )
-            ) && !(self.strict_fixed_arrays && self.current == Token::Word("Array"))
+            ) && !((self.strict_fixed_arrays || self.point_placement_profile) && self.current == Token::Word("Array"))
                 && !(self.current == Token::Word("Entry") && self.next_significant_is(b'.'))
                 && !(allow_aggregate_wrapper && matches!(self.current, Token::Word("Record" | "Tuple")))
             {
@@ -936,7 +946,7 @@ impl<'a> Parser<'a> {
     }
     fn name(&mut self) -> Result<String, String> {
         match self.current {
-            Token::Word(s) => {
+            Token::Word(s) if s != "seq!" => {
                 let out = s.to_owned();
                 self.next()?;
                 Ok(out)
@@ -953,11 +963,11 @@ impl<'a> Parser<'a> {
     }
     /// Sequences are scoped, never tuples or callable argument lists.
     /// Even unused earlier values must retain arithmetic trap behavior.
-    fn sequence(&mut self, depth: usize) -> Result<Expr, String> {
+    fn sequence(&mut self, depth: usize, close: u8, consume_close: bool) -> Result<Expr, String> {
         if depth > MAX_DEPTH {
             return Err("expression depth budget exceeded".into());
         }
-        if self.current == Token::Punct(b')') {
+        if self.current == Token::Punct(close) {
             return Err("E_SEQ_EMPTY: sequence must have at least one expression".into());
         }
         let mut expressions = Vec::new();
@@ -973,7 +983,12 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(Token::Punct(b')'))?;
+        if self.current != Token::Punct(close) {
+            return Err("E_SEQ_DELIMITER: expected sequence closing delimiter".into());
+        }
+        if consume_close {
+            self.next()?;
+        }
         self.node(Expr::Seq(expressions))
     }
     // Deliberately bounded to the trusted, non-suspending scalar subset.
@@ -1132,7 +1147,7 @@ impl<'a> Parser<'a> {
             introduce = self.take(Token::Word("infer"))?;
             let name = self.aggregate_name()?;
             self.expect(Token::Punct(b'>'))?;
-            if introduce && self.named_aggregate_types.contains_key(&name) {
+            if introduce && (self.named_aggregate_types.contains_key(&name) || self.named_aggregate_locals.contains_key(&name) || self.parameters.contains(&name) || self.bindings.iter().any(|(n,_,_)| n == &name)) {
                 return Err("E_DUPLICATE_TYPE: aggregate alias already declared".into());
             }
             if !introduce {
@@ -1146,26 +1161,46 @@ impl<'a> Parser<'a> {
         }
         let name = self.aggregate_name()?;
         if self.parameters.contains(&name) || self.bindings.iter().any(|(n,_,_)| n == &name)
-            || self.named_aggregate_locals.contains_key(&name) {
+            || self.named_aggregate_locals.contains_key(&name) || self.named_aggregate_types.contains_key(&name) || alias.as_ref().is_some_and(|a| a == &name) {
             return Err("duplicate aggregate local".into());
         }
         if self.named_aggregate_locals.len() + self.bindings.len() >= MAX_LOCALS {
             return Err("local binding count exceeds 64".into());
         }
         self.expect(Token::Punct(b'='))?;
-        self.expect(Token::Punct(if kind == "struct" { b'{' } else { b'(' }))?;
+        let brace = kind == "struct" || (kind == "Record" && self.current == Token::Punct(b'{'));
+        let close = Token::Punct(if brace { b'}' } else { b')' });
+        self.expect(Token::Punct(if brace { b'{' } else { b'(' }))?;
         let mut fields = std::collections::BTreeMap::new();
-        loop {
+        let mut comma = false;
+        if kind == "struct" && self.current == close {
+            return Err("E_EMPTY_AGGREGATE: empty Struct not admitted".into());
+        }
+        while self.current != close {
             if fields.len() >= 64 { return Err("aggregate field budget exceeded".into()); }
             let key = if kind == "Tuple" { fields.len().to_string() } else { self.aggregate_name()? };
-            if kind != "Tuple" {
-                self.expect(Token::Punct(if kind == "struct" { b':' } else { b'=' }))?;
+            if kind == "Record" {
+                // Only explicit Record wrappers enter this path. A contiguous
+                // := is a field separator, not a standalone Pair value.
+                if self.current == Token::Punct(b':') {
+                    let pair = self.input.as_bytes().get(self.pos) == Some(&b'=');
+                    self.next()?;
+                    if pair { self.expect(Token::Punct(b'='))?; }
+                } else {
+                    self.expect(Token::Punct(b'='))?;
+                }
+            } else if kind == "struct" {
+                self.expect(Token::Punct(b':'))?;
             }
             if fields.contains_key(&key) { return Err("E_DUPLICATE_FIELD: duplicate field".into()); }
             fields.insert(key, self.aggregate_literal_field()?);
-            if !self.take(Token::Punct(b','))? { break; }
+            comma = self.take(Token::Punct(b','))?;
+            if !comma { break; }
         }
-        self.expect(Token::Punct(if kind == "struct" { b'}' } else { b')' }))?;
+        if kind == "Tuple" && fields.len() == 1 && !comma {
+            return Err("E_TUPLE_ARITY: singleton tuple requires trailing comma".into());
+        }
+        self.expect(close)?;
         self.expect(Token::Punct(b';'))?;
         let row = NamedAggregate { kind, fields };
         if let Some(alias) = alias {
@@ -1453,13 +1488,16 @@ impl<'a> Parser<'a> {
         if self.take(Token::Punct(b'+'))? {
             return self.atom(depth + 1);
         }
-        if self.take(Token::Word("seq"))? {
+        if self.current == Token::Word("seq") && self.next_significant_is(b'(') {
+            return Err("E_CALL_BACKEND_UNSUPPORTED: ordinary seq(...) call needs checked callable lowering; use seq! (...) for a sequence".into());
+        }
+        if self.take(Token::Word("seq!"))? {
             self.expect(Token::Punct(b'('))?;
-            return self.sequence(depth + 1);
+            return self.sequence(depth + 1, b')', true);
         }
         if self.take(Token::Punct(b'('))? {
             if self.take(Token::Punct(b'>'))? {
-                return self.sequence(depth + 1);
+                return self.sequence(depth + 1, b')', true);
             }
             let e = self.expr(0, depth + 1)?;
             self.expect(Token::Punct(b')'))?;
@@ -1553,6 +1591,10 @@ impl<'a> Parser<'a> {
                         None => Expr::Local(*runtime_slot),
                     }
                 } else {
+                    // Lexically valid non-ASCII names are not unsupported ASCII keywords.
+                    if !s.is_ascii() {
+                        return Err(format!("E_UNBOUND_LOCAL: unbound identifier: {s}"));
+                    }
                     return Err(format!("unbound or unsupported identifier: {s}"));
                 };
                 self.node(value)
@@ -1695,7 +1737,7 @@ impl<'a> Parser<'a> {
             Token::Word("state") => Some("state container"),
             Token::Word(
                 kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model" | "enum" | "class"
-                | "struct" | "record" | "interface" | "trait" | "protocol" | "service"),
+                | "struct" | "record" | "interface" | "trait" | "contract" | "protocol" | "service"),
             ) => Some(kind),
             _ => None,
         };
@@ -1883,11 +1925,10 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
-        // This is deliberately a bounded, flat scalar subset. Local const
-        // and type-first int require constexpr; val may be runtime-dependent.
+        // Ordinary fixed scalar locals admit eager runtime initialization.
         // The file/module define-const environment exception is not local.
         loop {
-            let kind = match self.current {
+            let mut kind = match self.current {
                 Token::Word("const") => "const",
                 Token::Word("int") => "int",
                 Token::Word("val") => "val",
@@ -1905,13 +1946,12 @@ impl<'a> Parser<'a> {
             }
             self.next()?;
             if self.current == Token::Word("mut") {
-                // const mut on scalar int is never a writable variable,
-                // and val mut requires a typed referent/loan backend.
-                return if kind == "val" {
-                    Err("E_MUT_BACKEND_UNSUPPORTED: no scalar referent mutability lowering".into())
-                } else {
-                    Err("E_CONST_MUT_UNSUPPORTED: scalar const mut requires a non-scalar owned referent".into())
-                };
+                if kind != "const" {
+                    return Err("E_MUT_BACKEND_UNSUPPORTED: duplicate or unsupported scalar qualifier".into());
+                }
+                self.next()?;
+                // Scalar const mut is the same fixed binding as val.
+                kind = "val";
             }
             let typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
@@ -1923,10 +1963,11 @@ impl<'a> Parser<'a> {
                 || self.parameters.contains(&name)
                 || self.bindings.iter().any(|(known, _, _)| known == &name)
                 || self.named_aggregate_locals.contains_key(&name)
+                || self.named_aggregate_types.contains_key(&name)
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
-            if !typed && self.take(Token::Punct(b':'))? {
+            if !typed && (self.take(Token::Punct(b':'))? || self.take(Token::Word("as"))?) {
                 self.expect(Token::Word("int"))?;
             }
             if self.bindings.len() + self.named_aggregate_locals.len() >= MAX_LOCALS {
@@ -1939,7 +1980,13 @@ impl<'a> Parser<'a> {
             let constant = if kind == "val" {
                 None
             } else {
-                Some(eval_const_i64(&initializer)?)
+                match eval_const_i64(&initializer) {
+                    Ok(value) => Some(value),
+                    // A nonconstant value uses the same checked runtime
+                    // lowering as val. Never suppress a proven arithmetic error.
+                    Err(message) if message.starts_with("E_NON_CONST_INITIALIZER:") => None,
+                    Err(message) => return Err(message),
+                }
             };
             let runtime_slot = self.local_initializers.len();
             if constant.is_none() {
@@ -1992,7 +2039,12 @@ impl<'a> Parser<'a> {
         } else {
             let inline_effects = self.inline_statements(0)?;
             self.expect(Token::Word("return"))?;
-            let value = self.expr(0, 0)?;
+            let value = if matches!(self.current, Token::Word("seq" | "seq!")) && !self.next_significant_is(b'(') {
+                self.next()?;
+                self.sequence(0, b';', false)?
+            } else {
+                self.expr(0, 0)?
+            };
             let result = if inline_effects.is_empty() {
                 value
             } else {
@@ -2405,9 +2457,9 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
     Ok(())
 }
 
-// Only typed, deterministic scalar expressions may initialize local const.
-// Unlike static define const, a local cannot observe the process environment.
-// This evaluator deliberately refuses function calls, including Integer.*.
+// Optional deterministic scalar folding for ordinary const locals.
+// This evaluator deliberately refuses to fold function calls, including Integer.*.
+// Nonconstant expressions remain subject to the ordinary runtime verifier.
 fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
         Expr::Choose(_,_,_) | Expr::Compare(_,_,_) => Err("E_NON_CONST_INITIALIZER: strict guard is not constexpr".into()),
@@ -2638,12 +2690,48 @@ fn reject_attached_struct_target(text: &str) -> Result<(), String> {
     Err("E_STRUCT_WITH_NATIVE_UNSUPPORTED: attached struct headers validated; nominal value layout, ownership and native CLIF lowering required".into())
 }
 
+// The scalar profile does not own a process-output capability. Scan exact
+// lexer tokens, ignoring comments, quoted text and qualified property chains.
+fn has_canonical_stdout_call(text: &str) -> bool {
+    if !text.contains("write") || !(text.contains("stdio") || text.contains("process")) {
+        return false;
+    }
+    let Ok(mut scan) = Parser::new(text) else { return false; };
+    let mut window = [Token::End; 7];
+    while scan.current != Token::End {
+        window.rotate_left(1);
+        window[6] = scan.current;
+        if window[0] != Token::Punct(b'.') && window[0] != Token::Punct(b':')
+            && matches!((window[1], window[3]),
+                (Token::Word("stdio"), Token::Word("out")) |
+                (Token::Word("process"), Token::Word("stdout")))
+            && window[2] == Token::Punct(b'.')
+            && window[4] == Token::Punct(b'.')
+            && window[5] == Token::Word("write")
+            && window[6] == Token::Punct(b'(')
+        {
+            return true;
+        }
+        if scan.next().is_err() { return false; }
+    }
+    false
+}
+
 pub(crate) fn validate_source_envelope(text: &str) -> Result<(), String> {
+    validate_source_envelope_impl(text, true)
+}
+
+// Only the isolated complete placement grammar may bypass the generic attached-header denial.
+// All other envelope gates, including canonical stdout denial, remain mandatory.
+fn validate_source_envelope_impl(text: &str, check_attached_header: bool) -> Result<(), String> {
     if text.len() > MAX_SOURCE {
         return Err("source exceeds 1 MiB limit".into());
     }
     reject_source_unicode_controls(text)?;
-    reject_attached_struct_target(text)?;
+    if has_canonical_stdout_call(text) {
+        return Err("E_STDOUT_PROFILE_UNSUPPORTED: scalar profile has no process stdout capability".into());
+    }
+    if check_attached_header { reject_attached_struct_target(text)?; }
     if has_actor_pubsub_surface(text) {
         return Err("native ActorGroup/Topic source lowering unsupported".into());
     }
@@ -2850,15 +2938,63 @@ fn parse_reusable_slot(text: &str) -> Result<Program, String> {
     Ok(Program { parameters: vec![], locals, result, trace_steps: vec![] })
 }
 
+// Exact compiler-owned common-source #164 catalog; no runtime I/O.
+const MEASURE_SOURCE: &str = include_str!("../stdlib/core/measure.atto");
+fn requests_measure_prelude(text: &str) -> Result<bool, String> {
+    let mut p = Parser::new(text)?;
+    for word in ["pub", "fnc", "main"] {
+        if p.current != Token::Word(word) { return Ok(false); }
+        p.next()?;
+    }
+    if p.current != Token::Punct(b'(') { return Ok(false); }
+    let known = |prefix: &str, name: &str| MEASURE_SOURCE.lines().any(|line|
+        line.strip_prefix(prefix).is_some_and(|rest|
+            rest.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_').next() == Some(name)));
+    // Bounded rolling lexer window. The parser is still authoritative.
+    let mut window = Vec::new();
+    let mut ends = Vec::new();
+    let mut count = 0usize;
+    while p.current != Token::End {
+        count += 1;
+        if count > 8192 { return Ok(false); }
+        window.push(p.current);
+        ends.push(p.pos);
+        if window.len() == 4 {
+            if let [Token::Number(_), Token::Punct(b'<'), Token::Word(name), Token::Punct(b'>')] = window.as_slice()
+                && ends[0]+1==ends[1] && known("define unit ",name) { return Ok(true); }
+            if let [Token::Word("val"), Token::Word(name), Token::Word(_), Token::Punct(b'=')] = window.as_slice()
+                && known("type ",name) { return Ok(true); }
+            if let [Token::Word("val"), Token::Word(_), Token::Punct(b':'), Token::Word(name)] = window.as_slice()
+                && known("type ",name) { return Ok(true); }
+            window.remove(0); ends.remove(0);
+        }
+        p.next()?;
+    }
+    Ok(false)
+}
+
 pub fn parse(text: &str) -> Result<Program, String> {
     validate_source_envelope(text)?;
+    if requests_measure_prelude(text).unwrap_or(false) {
+        let expanded = format!("{MEASURE_SOURCE}\n{text}");
+        validate_source_envelope(&expanded)?;
+        return quantity_scalar::parse_mode(Parser::new(&expanded)?, false);
+    }
     // Text is merely a dispatch hint. Only the canonical lexer and complete
     // isolated grammar may authorize erasure. Failed attempts retain the
     // ordinary parser's existing fail-closed ownership diagnostics.
-    if text.contains("RawPointer") && let Ok(program) = parse_reusable_slot(text) {
+    if text.contains("RawPointer")
+        && let Ok(program) = parse_reusable_slot(text)
+    {
         return Ok(program);
     }
-    let original = Parser::new(text)?.program();
+    let parser = Parser::new(text)?;
+    // A private function before main selects the existing bounded typed
+    // helper grammar, not an unchecked retry after an authoritative denial.
+    if parser.current == Token::Word("fnc") && !parser.next_significant_word_is("main") {
+        return quantity_scalar::parse_plain_helpers(parser);
+    }
+    let original = parser.program();
     // Only a complete, independently typed closed Option program can enter
     // the fused scalar lowering. Preserve all ordinary parser denials otherwise.
     if original.is_err()
@@ -2873,6 +3009,7 @@ pub fn parse(text: &str) -> Result<Program, String> {
     if !original.as_ref().is_err_and(|err| {
         err.starts_with("unexpected token")
             || err.starts_with("unbound or unsupported identifier")
+            || err.starts_with("E_UNBOUND_LOCAL:")
             || err.starts_with("expected scalar expression")
             || err.starts_with("invalid character")
             || err.starts_with("DECL_KIND_UNSUPPORTED: struct")
@@ -4179,28 +4316,35 @@ end"#;
     #[test]
     fn scoped_scalar_seq_model_preserves_source_order_and_rejects_invalid_arity() {
         for expression in [
-            "seq(42)",
-            "seq(1,2,42)",
+            "seq! (42)",
+            "seq! (1,2,42)",
+            "seq 1,2,42",
+            "seq! 1,2,42",
+            "seq!(1,2,42)",
             "(> 1,2,42)",
-            "seq(1,seq(2,42))",
-            "seq(1,(> 2,42))",
-            "seq(1,2)+40",
-            "seq(1,Integer.bitAnd(3,1),42)",
+            "seq! (1,seq! (2,42))",
+            "seq! (1,(> 2,42))",
+            "seq! (1,2)+40",
+            "seq! (1,Integer.bitAnd(3,1),42)",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             let parsed = parse(&source).expect("scoped scalar seq must parse");
             assert_eq!(eval(&parsed.result, &[]), Ok(42), "{source}");
         }
         for expression in [
-            "seq()",
+            "seq! ()",
             "(>)",
-            "seq(1,)",
+            "seq! (1,)",
             "(> 1,)",
-            "seq(,1)",
-            "seq(1,,2)",
-            "seq(1;2)",
+            "seq! (,1)",
+            "seq! (1,,2)",
+            "seq! (1;2)",
             "(1,2)",
-            "seq 1,2",
+            "seq 1,",
+            "seq! 1,",
+            "seq(1,42)",
+            "seq (1,42)",
+            "seq !(1,42)",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             assert!(
@@ -4209,15 +4353,15 @@ end"#;
             );
         }
         let too_many = format!(
-            "fnc main():int{{return seq({});}}",
+            "fnc main():int{{return seq! ({});}}",
             (0..17).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
         );
         assert!(parse(&too_many).unwrap_err().contains("E_SEQ_LIMIT"));
         assert!(parse("fnc main(seq:int):int{return seq;}").is_err());
-        let model_trap = parse("fnc main():int{return seq(9223372036854775807+1,42);}")
+        let model_trap = parse("fnc main():int{return seq! (9223372036854775807+1,42);}")
             .expect("arithmetic trapping sequence has valid syntax");
         assert_eq!(eval(&model_trap.result, &[]), Err("overflow"));
-        let zero_divisor = parse("fnc main():int{return seq(Integer.rem(8,0),42);}")
+        let zero_divisor = parse("fnc main():int{return seq! (Integer.rem(8,0),42);}")
             .expect("guarded remainder syntax");
         assert_eq!(eval(&zero_divisor.result, &[]), Err("divisor_zero"));
         // These Program expressions may also be constructed without parsing;
@@ -4595,3 +4739,33 @@ pub fn durable_scalar_schema(source: &str) -> Result<(Vec<u8>, Vec<u8>), String>
 
 #[path = "scalar_library.rs"]
 pub mod scalar_library;
+
+#[path = "frontend/point_placement.rs"]
+pub(crate) mod point_placement;
+#[path = "frontend/physical_layout.rs"]
+pub(crate) mod physical_layout;
+
+#[cfg(test)]
+mod canonical_stdout_scalar_admission_tests {
+    use super::{has_canonical_stdout_call, parse, parse_verified_strict_i64};
+    #[test]
+    fn canonical_aliases_are_denied_before_scalar_lowering() {
+        for call in ["stdio.out.write(\"A\")", "process.stdout.write(\"A\")",
+                     "stdio /* nested /* comment */ */ .out.write(\"A\")", "process.stdout . write(\"A\")"] {
+            let source = format!("pub fnc main():int {{ {call}; return 42; }}");
+            for result in [parse(&source), parse_verified_strict_i64(&source)] {
+                assert!(result.expect_err("must reject").contains("E_STDOUT_PROFILE_UNSUPPORTED"));
+            }
+        }
+    }
+    #[test]
+    fn stdout_detection_does_not_match_inert_or_qualified_tokens() {
+        for source in ["// stdio.out.write(42)\nfnc main():int{return 42;}",
+                       "/* process.stdout.write(42) */ fnc main():int{return 42;}",
+                       "fnc main():int{return \"stdio.out.write(42)\";}",
+                       "fnc main():int{return obj.process.stdout.write(42);}"] {
+            assert!(!has_canonical_stdout_call(source));
+        }
+        assert!(parse("fnc main():int{return 42; /* process.stdout.write(42) */}").is_ok());
+    }
+}

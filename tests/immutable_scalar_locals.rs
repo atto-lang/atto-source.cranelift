@@ -129,18 +129,6 @@ fn invalid_local_declarations_fail_before_jit() {
         ("fnc main():int{int a=7;val a=8;return a;}", "duplicate"),
         ("fnc main(x:int):int{int x=7;return x;}", "duplicate"),
         (
-            "fnc main(x:int):int{const a=x;return a;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
-            "fnc main(x:int):int{int a=x+1;val b=a*2;return b;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
-            "fnc main(x:int):int{val a=x;const b=a;return b;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
             "fnc main():int{const a=9223372036854775807+1;return a;}",
             "E_CONST_OVERFLOW",
         ),
@@ -184,4 +172,27 @@ fn scalar_locals_do_not_bypass_ownership_or_actor_admission() {
     ] {
         refuses(source, &[], "");
     }
+}
+
+#[test]
+fn ordinary_const_runtime_and_scalar_aliases_execute() {
+    for statement in [
+        "int a=x+2;",
+        "const int a=x+2;",
+        "const a:int=x+2;",
+        "const a as int=x+2;",
+        "const a=x+2;",
+        "val int a=x+2;",
+        "const mut int a=x+2;",
+        "const mut a as int=x+2;",
+    ] {
+        accepts(&format!("fnc main(x:int):int{{{statement}return a;}}"), &["40"], "42\n");
+    }
+    accepts("fnc main(x:int):int{val a=x;const b=a;return b;}", &["42"], "42\n");
+    for statement in ["const a as int=x+1;", "int a=x+1;"] {
+        refuses(&format!("fnc main(x:int):int{{{statement}return 42;}}"), &["9223372036854775807"], "overflow");
+    }
+    refuses("fnc main():int{const mut int a=1;a=42;return a;}", &[], "E_IMMUTABLE_REBIND");
+    refuses("fnc main():int{val mut int a=42;return a;}", &[], "E_MUT_BACKEND_UNSUPPORTED");
+    refuses("fnc main():int{const int a=1;const a as int=42;return a;}", &[], "duplicate");
 }

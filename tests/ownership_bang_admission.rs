@@ -341,3 +341,346 @@ int main(void) {
         assert!(!denied.status.success() && denied.stdout.is_empty(), "{body}");
     }
 }
+
+#[test]
+fn placement_point_native_memory_and_rejections(){
+    let good="// expect-exit: 42\ndefine struct Point { int x; int y; } with { constructor(int x, int y) { self.x = x; self.y = y; } } pub fnc main(): int { let Storage<Point> s = alloc! Point; let mut RawPointer<Point> p = RawPointer.empty<Point>(); new Point(40, 1) at s; ref! p to s; val first = (deref! p).x; unref! p; destroy! s; new Point(99, 2) at s; ref! p to s; val second = (deref! p).y; unref! p; destroy! s; free! s; return first + second; }\n";
+    let run=run_source(good,"run");
+    assert!(run.status.success(),"{}",String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(),"42");
+    let ir=run_source(good,"ir");
+    assert!(ir.status.success());
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    // Current CLIF builder canonicalizes stack_load/store into stack_addr
+    // plus nontrapping memory operations. Require the concrete slot and
+    // both field addresses, not the spelling of a pre-canonicalized opcode.
+    assert!(clif.contains("explicit_slot 16, align = 8"),"{clif}");
+    assert!(clif.contains("stack_addr.i64 ss0")&&clif.contains("stack_addr.i64 ss0+8"),"{clif}");
+    assert!(clif.matches("store notrap").count()>=8 && clif.matches("load.i64 notrap").count()>=2,"{clif}");
+    let object=run_source(good,"emit-object");
+    assert!(object.status.success()&&!object.stdout.is_empty());
+    // An emitted object is not evidence of native execution by itself.
+    // Link an observer that checks the full signed result and repeatability.
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let second=run_source(good,"emit-object");
+        assert!(second.status.success());
+        assert_eq!(object.stdout,second.stdout);
+        let dir=std::env::temp_dir().join(format!("atto-placement-link-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).expect("exclusive native link directory");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.0); } }
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        std::fs::write(&obj,&object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){
+    for(int i=0;i<100;i++){
+        int64_t out=-17;
+        if(oreslang_scalar_entry(0,0,0,0,&out)!=0||out!=42)return 1;
+    }
+    return 0;
+}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("POINT_PLACEMENT_LINKED_NATIVE_PASS result=42 repetitions=100 observer_opt={opt}");
+        }
+    }
+
+    for (from,to) in [("unref! p;","p = null;"),("self.y = y;","self.x = y;"),("self.y = y;",""),("int y;","int x;"),("new Point(40, 1) at s;","new Point(40, 1);"),("unref! p;",""),("free! s;",""),("free! s;","free! s; free! s;"),("(deref! p).x","(deref! p).z"),("ref! p to s;","ref!p to s;"),("ref! p to s;","ref!/*comment*/ p to s;"),("return first + second;","return p;"),("new Point(40, 1) at s;","new Point(9223372036854775807, 1) at s;"),("ref! p to s;","ref! p to s; ref! p to s;"),("unref! p;","unref! p; unref! p;"),("destroy! s;","destroy! s; destroy! s;")]{
+        let bad=good.replacen(from,to,1);
+        for mode in ["run","ir","check","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn source_defined_mixed_width_placement() {
+    let good="define struct Packet { i8 tag; int count; i16 tail; } with { constructor(i8 tag, int count, i16 tail) { self.tag = tag; self.count = count; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, 40, 5) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).count; val c = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c; }";
+    let out=run_source(good,"run");
+    assert!(out.status.success(),"{:?}",out);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 24, align = 8"),"{clif}");
+    assert!(clif.contains("stack_addr.i64 ss0+8")&&clif.contains("stack_addr.i64 ss0+16"),"{clif}");
+    assert!(clif.contains("sextend.i64"),"{clif}");
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let dir=std::env::temp_dir().join(format!("atto-mixed-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty());
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt])
+                .arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("SOURCE_MIXED_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [
+        ("-3, 40, 5","128, 40, 5"),("-3, 40, 5","-129, 40, 5"),
+        ("-3, 40, 5","-3, 40, 32768"),("Storage<Packet>","Storage<Other>"),
+        ("RawPointer.empty<Packet>","RawPointer.empty<Other>"),
+        ("i16 tail;","i16 tag;"),("self.tail = tail;","self.tag = tail;"),
+        ("(deref! p).tail","(deref! p).unknown"),("new Packet(","new Other("),
+        ("i8 tag, int count","i16 tag, int count"),("new Packet(-3, 40, 5)","new Packet(-3, 40)")
+    ] {
+        let bad=good.replacen(from,to,1);assert_ne!(good,bad);
+        for mode in ["check","run","ir","emit-object"] {
+            let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn source_defined_nested_placement() {
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Payload pair; i16 tail; } with { constructor(i8 tag, Payload pair, i16 tail) { self.tag = tag; self.pair = pair; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-3, Payload(40, -2), 7) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).pair.count; val c = (deref! p).pair.flag; val d = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d; }";
+    let out=run_source(good,"run");assert!(out.status.success(),"{:?}",out);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 32, align = 8"),"{clif}");
+    for offset in [8,16,24]{assert!(clif.contains(&format!("stack_addr.i64 ss0+{offset}")),"{clif}");}
+    #[cfg(all(unix,target_pointer_width="64"))]
+    {
+        let dir=std::env::temp_dir().join(format!("atto-nested-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{:?}",object);
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0);assert(out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"] {
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);
+            assert!(Command::new(&bin).status().unwrap().success());
+            println!("SOURCE_NESTED_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [
+        ("Payload pair;","Packet pair;"),("Payload pair;","Missing pair;"),
+        ("Payload(40, -2)","Other(40, -2)"),("Payload(40, -2)","Payload(40, 128)"),
+        (".pair.count;",".pair;"),(".pair.flag;",".pair.missing;"),
+        (".pair.count;",".tag.count;"),("self.pair = pair;","self.pair = tail;"),
+        ("Payload pair, i16 tail","int pair, i16 tail"),("Payload(40, -2)","Payload(40)")
+    ]{
+        let bad=good.replacen(from,to,1);assert_ne!(bad,good);
+        for mode in ["check","run","ir","emit-object"]{
+            let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn typed_runtime_placement_arguments_and_atomic_failure() {
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Payload payload; i16 tail; } with { constructor(i8 tag, Payload payload, i16 tail) { self.tag = tag; self.payload = payload; self.tail = tail; } } pub fnc main(i8 tag_in, int count_in, i8 flag_in, i16 tail_in): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(tag_in, Payload(count_in, flag_in), tail_in) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).payload.count; val c = (deref! p).payload.flag; val d = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d; }";
+    let fixture=SourceFixture::create(good);
+    for (args,expected) in [(["-3","40","-2","7"],Some("42")),(["0","-10","1","2"],Some("-7")),(["128","40","-2","7"],None),(["0","9223372036854775807","1","0"],None)]{
+        let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("run").arg(&fixture.path).args(args).output().unwrap();
+        if let Some(n)=expected{assert!(out.status.success(),"{:?}",out);assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),n)}
+        else{assert!(!out.status.success()&&out.stdout.is_empty(),"{:?}",out)}
+    }
+    assert!(!run_source(good,"run").status.success());
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{:?}",ir);
+    let clif=String::from_utf8_lossy(&ir.stdout);assert!(clif.contains("sadd_overflow")&&clif.contains("ireduce"),"{clif}");
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-runtime-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());
+        let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{:?}",object);
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){
+  int64_t out=-999;
+  assert(oreslang_scalar_entry(-3,40,-2,7,&out)==0 && out==42);
+  assert(oreslang_scalar_entry(0,-10,1,2,&out)==0 && out==-7);
+  out=-999;
+  assert(oreslang_scalar_entry(128,40,-2,7,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(0,40,-129,7,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(0,40,1,32768,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(0,INT64_MAX,1,0,&out)==1 && out==-999);
+  assert(oreslang_scalar_entry(-1,INT64_MIN,0,0,&out)==1 && out==-999);
+}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{:?}",link);assert!(Command::new(&bin).status().unwrap().success());
+            println!("RUNTIME_PLACEMENT_NATIVE_PASS success=200 failure=500 observer_opt={opt}");
+        }
+    }
+    for (a,b) in [("i8 tag_in","int tag_in"),("i8 flag_in","i8 tag_in"),("Payload(count_in, flag_in)","Payload(count_in, missing)"),("new Packet(tag_in,","new Packet(count_in,"),("val a =","val tag_in =")]{
+        let bad=good.replacen(a,b,1);assert_ne!(good,bad);
+        for mode in ["check","ir","emit-object"]{let r=run_source(&bad,mode);assert!(!r.status.success()&&r.stdout.is_empty(),"{mode}: {bad}");}
+    }
+}
+
+#[test]
+fn fixed_scalar_array_placement_native_memory_and_rejections(){
+    let good="define struct Packet { i8 tag; Array<i16,3> cells; int tail; } with { constructor(i8 tag, Array<i16,3> cells, int tail) { self.tag = tag; self.cells = cells; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-1, Array.of(10,20,11), 2) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).cells[0]; val c = (deref! p).cells[1]; val d = (deref! p).cells[2]; val e = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d + e; }";
+    let out=run_source(good,"run");assert!(out.status.success(),"{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{ir:?}");
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 16, align = 8"),"{clif}");
+    for offset in [2,4,6,8]{assert!(clif.contains(&format!("stack_addr.i64 ss0+{offset}")),"{clif}");}
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-array-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{object:?}");
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0 && out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{link:?}");assert!(Command::new(&bin).status().unwrap().success());
+            println!("FIXED_ARRAY_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for (from,to) in [("Array<i16,3> cells;","Array<i16,0> cells;"),("Array<i16,3> cells;","Array<i16,9> cells;"),("Array<i16,3> cells,","Array<i16,2> cells,"),("Array.of(10,20,11)","Array.of(10,20)"),("Array.of(10,20,11)","Array.of(10,20,32768)"),(".cells[2]",".cells[3]"),(".cells[2]",".cells[-1]"),(".cells[2]",".cells[tail]"),(".cells[2]",".cells"),(".cells[2]",".cells[2][0]"),(".tag;",".tag[0];"),("Array.of(10,20,11)","Array.of(10,20,11,12)") ]{
+        let bad=good.replacen(from,to,1);assert_ne!(bad,good);
+        for mode in ["check","run","ir","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn placement_checked_subtraction_preserves_left_association_and_atomic_output() {
+    let source="define struct CoordPair { int left; int right; } with { constructor(int left, int right) { self.left = left; self.right = right; } } pub fnc main(int lhs, int rhs): int { let Storage<CoordPair> s = alloc! CoordPair; let mut RawPointer<CoordPair> p = RawPointer.empty<CoordPair>(); new CoordPair(lhs, rhs) at s; ref! p to s; val a = (deref! p).left; val b = (deref! p).right; unref! p; destroy! s; free! s; return a - b + b; }";
+    // Pair is a reserved built-in aggregate, not a nominal struct name.
+    let reserved=source.replace("CoordPair","Pair");
+    let denied=run_source(&reserved,"emit-object");assert!(!denied.status.success()&&denied.stdout.is_empty());
+    let fixture=SourceFixture::create(source);
+    for (args,expected) in [
+        (["42","-3"],Some("42")),
+        (["-9223372036854775808","-9223372036854775808"],Some("-9223372036854775808")),
+        (["-9223372036854775808","1"],None),
+        (["9223372036854775807","-1"],None),
+        (["0","-9223372036854775808"],None),
+    ]{
+        let out=Command::new(env!("CARGO_BIN_EXE_orescranelift")).arg("run").arg(&fixture.path).args(args).output().unwrap();
+        if let Some(want)=expected{assert!(out.status.success(),"{out:?}");assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),want);}
+        else{assert!(!out.status.success()&&out.stdout.is_empty(),"{out:?}");}
+    }
+    let ir=run_source(source,"ir");assert!(ir.status.success());
+    let clif=String::from_utf8_lossy(&ir.stdout);assert!(clif.contains("ssub_overflow")&&clif.contains("sadd_overflow"),"{clif}");
+    let literal=source.replace("main(int lhs, int rhs)","main()").replace("CoordPair(lhs, rhs)","CoordPair(-9223372036854775808, 1)");
+    for mode in ["run","check","ir","emit-object"]{
+        let out=run_source(&literal,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {out:?}");
+    }
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-sub-placement-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(source,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{object:?}");
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){
+  int64_t out=777;
+  assert(oreslang_scalar_entry(42,-3,0,0,&out)==0 && out==42);
+  assert(oreslang_scalar_entry(INT64_MIN,INT64_MIN,0,0,&out)==0 && out==INT64_MIN);
+  out=777;
+  assert(oreslang_scalar_entry(INT64_MIN,1,0,0,&out)==1 && out==777);
+  assert(oreslang_scalar_entry(INT64_MAX,-1,0,0,&out)==1 && out==777);
+  assert(oreslang_scalar_entry(0,INT64_MIN,0,0,&out)==1 && out==777);
+}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{link:?}");assert!(Command::new(&bin).status().unwrap().success());
+            println!("CHECKED_SUB_PLACEMENT_NATIVE_PASS success=200 failure=300 observer_opt={opt}");
+        }
+    }
+}
+
+#[test]
+fn fixed_nominal_array_placement_native_memory_and_rejections(){
+    let good="define struct Payload { int count; i8 flag; } with { constructor(int count, i8 flag) { self.count = count; self.flag = flag; } } define struct Packet { i8 tag; Array<Payload,2> items; i16 tail; } with { constructor(i8 tag, Array<Payload,2> items, i16 tail) { self.tag = tag; self.items = items; self.tail = tail; } } pub fnc main(): int { let Storage<Packet> s = alloc! Packet; let mut RawPointer<Packet> p = RawPointer.empty<Packet>(); new Packet(-1, Array.of(Payload(10,2),Payload(20,3)), 8) at s; ref! p to s; val a = (deref! p).tag; val b = (deref! p).items[0].count; val c = (deref! p).items[0].flag; val d = (deref! p).items[1].count; val e = (deref! p).items[1].flag; val f = (deref! p).tail; unref! p; destroy! s; free! s; return a + b + c + d + e + f; }";
+    let out=run_source(good,"run");assert!(out.status.success(),"{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+    let ir=run_source(good,"ir");assert!(ir.status.success(),"{ir:?}");
+    let clif=String::from_utf8_lossy(&ir.stdout);
+    assert!(clif.contains("explicit_slot 48, align = 8"),"{clif}");
+    for offset in [8,16,24,32,40]{assert!(clif.contains(&format!("stack_addr.i64 ss0+{offset}")),"{clif}");}
+    #[cfg(all(unix,target_pointer_width="64"))] {
+        let dir=std::env::temp_dir().join(format!("atto-nominal-array-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let _cleanup=Cleanup(dir.clone());let obj=dir.join("guest.o");let host=dir.join("host.c");let bin=dir.join("guest");
+        let object=run_source(good,"emit-object");assert!(object.status.success()&&!object.stdout.is_empty(),"{object:?}");
+        std::fs::write(&obj,object.stdout).unwrap();
+        std::fs::write(&host,r#"
+#include <stdint.h>
+#include <assert.h>
+extern int32_t oreslang_scalar_entry(int64_t,int64_t,int64_t,int64_t,int64_t*);
+int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entry(0,0,0,0,&out)==0 && out==42);}return 0;}
+"#).unwrap();
+        for opt in ["-O0","-O2"]{
+            let link=Command::new("cc").args(["-std=c11","-Wall","-Wextra","-Werror",opt]).arg(&host).arg(&obj).arg("-o").arg(&bin).output().unwrap();
+            assert!(link.status.success(),"{link:?}");assert!(Command::new(&bin).status().unwrap().success());
+            println!("NOMINAL_ARRAY_PLACEMENT_NATIVE_PASS repetitions=100 observer_opt={opt}");
+        }
+    }
+    for alias in ["make","new"]{
+        let src=good.replace("Payload(",&format!("Payload.{alias}("));
+        let out=run_source(&src,"run");assert!(out.status.success(),"{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(),"42");
+        let ir=run_source(&src,"ir");assert!(ir.status.success());assert_eq!(ir.stdout,clif.as_bytes());
+        let object=run_source(&src,"emit-object");assert!(object.status.success());
+        assert_eq!(object.stdout,run_source(good,"emit-object").stdout);
+        println!("NOMINAL_CONSTRUCTOR_ALIAS_NATIVE_OBJECT_EQUIVALENT {alias}");
+    }
+    for (from,to) in [("Payload(10,2)","Payload.fake(10,2)"),("Payload(10,2)","Other.make(10,2)"),("Payload(10,2)","Payload.new(10)"),("Payload(10,2)","Payload.make(10,128)"),("new Packet(","new Packet.make(")]{
+        let bad=good.replacen(from,to,1);
+        for mode in ["check","run","ir","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+    for (from,to) in [("Array<Payload,2> items;","Array<Packet,2> items;"),("Array<Payload,2> items;","Array<Missing,2> items;"),("Array<Payload,2> items;","Array<Payload,0> items;"),("Array<Payload,2> items;","Array<Payload,8> items;"),("Array<Payload,2> items,","Array<Payload,1> items,"),("Payload(20,3)","Payload(20,128)"),("Payload(20,3)","Other(20,3)"),(",Payload(20,3)",""),(".items[1].flag",".items[2].flag"),(".items[1].flag",".items[1]"),(".items[1].flag",".items[1].missing"),(".items[1].flag",".items[1].flag[0]") ]{
+        let bad=good.replacen(from,to,1);assert_ne!(bad,good);
+        for mode in ["check","run","ir","emit-object"]{
+            let out=run_source(&bad,mode);assert!(!out.status.success()&&out.stdout.is_empty(),"{mode}: {bad}");
+        }
+    }
+}

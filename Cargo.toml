@@ -1,6 +1,5 @@
 [package]
 name = "orescranelift"
-default-run = "orescranelift"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -17,4 +16,15 @@ cranelift-object = "=0.137.0"
 libc = "=0.2.191"
 
 [profile.release]
+overflow-checks = true
+
+# Opt-in host compiler development builds; release settings remain unchanged.
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 0
+debug = 1
+lto = false
+codegen-units = 256
+incremental = true
+debug-assertions = true
 overflow-checks = true

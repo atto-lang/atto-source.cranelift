@@ -2,7 +2,7 @@
 //!
 //! Compiler requirements name symbolic regions and current logical execution;
 //! only the trusted runtime may bind concrete region and scheduler generations.
-//! These POD values contain no heap storage, locks, handles, or mutable access.
+//! Receipt types remain POD values. A separate host ledger tracks live admission.
 //! NO compiler lowering or state-container execution is implied by this module.
 #![allow(dead_code)]
 
@@ -426,5 +426,375 @@ mod tests {
         assert!(!std::mem::needs_drop::<StateRegionLoanRequirement<'static>>());
         assert!(std::mem::size_of::<StateRegionLoanProvenance<'static>>() <= 96);
         assert!(std::mem::size_of::<StateRegionLoanRequirement<'static>>() <= 64);
+    }
+}
+
+// Host-only live admission. All operations require scheduler-authenticated
+// identities; mutable access to this object serializes transitions.
+// No compiler lowering, raw pointers, or physical turn reclamation is implied.
+#[derive(Clone, Copy)]
+struct ActiveLoan {
+    execution_id: u64,
+    execution_slot: u64,
+    execution_generation: u64,
+    loan_id: u64,
+    kind: LoanKind,
+}
+
+impl ActiveLoan {
+    fn matches(&self, r: &StateRegionLoanProvenance<'_>) -> bool {
+        self.execution_id == r.execution_id
+            && self.execution_slot == r.execution_slot
+            && self.execution_generation == r.execution_generation
+            && self.loan_id == r.loan_id
+            && self.kind == r.kind
+    }
+}
+
+pub struct StateRegionLoanLedger<const CAP: usize = 64> {
+    region_id: u64,
+    generation: u64,
+    domain: u64,
+    place: String,
+    active: [Option<ActiveLoan>; CAP],
+    last_id: u64,
+    readers: usize,
+    writer: bool,
+    retired: bool,
+}
+
+impl<const CAP: usize> StateRegionLoanLedger<CAP> {
+    pub fn new(region_id: u64, generation: u64, domain: u64, place: &str) -> Result<Self, &'static str> {
+        if CAP == 0 || CAP > 64
+            || ![region_id, generation, domain].iter().all(|id| (1..=MAX_JSON_SAFE_ID).contains(id))
+            || place.trim().is_empty()
+        {
+            return Err("invalid state region identity or capacity");
+        }
+        Ok(Self {
+            region_id, generation, domain, place: place.to_owned(),
+            active: [None; CAP], last_id: 0, readers: 0, writer: false, retired: false,
+        })
+    }
+
+    fn same_region(&self, r: &StateRegionLoanProvenance<'_>) -> bool {
+        r.valid() && r.region_id == self.region_id && r.region_generation == self.generation
+            && r.runtime_domain == self.domain && r.place == self.place.as_str()
+    }
+
+    pub fn try_borrow(&mut self, r: &StateRegionLoanProvenance<'_>) -> bool {
+        if self.retired || !self.same_region(r) || r.action != LoanAction::Borrow
+            || r.loan_id <= self.last_id || self.writer
+            || (r.kind == LoanKind::Write && self.readers != 0)
+        {
+            return false;
+        }
+        if self.active.iter().flatten().any(|slot|
+            slot.execution_id == r.execution_id || slot.execution_slot == r.execution_slot)
+        {
+            return false;
+        }
+        let Some(slot) = self.active.iter_mut().find(|slot| slot.is_none()) else {
+            return false;
+        };
+        *slot = Some(ActiveLoan {
+            execution_id: r.execution_id,
+            execution_slot: r.execution_slot,
+            execution_generation: r.execution_generation,
+            loan_id: r.loan_id,
+            kind: r.kind,
+        });
+        self.last_id = r.loan_id;
+        if r.kind == LoanKind::Write { self.writer = true; } else { self.readers += 1; }
+        true
+    }
+
+    pub fn allows_access(&self, r: &StateRegionLoanProvenance<'_>, required: LoanKind) -> bool {
+        !self.retired && self.same_region(r) && r.action == LoanAction::Borrow
+            && (required == LoanKind::Read || r.kind == LoanKind::Write)
+            && self.active.iter().flatten().any(|slot| slot.matches(r))
+    }
+
+    pub fn release(&mut self, r: &StateRegionLoanProvenance<'_>) -> bool {
+        if !self.same_region(r) || r.action != LoanAction::Release { return false; }
+        let Some(slot) = self.active.iter_mut().find(|slot| slot.as_ref().is_some_and(|loan| loan.matches(r))) else {
+            return false;
+        };
+        *slot = None;
+        if r.kind == LoanKind::Write { self.writer = false; } else { self.readers -= 1; }
+        true
+    }
+
+    pub fn retire(&mut self) -> bool {
+        if self.retired { return false; }
+        self.retired = true;
+        true
+    }
+
+    pub fn active_count(&self) -> usize { self.readers + usize::from(self.writer) }
+    pub fn quiescent_after_retire(&self) -> bool { self.retired && self.active_count() == 0 }
+}
+
+// No state references escape. Overflow differs from access denial and is
+// failure-neutral; a caller still has to release the live loan on unwind.
+pub struct ProtectedScalarState<const CAP: usize = 64> {
+    ledger: StateRegionLoanLedger<CAP>,
+    value: i64,
+}
+
+// Trusted synchronous host bridge. The actual release guard stays private
+// and the callback receives only a borrowed scalar view. No state, receipt
+// or guard can escape through the fixed i64 return. Guest effect admission
+// and physical scheduler fencing are separate compiler/runtime obligations.
+pub struct ScopedScalarLoan<'state, 'receipt, const CAP: usize> {
+    state: &'state mut ProtectedScalarState<CAP>,
+    receipt: StateRegionLoanProvenance<'receipt>,
+    release: StateRegionLoanProvenance<'receipt>,
+}
+
+impl<const CAP: usize> ScopedScalarLoan<'_, '_, CAP> {
+    pub fn read(&self) -> Option<i64> { self.state.read(&self.receipt) }
+    pub fn write(&mut self, value: i64) -> bool { self.state.write(&self.receipt, value) }
+    pub fn add_checked(&mut self, delta: i64) -> Result<Option<i64>, &'static str> {
+        self.state.add_checked(&self.receipt, delta)
+    }
+}
+
+impl<const CAP: usize> Drop for ScopedScalarLoan<'_, '_, CAP> {
+    fn drop(&mut self) {
+        // An authenticated live guard must release exactly once, including
+        // Rust unwinding. A broken invariant must not publish a clean result.
+        if !self.state.release(&self.release) { std::process::abort(); }
+    }
+}
+
+impl<const CAP: usize> ProtectedScalarState<CAP> {
+    pub fn new(region_id: u64, generation: u64, domain: u64, place: &str, initial: i64) -> Result<Self, &'static str> {
+        Ok(Self { ledger: StateRegionLoanLedger::new(region_id, generation, domain, place)?, value: initial })
+    }
+    pub fn with_scalar_loan(
+        &mut self,
+        receipt: &StateRegionLoanProvenance<'_>,
+        callback: impl FnOnce(&mut ScopedScalarLoan<'_, '_, CAP>) -> Result<i64, &'static str>,
+    ) -> Result<Option<i64>, &'static str> {
+        // Derive release before admission, so no fallible preparation can
+        // strand a newly acquired loan. Denial never executes the callback.
+        let release = receipt.release_record()?;
+        if !self.try_borrow(receipt) { return Ok(None); }
+        let mut guard = ScopedScalarLoan { state: self, receipt: *receipt, release };
+        let result = callback(&mut guard);
+        drop(guard);
+        result.map(Some)
+    }
+
+    pub fn try_borrow(&mut self, r: &StateRegionLoanProvenance<'_>) -> bool { self.ledger.try_borrow(r) }
+    pub fn release(&mut self, r: &StateRegionLoanProvenance<'_>) -> bool { self.ledger.release(r) }
+    pub fn read(&self, r: &StateRegionLoanProvenance<'_>) -> Option<i64> {
+        self.ledger.allows_access(r, LoanKind::Read).then_some(self.value)
+    }
+    pub fn write(&mut self, r: &StateRegionLoanProvenance<'_>, value: i64) -> bool {
+        if !self.ledger.allows_access(r, LoanKind::Write) { return false; }
+        self.value = value;
+        true
+    }
+    pub fn add_checked(&mut self, r: &StateRegionLoanProvenance<'_>, delta: i64) -> Result<Option<i64>, &'static str> {
+        if !self.ledger.allows_access(r, LoanKind::Write) { return Ok(None); }
+        let next = self.value.checked_add(delta).ok_or("protected scalar addition overflow")?;
+        self.value = next;
+        Ok(Some(next))
+    }
+    pub fn retire(&mut self) -> bool { self.ledger.retire() }
+    pub fn quiescent_after_retire(&self) -> bool { self.ledger.quiescent_after_retire() }
+}
+
+#[cfg(test)]
+mod live_ledger_tests {
+    use super::*;
+
+    fn claim(loan: u64, execution: u64, kind: LoanKind) -> StateRegionLoanProvenance<'static> {
+        StateRegionLoanProvenance::new(1, 1, 7, execution, execution, 1, loan, "count", kind, LoanAction::Borrow).unwrap()
+    }
+
+    #[test]
+    fn live_shared_and_exclusive_admission() {
+        let mut g = StateRegionLoanLedger::<2>::new(1, 1, 7, "count").unwrap();
+        let a = claim(1, 1, LoanKind::Read);
+        let b = claim(2, 2, LoanKind::Read);
+        let w = claim(3, 3, LoanKind::Write);
+        assert!(g.try_borrow(&a)); assert!(g.try_borrow(&b));
+        assert_eq!(g.active_count(), 2);
+        assert!(!g.try_borrow(&claim(3, 3, LoanKind::Read)));
+        assert!(!g.try_borrow(&w));
+        assert!(g.allows_access(&a, LoanKind::Read)); assert!(!g.allows_access(&a, LoanKind::Write));
+        assert!(g.release(&a.release_record().unwrap())); assert!(!g.try_borrow(&w));
+        assert!(g.release(&b.release_record().unwrap())); assert!(g.try_borrow(&w));
+        assert!(g.allows_access(&w, LoanKind::Read)); assert!(g.allows_access(&w, LoanKind::Write));
+        assert!(!g.try_borrow(&claim(4, 4, LoanKind::Read)));
+        assert!(g.release(&w.release_record().unwrap()));
+        assert_eq!(g.active_count(), 0);
+        assert!(!g.try_borrow(&w)); assert!(!g.release(&w.release_record().unwrap()));
+    }
+
+    #[test]
+    fn live_exact_provenance_and_no_reentry() {
+        let mut g = StateRegionLoanLedger::<64>::new(1, 1, 7, "count").unwrap();
+        let a = claim(1, 1, LoanKind::Read);
+        assert!(g.try_borrow(&a));
+        assert!(!g.try_borrow(&claim(2, 1, LoanKind::Read)));
+        let replaced = StateRegionLoanProvenance { execution_slot: 1, execution_generation: 2, ..claim(2, 2, LoanKind::Read) };
+        assert!(!g.try_borrow(&replaced));
+        for bad in [
+            StateRegionLoanProvenance { region_id: 2, ..a },
+            StateRegionLoanProvenance { region_generation: 2, ..a },
+            StateRegionLoanProvenance { runtime_domain: 8, ..a },
+            StateRegionLoanProvenance { execution_id: 2, ..a },
+            StateRegionLoanProvenance { execution_slot: 2, ..a },
+            StateRegionLoanProvenance { execution_generation: 2, ..a },
+            StateRegionLoanProvenance { loan_id: 2, ..a },
+            StateRegionLoanProvenance { place: "other", ..a },
+            StateRegionLoanProvenance { kind: LoanKind::Write, ..a },
+        ] {
+            assert!(!g.allows_access(&bad, LoanKind::Read));
+            assert!(!g.release(&bad.release_record().unwrap()));
+            assert_eq!(g.active_count(), 1);
+        }
+        assert!(g.release(&a.release_record().unwrap()));
+        assert!(!g.allows_access(&a, LoanKind::Read)); assert!(!g.try_borrow(&a));
+        assert!(g.try_borrow(&replaced)); assert!(g.release(&replaced.release_record().unwrap()));
+    }
+
+    #[test]
+    fn live_retirement_and_owned_place() {
+        let mut g = StateRegionLoanLedger::<64>::new(1, 1, 7, "count").unwrap();
+        let mut peer = StateRegionLoanLedger::<64>::new(1, 2, 7, "count").unwrap();
+        let a = claim(1, 1, LoanKind::Read);
+        let b = StateRegionLoanProvenance { region_generation: 2, ..a };
+        {
+            let temporary = String::from("count");
+            let transient = StateRegionLoanProvenance { place: temporary.as_str(), ..a };
+            assert!(g.try_borrow(&transient));
+        }
+        assert!(peer.try_borrow(&b)); assert!(!g.release(&b.release_record().unwrap()));
+        assert!(g.allows_access(&a, LoanKind::Read));
+        assert!(g.retire()); assert!(!g.retire()); assert!(!g.quiescent_after_retire());
+        assert!(!g.allows_access(&a, LoanKind::Read)); assert!(!g.try_borrow(&claim(2, 2, LoanKind::Read)));
+        assert!(g.release(&a.release_record().unwrap())); assert!(g.quiescent_after_retire());
+        assert!(!g.release(&a.release_record().unwrap()));
+        assert!(peer.allows_access(&b, LoanKind::Read));
+        assert!(peer.release(&b.release_record().unwrap())); assert!(peer.retire()); assert!(peer.quiescent_after_retire());
+    }
+
+    #[test]
+    fn live_identity_exhaustion_and_invalid_bounds() {
+        assert!(StateRegionLoanLedger::<0>::new(1, 1, 7, "count").is_err());
+        assert!(StateRegionLoanLedger::<65>::new(1, 1, 7, "count").is_err());
+        assert!(StateRegionLoanLedger::<64>::new(MAX_JSON_SAFE_ID + 1, 1, 7, "count").is_err());
+        let mut g = StateRegionLoanLedger::<64>::new(1, 1, 7, "count").unwrap();
+        let a = claim(1, 1, LoanKind::Read);
+        assert!(!g.try_borrow(&a.release_record().unwrap()));
+        let last = claim(MAX_JSON_SAFE_ID, 1, LoanKind::Write);
+        assert!(g.try_borrow(&last)); assert!(g.release(&last.release_record().unwrap()));
+        assert!(!g.try_borrow(&a)); assert!(!g.try_borrow(&last));
+        assert!(g.retire()); assert!(g.quiescent_after_retire());
+    }
+
+    #[test]
+    fn protected_scalar_permissions_and_isolation() {
+        let mut a = ProtectedScalarState::<2>::new(1, 1, 7, "count", 40).unwrap();
+        let mut b = ProtectedScalarState::<2>::new(1, 2, 7, "count", -3).unwrap();
+        let r = claim(1, 1, LoanKind::Read);
+        let w = claim(2, 2, LoanKind::Write);
+        let foreign = StateRegionLoanProvenance { region_generation: 2, ..w };
+        assert_eq!(a.read(&r), None); assert!(a.try_borrow(&r)); assert_eq!(a.read(&r), Some(40));
+        assert!(!a.write(&r, 99)); assert_eq!(a.add_checked(&r, 1), Ok(None));
+        assert!(!a.try_borrow(&w)); assert!(b.try_borrow(&foreign));
+        assert_eq!(a.read(&foreign), None); assert!(!a.write(&foreign, 9));
+        assert!(a.release(&r.release_record().unwrap())); assert!(a.try_borrow(&w));
+        assert_eq!(a.add_checked(&w, 2), Ok(Some(42))); assert_eq!(a.read(&w), Some(42));
+        assert_eq!(b.read(&foreign), Some(-3)); assert_eq!(a.read(&r), None);
+        assert!(a.release(&w.release_record().unwrap())); assert!(b.release(&foreign.release_record().unwrap()));
+    }
+
+    #[test]
+    fn protected_scalar_checked_boundaries() {
+        let mut a = ProtectedScalarState::<64>::new(1, 1, 7, "count", 0).unwrap();
+        let w = claim(1, 1, LoanKind::Write);
+        assert!(a.try_borrow(&w));
+        for initial in [i64::MIN, i64::MAX] {
+            assert!(a.write(&w, initial));
+            assert!(a.add_checked(&w, if initial == i64::MIN { -1 } else { 1 }).is_err());
+            assert_eq!(a.read(&w), Some(initial));
+        }
+        assert!(a.write(&w, 0));
+        assert_eq!(a.add_checked(&w, i64::MIN), Ok(Some(i64::MIN)));
+        assert_eq!(a.add_checked(&w, i64::MAX), Ok(Some(-1)));
+        assert_eq!(a.add_checked(&w, 1), Ok(Some(0)));
+        assert!(a.release(&w.release_record().unwrap()));
+    }
+
+    #[test]
+    fn protected_scalar_retirement_preserves_committed_state_until_close() {
+        let mut a = ProtectedScalarState::<64>::new(1, 1, 7, "count", 0).unwrap();
+        let w = claim(1, 1, LoanKind::Write);
+        let r = claim(2, 1, LoanKind::Read);
+        assert!(a.try_borrow(&w)); assert!(a.write(&w, 42)); assert!(a.release(&w.release_record().unwrap()));
+        assert!(a.try_borrow(&r)); assert_eq!(a.read(&r), Some(42));
+        assert!(a.retire()); assert!(!a.retire()); assert!(!a.quiescent_after_retire());
+        assert_eq!(a.read(&r), None); assert!(!a.write(&w, 9)); assert!(!a.try_borrow(&claim(3, 3, LoanKind::Read)));
+        assert!(a.release(&r.release_record().unwrap())); assert!(a.quiescent_after_retire());
+        assert!(!a.release(&r.release_record().unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod scoped_scalar_tests {
+    use super::*;
+    fn claim(id: u64, kind: LoanKind) -> StateRegionLoanProvenance<'static> {
+        StateRegionLoanProvenance::new(1, 1, 7, 1, 1, 1, id, "count", kind, LoanAction::Borrow).unwrap()
+    }
+    #[test]
+    fn scoped_read_write_release_and_denial() {
+        let mut state = ProtectedScalarState::<1>::new(1, 1, 7, "count", 40).unwrap();
+        let r = claim(1, LoanKind::Read);
+        assert_eq!(state.with_scalar_loan(&r, |loan| {
+            assert!(!loan.write(99));
+            assert_eq!(loan.add_checked(1), Ok(None));
+            Ok(loan.read().unwrap())
+        }), Ok(Some(40)));
+        assert_eq!(state.with_scalar_loan(&r, |_| panic!("replayed callback executed")), Ok(None));
+        let w = claim(2, LoanKind::Write);
+        assert_eq!(state.with_scalar_loan(&w, |loan| Ok(loan.add_checked(2)?.unwrap())), Ok(Some(42)));
+        assert!(state.retire());
+        assert!(state.quiescent_after_retire());
+    }
+    #[test]
+    fn scoped_checked_error_releases_without_implicit_rollback() {
+        let mut state = ProtectedScalarState::<1>::new(1, 1, 7, "count", 0).unwrap();
+        let w = claim(1, LoanKind::Write);
+        assert!(state.with_scalar_loan(&w, |loan| {
+            assert!(loan.write(i64::MAX));
+            Ok(loan.add_checked(1)?.unwrap())
+        }).is_err());
+        let r = claim(2, LoanKind::Read);
+        assert_eq!(state.with_scalar_loan(&r, |loan| Ok(loan.read().unwrap())), Ok(Some(i64::MAX)));
+        assert!(state.retire());
+        assert!(state.quiescent_after_retire());
+    }
+    #[test]
+    fn scoped_unwind_drains_the_live_loan_before_next_admission() {
+        let mut state = ProtectedScalarState::<1>::new(1, 1, 7, "count", 0).unwrap();
+        let w = claim(1, LoanKind::Write);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = state.with_scalar_loan(&w, |loan| {
+                assert!(loan.write(7));
+                panic!("simulated trusted host unwind")
+            });
+        }));
+        assert!(outcome.is_err());
+        let r = claim(2, LoanKind::Read);
+        assert_eq!(state.with_scalar_loan(&r, |loan| Ok(loan.read().unwrap())), Ok(Some(7)));
+        assert!(!state.release(&w.release_record().unwrap()));
+        assert!(state.retire());
+        assert!(state.quiescent_after_retire());
     }
 }

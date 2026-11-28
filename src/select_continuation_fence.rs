@@ -316,13 +316,13 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_owner_settlement_keeps_physical_credit() {
+    fn multi_owner_close_and_drop_wait_for_physical_unwind() {
         use std::sync::mpsc::sync_channel;
         use std::time::Duration;
 
         const OWNERS: usize = 64;
         const LIMIT: Duration = Duration::from_secs(10);
-        for _ in 0..10 {
+        for round in 0..10 {
             std::thread::scope(|scope| {
                 let mut owners = Vec::with_capacity(OWNERS);
                 let mut pending = Vec::with_capacity(OWNERS);
@@ -343,11 +343,17 @@ mod tests {
                             let _lease = execution;
                             entered.send(index).unwrap();
                             release_rx.recv_timeout(LIMIT).unwrap();
-                            if index % 2 == 0 {
+                            if (index + round) % 2 == 0 {
                                 panic!("expected callback failure");
                             }
                         });
-                        assert_eq!(result.is_err(), index % 2 == 0);
+                        if (index + round) % 2 == 0 {
+                            let failure = result.unwrap_err();
+                            assert_eq!(failure.downcast_ref::<&str>().copied(),
+                                       Some("expected callback failure"));
+                        } else {
+                            result.unwrap();
+                        }
                     }));
                 }
                 let mut seen = [false; OWNERS];
@@ -362,11 +368,13 @@ mod tests {
                     assert!(matches!(fence.register(1), Err(AdmissionError::Capacity)));
                     assert_eq!(fence.advance(1), Ok(false));
                     assert!(fence.claim(&pending[(index + 1) % OWNERS]).is_none());
-                    if index % 2 == 0 {
+                    if (index + round) % 2 == 0 {
                         drop(owners[index].take());
                     } else {
                         assert!(fence.close());
                         assert!(!fence.retirement_ready());
+                        assert_eq!(fence.counts(), (0, 1));
+                        assert!(fence.claim(&pending[index]).is_none());
                     }
                     assert!(!pending[index].close());
                 }
@@ -392,6 +400,7 @@ mod tests {
                 }
             });
         }
+        println!("CRANELIFT_MULTI_OWNER_RETIREMENT_PASS owners=640");
     }
 
     #[test]
@@ -432,15 +441,29 @@ mod tests {
                 seed ^= seed >> 17;
                 seed ^= seed << 5;
                 let ticket = fence.register(generation).unwrap();
-                if generation % 2 == 0 {
-                    claim_tx.send((ticket.clone(), seed & 31)).unwrap();
-                    cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                // Explicitly exercise both ordered winners before randomized
+                // contention. Do not rely on thread scheduling luck for coverage.
+                let (execution, cancelled) = if generation == 1 {
+                    claim_tx.send((ticket.clone(), 0)).unwrap();
+                    let execution = claimed_rx.recv_timeout(LIMIT).unwrap();
+                    cancel_tx.send((ticket.clone(), 0)).unwrap();
+                    (execution, cancelled_rx.recv_timeout(LIMIT).unwrap())
+                } else if generation == 2 {
+                    cancel_tx.send((ticket.clone(), 0)).unwrap();
+                    let cancelled = cancelled_rx.recv_timeout(LIMIT).unwrap();
+                    claim_tx.send((ticket.clone(), 0)).unwrap();
+                    (claimed_rx.recv_timeout(LIMIT).unwrap(), cancelled)
                 } else {
-                    cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
-                    claim_tx.send((ticket.clone(), seed & 31)).unwrap();
-                }
-                let execution = claimed_rx.recv_timeout(LIMIT).unwrap();
-                let cancelled = cancelled_rx.recv_timeout(LIMIT).unwrap();
+                    if generation % 2 == 0 {
+                        claim_tx.send((ticket.clone(), seed & 31)).unwrap();
+                        cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                    } else {
+                        cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                        claim_tx.send((ticket.clone(), seed & 31)).unwrap();
+                    }
+                    (claimed_rx.recv_timeout(LIMIT).unwrap(),
+                     cancelled_rx.recv_timeout(LIMIT).unwrap())
+                };
                 assert_ne!(execution.is_some(), cancelled);
                 assert!(fence.claim(&ticket).is_none());
                 assert!(!ticket.close());

@@ -106,6 +106,8 @@ fn parse_manifest(text: &str) -> Result<(String, String, BTreeMap<String, String
     let mut name = None;
     let mut version = None;
     let mut direct = BTreeMap::new();
+    let mut dev_fast = BTreeMap::new();
+    let mut saw_dev_fast = false;
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -116,6 +118,10 @@ fn parse_manifest(text: &str) -> Result<(String, String, BTreeMap<String, String
                 "[package]" => "package",
                 "[dependencies]" => "dependencies",
                 "[profile.release]" => "profile",
+                "[profile.dev-fast]" if !saw_dev_fast => {
+                    saw_dev_fast = true;
+                    "dev-fast"
+                }
                 _ => return Err("unapproved manifest section".into()),
             };
             continue;
@@ -134,12 +140,32 @@ fn parse_manifest(text: &str) -> Result<(String, String, BTreeMap<String, String
                 }
             }
             "package" | "profile" => {}
+            "dev-fast" => {
+                if dev_fast.insert(key.to_owned(), value.to_owned()).is_some() {
+                    return Err("duplicate dev-fast profile field".into());
+                }
+            }
             "dependencies" => {
                 if direct.insert(key.to_owned(), quoted(value)?).is_some() {
                     return Err("duplicate direct dependency".into());
                 }
             }
             _ => return Err("manifest field outside approved section".into()),
+        }
+    }
+    if saw_dev_fast {
+        let expected = BTreeMap::from([
+            ("inherits".to_owned(), "\"dev\"".to_owned()),
+            ("opt-level".to_owned(), "0".to_owned()),
+            ("debug".to_owned(), "1".to_owned()),
+            ("lto".to_owned(), "false".to_owned()),
+            ("codegen-units".to_owned(), "256".to_owned()),
+            ("incremental".to_owned(), "true".to_owned()),
+            ("debug-assertions".to_owned(), "true".to_owned()),
+            ("overflow-checks".to_owned(), "true".to_owned()),
+        ]);
+        if dev_fast != expected {
+            return Err("unapproved dev-fast profile".into());
         }
     }
     Ok((
@@ -419,4 +445,32 @@ checksum = "{}"
             .unwrap_err()
             .contains("Cranelift version drift")
     );
+}
+
+#[test]
+fn dev_fast_profile_is_exact_and_cannot_relax_checks() {
+    let profile = r#"
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 0
+debug = 1
+lto = false
+codegen-units = 256
+incremental = true
+debug-assertions = true
+overflow-checks = true
+"#;
+    assert_eq!(
+        validate(FIXTURE_LOCK, &format!("{FIXTURE_MANIFEST}{profile}")),
+        Ok(3)
+    );
+    for changed in [
+        profile.replace("overflow-checks = true", "overflow-checks = false"),
+        profile.replace("debug-assertions = true", "debug-assertions = false"),
+        profile.replace("inherits = \"dev\"", "inherits = \"release\""),
+        format!("{profile}extra = true\n"),
+        format!("{profile}{profile}"),
+    ] {
+        assert!(validate(FIXTURE_LOCK, &format!("{FIXTURE_MANIFEST}{changed}")).is_err());
+    }
 }

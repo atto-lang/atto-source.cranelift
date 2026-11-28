@@ -166,7 +166,7 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || bytes[i..].starts_with(b"!=")
         {
             i += 2;
-        } else if b"(){}:,;+-*=!|".contains(&bytes[i]) {
+        } else if b"(){}:,;+-*=!|^".contains(&bytes[i]) {
             i += 1;
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
@@ -180,15 +180,18 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
     tokens.push("<eof>".into());
     Ok(tokens)
 }
+pub(crate) const LINKED_MAX_ARITY: usize = 8;
 struct Parser {
     tokens: Vec<String>,
     at: usize,
+    max_arity: usize,
 }
 impl Parser {
-    fn new(src: &str) -> Result<Self, String> {
+    fn new(src: &str, max_arity: usize) -> Result<Self, String> {
         Ok(Self {
             tokens: lex(src)?,
             at: 0,
+            max_arity,
         })
     }
     fn peek(&self) -> &str {
@@ -298,7 +301,7 @@ impl Parser {
         if self.peek() != ")" {
             loop {
                 args.push(self.expr(0, depth + 1, None)?);
-                if args.len() > 4 {
+                if args.len() > self.max_arity {
                     return Err("E_PIPE_ARITY_LIMIT".into());
                 }
                 if !self.eat(",") {
@@ -581,7 +584,7 @@ impl Parser {
                     }
                     params.push(n);
                     param_types.push(ty);
-                    if params.len() > 4 {
+                    if params.len() > self.max_arity {
                         return Err("E_PIPE_ARITY_LIMIT".into());
                     }
                     if !self.eat(",") {
@@ -753,7 +756,98 @@ impl Lower<'_> {
 /// machine code. This path is NOT an interpreter, general linker, or AOT.
 pub fn parse(source: &str) -> Result<Program, String> {
     validate_source_envelope(source)?;
-    compile_functions(Parser::new(source)?.parse()?)
+    compile_functions(Parser::new(source, 4)?.parse()?)
+}
+
+/// Compiler-only symbol: the source lexer cannot spell '$'.
+pub(crate) const NAMED_STAGE: &str = "$closed_named_stage";
+/// Admit only a closed scalar expression, and rewrite its lexical self
+/// identity before the ordinary native call-graph checker sees the body.
+fn close_named(e: &mut Raw, param: &str, own: &str, depth: usize, nodes: &mut usize) -> Result<(), String> {
+    *nodes += 1;
+    if depth > 24 || *nodes > 128 { return Err("E_NAMED_STAGE_BUDGET".into()); }
+    match e {
+        Raw::Literal(_) => Ok(()),
+        Raw::Name(n) if n == param => Ok(()),
+        Raw::Add(a,b) | Raw::Sub(a,b) | Raw::Mul(a,b) => {
+            close_named(a,param,own,depth+1,nodes)?;
+            close_named(b,param,own,depth+1,nodes)
+        }
+        Raw::Call(n,args) if n == own && args.len()==1 => {
+            close_named(&mut args[0],param,own,depth+1,nodes)?;
+            *n=NAMED_STAGE.to_owned();
+            Ok(())
+        }
+        _ => Err("E_NAMED_STAGE_CLOSED_INT".into()),
+    }
+}
+/// Dedicated complete-file grammar. No fallback after token selection.
+/// One public main, one literal upstream, one explicitly typed unary stage;
+/// root match on the immutable parameter or a scalar return expression.
+pub(crate) fn parse_named_recursive(source: &str) -> Result<Option<Vec<Fn>>, String> {
+    validate_source_envelope(source)?;
+    let tokens=match lex(source) { Ok(t)=>t, Err(_)=>return Ok(None) };
+    if !tokens.windows(2).any(|w| w[0]=="|>" && w[1]=="fnc") { return Ok(None); }
+    let mut p=Parser{tokens,at:0};
+    p.need("pub")?;p.need("fnc")?;p.need("main")?;p.need("(")?;p.need(")")?;
+    if !p.eat(":"){p.need("->")?;}p.need("int")?;p.need("{")?;
+    if !p.eat("return"){p.need("^")?;}
+    let input=p.expr(6,0,None)?;
+    if !matches!(input,Raw::Literal(_)) {return Err("E_NAMED_STAGE_LITERAL_UPSTREAM".into());}
+    p.need("|>")?;p.need("fnc")?;
+    let own=p.name()?;p.need("(")?;p.need("int")?;let param=p.name()?;p.need(")")?;
+    if own==param || matches!(own.as_str(),"main"|"_"|"over"|"on"|"end"|"self"|"arguments"|"And"|"Or"|"Xor")
+      || matches!(param.as_str(),"_"|"over"|"on"|"end"|"self"|"arguments") {
+        return Err("E_NAMED_STAGE_NAME".into());
+    }
+    if !p.eat(":"){p.need("->")?;}p.need("int")?;p.need("{")?;
+    if !p.eat("return"){p.need("^")?;}
+    let body_start=p.at;
+    let mut nodes=0;
+    let result=if p.eat("match") {
+        p.need(&param)?;p.need("over")?;
+        let mut arms=Vec::new();
+        let mut keys=std::collections::HashSet::new();
+        let mut otherwise=None;
+        while !p.eat("end") {
+            if arms.len()>=16 || otherwise.is_some(){return Err("E_NAMED_STAGE_MATCH".into());}
+            p.need("on")?;
+            let key=if p.eat("_"){None}else{
+                let minus=p.eat("-");
+                let spelling=if minus{format!("-{}",p.peek())}else{p.peek().to_owned()};
+                let value=spelling.parse::<i64>().map_err(|_|"E_NAMED_STAGE_PATTERN")?;
+                p.at+=1;
+                if !keys.insert(value){return Err("E_NAMED_STAGE_DUP_PATTERN".into());}
+                Some(value)
+            };
+            p.need("->")?;
+            let mut value=p.expr(0,0,None)?;
+            close_named(&mut value,&param,&own,0,&mut nodes)?;
+            if let Some(key)=key {arms.push((key,value));}else{otherwise=Some(value);}
+            if !p.eat(",") && p.peek()!="end"{return Err("E_NAMED_STAGE_MATCH".into());}
+        }
+        let mut result=otherwise.ok_or("E_NAMED_STAGE_NONEXHAUSTIVE")?;
+        for (key,body) in arms.into_iter().rev(){
+            result=Raw::If(Box::new(Raw::Eq(Box::new(Raw::Name(param.clone())),Box::new(Raw::Literal(key)))),Box::new(body),Box::new(result));
+        }
+        result
+    } else {
+        let mut value=p.expr(0,0,None)?;
+        close_named(&mut value,&param,&own,0,&mut nodes)?;
+        value
+    };
+    // The general scalar expression parser may desugar pipelines into
+    // calls. This profile admits only direct source self calls, not nested
+    // pipelines, tuple patterns, or alternative callable forms.
+    if p.tokens[body_start..p.at].iter().any(|t|matches!(t.as_str(),"|>"|"<|"|"|")){
+        return Err("E_NAMED_STAGE_NESTED_PIPE".into());
+    }
+    p.eat(";");p.need("}")?;p.eat(";");p.need("}")?;
+    if p.peek()!="<eof>" {return Err("E_NAMED_STAGE_TRAILING".into());}
+    Ok(Some(vec![
+        Fn{public:true,name:"main".into(),params:vec![],param_types:vec![],return_type:ScalarType::Int,locals:vec![],result:Raw::Call(NAMED_STAGE.into(),vec![input])},
+        Fn{public:false,name:NAMED_STAGE.into(),params:vec![param],param_types:vec![ScalarType::Int],return_type:ScalarType::Int,locals:vec![],result},
+    ]))
 }
 
 /// Preserve the separately parsed function graph and symbolic calls for
@@ -766,13 +860,13 @@ pub(crate) fn parse_linked_native(
         return Err("E_LINK_IMPORT_LIMIT".into());
     }
     validate_source_envelope(entry)?;
-    let mut selected = Parser::new(entry)?.parse()?;
+    let mut selected = Parser::new(entry, LINKED_MAX_ARITY)?.parse()?;
     for (requested, local, text) in units {
         if reserved_sum_name(requested) || reserved_sum_name(local) {
             return Err("E_PIPE_TAGGED_SUM_UNSUPPORTED: typed Option/Result/trap is unsupported by the Cranelift scalar backend".into());
         }
         validate_source_envelope(text)?;
-        let candidates = Parser::new(text)?.parse()?;
+        let candidates = Parser::new(text, LINKED_MAX_ARITY)?.parse()?;
         let mut exported = candidates
             .into_iter()
             .filter(|f| f.name == *requested && f.public);
