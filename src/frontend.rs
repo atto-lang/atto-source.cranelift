@@ -1996,6 +1996,65 @@ impl<'a> Parser<'a> {
             // self and forward references and any hidden shadowing.
             self.bindings.push((name, constant, runtime_slot));
         }
+        // Root typed integer transfer pilot. Leave the existing unsupported
+        // inferred let path and actor capability diagnostic untouched.
+        if self.current == Token::Word("let") && self.next_significant_word_is("int") {
+            let mut writable = BTreeSet::new();
+            let mut saw_arrow = false;
+            while matches!(self.current, Token::Word("let" | "set")) {
+                let fresh = self.take(Token::Word("let"))?;
+                if fresh { self.expect(Token::Word("int"))?; }
+                else { self.expect(Token::Word("set"))?; }
+                let name = self.name()?;
+                let previous = self.bindings.iter().position(|(n, _, _)| n == &name);
+                if fresh {
+                    if previous.is_some() || self.parameters.contains(&name) ||
+                       is_java_v1_reserved_parameter_name(&name) ||
+                       self.named_aggregate_locals.contains_key(&name) ||
+                       self.named_aggregate_types.contains_key(&name) ||
+                       matches!(name.as_str(), "set" | "sync" | "task" | "yield" | "Integer" | "main" | "seq") {
+                        return Err("E_OWNERSHIP: invalid or duplicate local".into());
+                    }
+                } else if !writable.contains(&name) {
+                    return Err("E_OWNERSHIP: set requires existing writable int let".into());
+                }
+                let arrow = self.current == Token::Punct(b'<') &&
+                    self.input.as_bytes().get(self.pos) == Some(&b'-');
+                if arrow {
+                    self.next()?;
+                    self.expect(Token::Punct(b'-'))?;
+                } else if fresh {
+                    self.expect(Token::Punct(b'='))?;
+                } else {
+                    return Err("E_OWNERSHIP: expected contiguous transfer arrow".into());
+                }
+                saw_arrow |= arrow;
+                match self.current {
+                    Token::Number(_) => {}
+                    Token::Word(source) if writable.contains(source) && (fresh || source != name.as_str()) => {}
+                    _ => return Err("E_OWNERSHIP: expected int literal or distinct initialized int source".into()),
+                }
+                let init = self.expr(0, 0)?;
+                if !matches!(init, Expr::Literal(_) | Expr::Local(_)) {
+                    return Err("E_OWNERSHIP: compound scalar transfer not admitted".into());
+                }
+                self.expect(Token::Punct(b';'))?;
+                if self.local_initializers.len() >= MAX_LOCALS {
+                    return Err("E_OWNERSHIP: local version budget exceeded".into());
+                }
+                let slot = self.local_initializers.len();
+                self.local_initializers.push(init);
+                if fresh {
+                    writable.insert(name.clone());
+                    self.bindings.push((name, None, slot));
+                } else {
+                    self.bindings[previous.ok_or("E_OWNERSHIP: unbound set")?] = (name, None, slot);
+                }
+            }
+            if !saw_arrow {
+                return Err("E_LET_UNSUPPORTED: ordinary mutable locals require typed SSA write lowering".into());
+            }
+        }
         if self.current == Token::Word("let") {
             // A denied 'let' may still conceal a reserved actor operation,
             // e.g. 'let a = spawn Worker()'. Scan only this unsupported
