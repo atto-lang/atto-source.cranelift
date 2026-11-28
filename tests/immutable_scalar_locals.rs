@@ -196,3 +196,21 @@ fn ordinary_const_runtime_and_scalar_aliases_execute() {
     refuses("fnc main():int{val mut int a=42;return a;}", &[], "E_MUT_BACKEND_UNSUPPORTED");
     refuses("fnc main():int{const int a=1;const a as int=42;return a;}", &[], "duplicate");
 }
+
+#[test]
+fn typed_binding_arrow_native_guest() {
+    for body in [
+        "let int b=21;let int a<-b;return a+b;",
+        "let int a=0;let int b=21;set a<-b;return a+b;",
+        "let int a<-42;return a;",
+        "let int a=0;set a<-42;return a;",
+    ] { accepts(&format!("fnc main():int{{{body}}}"), &[], "42\n"); }
+    for body in [
+        "const int a<-42;return a;", "int a<-42;return a;",
+        "val int a<-42;return a;", "let int a=0;set! a<-42;return a;",
+        "let int a=0;a<-42;return a;", "let int a=0;set missing<-42;return a;",
+        "let int a=42;set a<-a;return a;", "let int a<-true;return a;",
+        "let int a< -42;return a;", "let int a<-21+21;return a;",
+        "let int a<-b;return a;", "let int a=21;let int a<-a;return a;",
+    ] { refuses(&format!("fnc main():int{{{body}}}"), &[], ""); }
+}
