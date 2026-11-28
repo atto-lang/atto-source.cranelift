@@ -99,25 +99,36 @@ fn constant_seq_and_runtime_val_share_scalar_native_backend() {
 }
 
 #[test]
-fn const_seq_folds_only_proven_values_and_preserves_runtime_faults() {
+fn const_seq_folds_proven_constants_but_preserves_eager_runtime_traps() {
+    // Spec #307: ordinary const fixes the binding, not the evaluation phase.
+    // Proven compile-time overflow remains a hard admission error.
     rejected(
         "fnc main():int{const x=seq! (9223372036854775807+1,42);return x;}",
         "E_CONST_OVERFLOW",
     );
-    admitted("fnc main(a:int):int{const x=seq! (a+1,42);return x;}", &["1"], b"42\n");
-    // Local const is eagerly evaluated once, not necessarily constexpr (spec #307).
+    let parameter = "fnc main(a:int):int{const x=seq! (a+1,42);return x;}";
+    admitted(parameter, &["1"], b"42\n");
+    let named = "fnc main(a:int):int{const x=seq! (Integer.rem(4,a),42);return x;}";
+    admitted(named, &["3"], b"42\n");
     for (source, args, diagnostic) in [
-        ("fnc main(a:int):int{const x=seq! (a+1,42);return x;}", vec!["9223372036854775807"], "overflow"),
-        ("fnc main():int{const x=seq! (Integer.rem(4,0),42);return x;}", vec![], "zero"),
+        (parameter, &["9223372036854775807"][..], "overflow"),
+        (named, &["0"][..], "divisor zero"),
+        ("fnc main():int{const x=seq! (Integer.rem(4,0),42);return x;}", &[][..], "divisor zero"),
     ] {
-        for mode in ["check","ir"] {
-            let out=execute(mode,source,&[]);
-            assert!(out.status.success(),"{mode}: {}",String::from_utf8_lossy(&out.stderr));
+        for mode in ["check", "ir"] {
+            let output = execute(mode, source, &[]);
+            assert_eq!(output.status.code(), Some(0), "{source} {mode}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(output.stderr.is_empty(), "{source} {mode}: unexpected diagnostic");
+            if mode == "ir" {
+                assert!(String::from_utf8_lossy(&output.stdout).contains("function"));
+            } else {
+                assert!(output.stdout.is_empty(), "{source}: check executed guest");
+            }
         }
-        let out=execute("run",source,&args);
-        assert_eq!(out.status.code(),Some(1),"{source}");
-        assert!(out.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&out.stderr).contains(diagnostic),"{source}: {}",String::from_utf8_lossy(&out.stderr));
+        let output = execute("run", source, args);
+        assert_eq!(output.status.code(), Some(1), "{source}: discarded operand must trap");
+        assert!(output.stdout.is_empty(), "{source}: no result after failed initializer");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic), "{source}: {}", String::from_utf8_lossy(&output.stderr));
     }
 }
 
