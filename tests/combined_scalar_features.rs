@@ -99,19 +99,37 @@ fn constant_seq_and_runtime_val_share_scalar_native_backend() {
 }
 
 #[test]
-fn static_const_seq_checks_every_discarded_element_before_ir() {
+fn const_seq_folds_proven_constants_but_preserves_eager_runtime_traps() {
+    // Spec #307: ordinary const fixes the binding, not the evaluation phase.
+    // Proven compile-time overflow remains a hard admission error.
     rejected(
         "fnc main():int{const x=seq! (9223372036854775807+1,42);return x;}",
         "E_CONST_OVERFLOW",
     );
-    rejected(
-        "fnc main(a:int):int{const x=seq! (a+1,42);return x;}",
-        "E_NON_CONST_INITIALIZER",
-    );
-    rejected(
-        "fnc main():int{const x=seq! (Integer.rem(4,0),42);return x;}",
-        "E_NON_CONST_INITIALIZER",
-    );
+    let parameter = "fnc main(a:int):int{const x=seq! (a+1,42);return x;}";
+    admitted(parameter, &["1"], b"42\n");
+    let named = "fnc main(a:int):int{const x=seq! (Integer.rem(4,a),42);return x;}";
+    admitted(named, &["3"], b"42\n");
+    for (source, args, diagnostic) in [
+        (parameter, &["9223372036854775807"][..], "overflow"),
+        (named, &["0"][..], "divisor zero"),
+        ("fnc main():int{const x=seq! (Integer.rem(4,0),42);return x;}", &[][..], "divisor zero"),
+    ] {
+        for mode in ["check", "ir"] {
+            let output = execute(mode, source, &[]);
+            assert_eq!(output.status.code(), Some(0), "{source} {mode}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(output.stderr.is_empty(), "{source} {mode}: unexpected diagnostic");
+            if mode == "ir" {
+                assert!(String::from_utf8_lossy(&output.stdout).contains("function"));
+            } else {
+                assert!(output.stdout.is_empty(), "{source}: check executed guest");
+            }
+        }
+        let output = execute("run", source, args);
+        assert_eq!(output.status.code(), Some(1), "{source}: discarded operand must trap");
+        assert!(output.stdout.is_empty(), "{source}: no result after failed initializer");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic), "{source}: {}", String::from_utf8_lossy(&output.stderr));
+    }
 }
 
 #[test]
