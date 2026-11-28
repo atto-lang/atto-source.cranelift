@@ -1172,7 +1172,6 @@ impl<'a> Parser<'a> {
         let close = Token::Punct(if brace { b'}' } else { b')' });
         self.expect(Token::Punct(if brace { b'{' } else { b'(' }))?;
         let mut fields = std::collections::BTreeMap::new();
-        let mut comma = false;
         if kind == "struct" && self.current == close {
             return Err("E_EMPTY_AGGREGATE: empty Struct not admitted".into());
         }
@@ -1194,11 +1193,7 @@ impl<'a> Parser<'a> {
             }
             if fields.contains_key(&key) { return Err("E_DUPLICATE_FIELD: duplicate field".into()); }
             fields.insert(key, self.aggregate_literal_field()?);
-            comma = self.take(Token::Punct(b','))?;
-            if !comma { break; }
-        }
-        if kind == "Tuple" && fields.len() == 1 && !comma {
-            return Err("E_TUPLE_ARITY: singleton tuple requires trailing comma".into());
+            if !self.take(Token::Punct(b','))? { break; }
         }
         self.expect(close)?;
         self.expect(Token::Punct(b';'))?;
@@ -1953,7 +1948,7 @@ impl<'a> Parser<'a> {
                 // Scalar const mut is the same fixed binding as val.
                 kind = "val";
             }
-            let typed = kind == "int" || self.take(Token::Word("int"))?;
+            let mut typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if matches!(name.as_str(), "sync" | "task" | "yield") {
                 return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
@@ -1969,11 +1964,26 @@ impl<'a> Parser<'a> {
             }
             if !typed && (self.take(Token::Punct(b':'))? || self.take(Token::Word("as"))?) {
                 self.expect(Token::Word("int"))?;
+                typed = true;
             }
             if self.bindings.len() + self.named_aggregate_locals.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
+            // Only a complete empty literal in an untyped const binding
+            // defaults to Tuple. Existing grouped scalar expressions, typed
+            // scalar locals and other aggregate syntax keep their paths.
+            if kind == "const" && !typed && self.current == Token::Punct(b'(')
+                && self.next_significant_word_is(")")
+            {
+                self.expect(Token::Punct(b'('))?;
+                self.expect(Token::Punct(b')'))?;
+                self.expect(Token::Punct(b';'))?;
+                self.named_aggregate_locals.insert(name, NamedAggregate {
+                    kind: "Tuple", fields: Default::default(),
+                });
+                continue;
+            }
             let initializer = self.expr(0, 0)?;
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
@@ -2991,7 +3001,11 @@ pub fn parse(text: &str) -> Result<Program, String> {
     let parser = Parser::new(text)?;
     // A private function before main selects the existing bounded typed
     // helper grammar, not an unchecked retry after an authoritative denial.
-    if parser.current == Token::Word("fnc") && !parser.next_significant_word_is("main") {
+    if parser.current == Token::Word("fnc")
+        && !parser.next_significant_word_is("main")
+        && !parser.next_significant_word_is("actor")
+        && !parser.next_significant_word_is("isoactor")
+    {
         return quantity_scalar::parse_plain_helpers(parser);
     }
     let original = parser.program();
@@ -4375,7 +4389,14 @@ end"#;
         let parsed = parse("fnc main(a:int):int{const c=2;val v=a+c;return v;}").unwrap();
         assert_eq!(parsed.locals.len(), 1);
         assert_eq!(parsed.result, Expr::Local(0));
-        assert!(parse("fnc main(a:int):int{int c=a;return c;}").is_err());
+        // Ordinary local const is eager, not constexpr-only (#228 / spec #307).
+        let implicit = parse("fnc main(a:int):int{int c=a;return c;}").unwrap();
+        let explicit = parse("fnc main(a:int):int{const int c=a;return c;}").unwrap();
+        assert_eq!(implicit.locals, vec![Expr::Param(0)]);
+        assert_eq!(implicit.locals, explicit.locals);
+        assert_eq!(implicit.result, explicit.result);
+        assert_eq!(implicit.result, Expr::Local(0));
+        assert!(parse("fnc main(a:int):int{int c=a;const c=2;return c;}").is_err());
     }
 
     #[test]
@@ -4769,3 +4790,6 @@ mod canonical_stdout_scalar_admission_tests {
         assert!(parse("fnc main():int{return 42; /* process.stdout.write(42) */}").is_ok());
     }
 }
+
+#[path = "frontend/native_readonly.rs"]
+pub(crate) mod native_readonly;

@@ -1,0 +1,37 @@
+name: Readonly reference shared guest boundaries
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  shared-readonly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Authenticate exact source
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          git fsck --full --no-reflogs
+          git rev-parse HEAD 'HEAD^{tree}'
+          git diff --exit-code HEAD --
+      - name: Build and execute compiler regressions
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 test --locked --bin orescranelift
+          cargo +1.99.1 build --locked --release --bin orescranelift
+      - name: Execute shared readonly guests and denials
+        run: |
+          set -euo pipefail
+          python3 verification/readonly_reference_boundaries.py cranelift target/release/orescranelift
+          git diff --exit-code HEAD --

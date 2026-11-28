@@ -288,6 +288,21 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
+    if frontend::native_readonly::selected(source) {
+        if !values.is_empty() || path.extension().and_then(|x| x.to_str()) != Some("atto") {
+            return Err("E_NATIVE_READONLY: expected .atto and zero runtime arguments".into());
+        }
+        let plan = frontend::native_readonly::parse(source)?;
+        return match mode.as_str() {
+            "check" => Ok(()),
+            "run" => { println!("{}", backend::native_readonly::compile(&plan)?.run(&[])?); Ok(()) },
+            "emit-object" => {
+                let object = backend::native_readonly::object(&plan)?;
+                std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string())
+            }
+            _ => Err("E_NATIVE_READONLY: unsupported command mode".into()),
+        };
+    }
     if mode == "emit-counted-static-ready-object" {
         if !values.is_empty() || path.extension().and_then(|x| x.to_str()) != Some("atto") {
             return Err("E_COUNTED_STATIC_READY: expected .atto and no runtime arguments".into());
@@ -328,7 +343,7 @@ fn run() -> Result<(), String> {
     }
     // Complete typed placement grammar, retaining the shared source envelope.
     if matches!(mode.as_str(), "run" | "ir" | "check" | "emit-object")
-        && source.contains("Storage") && source.contains("RawPointer")
+        && ((source.contains("Storage") && source.contains("RawPointer")) || (source.contains("struct") && source.contains("constructor")))
         && let Ok(plan)=frontend::point_placement::parse(source)
     {
         return backend::placement_command(&plan,&mode,&values);
