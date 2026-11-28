@@ -48,6 +48,36 @@ fn named_reduction(name: &str, args: &[Raw]) -> Result<Option<Raw>, String> {
     Ok(Some(result))
 }
 
+// Shared checker/emitter slot plan. Keep operands in lexical order.
+fn bind_actuals<'a>(args: &'a [Raw], formals: &[String]) -> Result<Vec<(&'a Raw, usize)>, String> {
+    if args.len() != formals.len() || args.len() > 8 {
+        return Err("E_LINK_CALL_ARITY_OR_ENTRY".into());
+    }
+    let mut occupied = vec![false; formals.len()];
+    let mut named = false;
+    let mut positional = 0;
+    let mut plan = Vec::with_capacity(args.len());
+    for arg in args {
+        let (value, slot) = match arg {
+            Raw::NamedActual(label, value) => {
+                named = true;
+                let slot = formals.iter().position(|f| f == label).ok_or("E_LINK_NAMED_UNKNOWN")?;
+                (value.as_ref(), slot)
+            }
+            value => {
+                if named { return Err("E_LINK_NAMED_ORDER".into()); }
+                let slot = positional;
+                positional += 1;
+                (value, slot)
+            }
+        };
+        if occupied[slot] { return Err("E_LINK_NAMED_DUP".into()); }
+        occupied[slot] = true;
+        plan.push((value, slot));
+    }
+    Ok(plan)
+}
+
 fn inspect_expression(
     expr: &Raw,
     scope: &HashMap<String, ScalarType>,
@@ -68,6 +98,7 @@ fn inspect_expression(
     let mut child =
         |e: &Raw| inspect_expression(e, scope, functions, program, dependencies, nodes, depth + 1);
     match expr {
+        Raw::NamedActual(_, _) => Err("E_LINK_NAMED_CONTEXT".into()),
         Raw::Tuple(_) => Err("E_LINK_UNSUPPORTED_TUPLE_VALUE".into()),
         Raw::TuplePattern(values, bindings, body) => {
             if values.len() != bindings.len() || values.len() > 8 {
@@ -156,6 +187,10 @@ fn inspect_expression(
             if matches!(target.as_str(), "And" | "Or" | "Xor") && scope.contains_key(target) {
                 return Err("E_LINK_BOOLEAN_SHADOW".into());
             }
+            if args.iter().any(|a| matches!(a, Raw::NamedActual(_, _)))
+                && (!functions.contains_key(target) || scope.contains_key(target)) {
+                return Err("E_LINK_NAMED_TARGET".into());
+            }
             if !functions.contains_key(target)
                 && let Some(expanded) = named_reduction(target, args)?
             {
@@ -176,8 +211,8 @@ fn inspect_expression(
             if target == "main" || args.len() != callee.params.len() {
                 return Err("E_LINK_CALL_ARITY_OR_ENTRY".into());
             }
-            for (arg, ty) in args.iter().zip(&callee.param_types) {
-                if child(arg)? != *ty {
+            for (arg, slot) in bind_actuals(args, &callee.params)? {
+                if child(arg)? != callee.param_types[slot] {
                     return Err("E_LINK_ARGUMENT_TYPE".into());
                 }
             }
@@ -336,7 +371,7 @@ fn emit_expr(
     expr: &Raw,
     builder: &mut FunctionBuilder,
     scope: &HashMap<String, Value>,
-    refs: &HashMap<String, FuncRef>,
+    refs: &HashMap<String, (FuncRef, Vec<String>)>,
     failure: Block,
     depth: usize,
 ) -> Result<Value, String> {
@@ -344,6 +379,7 @@ fn emit_expr(
         return Err("E_LINK_EXPR_DEPTH".into());
     }
     match expr {
+        Raw::NamedActual(_, _) => Err("E_LINK_NAMED_CONTEXT".into()),
         Raw::Tuple(_) => Err("E_LINK_UNSUPPORTED_TUPLE_VALUE".into()),
         Raw::TuplePattern(values, bindings, body) => {
             // Evaluate each input once, in source order, before binding any
@@ -466,10 +502,13 @@ fn emit_expr(
             {
                 return emit_expr(&expanded, builder, scope, refs, failure, depth);
             }
-            let func_ref = *refs.get(name).ok_or("E_LINK_UNBOUND_CALLEE")?;
-            let mut values = Vec::with_capacity(arguments.len());
-            for argument in arguments {
-                values.push(emit_expr(
+            let (func_ref, formals) = refs.get(name).ok_or("E_LINK_UNBOUND_CALLEE")?;
+            let func_ref = *func_ref;
+            let mut slots = vec![None; arguments.len()];
+            // Evaluate in lexical order; SSA values survive nested calls and
+            // only the final call operand list is placed in formal order.
+            for (argument, slot) in bind_actuals(arguments, formals)? {
+                slots[slot] = Some(emit_expr(
                     argument,
                     builder,
                     scope,
@@ -478,6 +517,8 @@ fn emit_expr(
                     depth + 1,
                 )?);
             }
+            let mut values = slots.into_iter().collect::<Option<Vec<_>>>()
+                .ok_or("E_LINK_NAMED_INCOMPLETE")?;
             // The helper has an independent native function body, not an
             // expanded/inlined syntax tree. A parameter may be read repeatedly
             // without re-evaluating any argument.
@@ -586,7 +627,7 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
         for target in program.iter().filter(|f| f.name != "main") {
             let func_id = ids[&target.name];
             let func_ref = module.declare_func_in_func(func_id, &mut ctx.func);
-            refs.insert(target.name.clone(), func_ref);
+            refs.insert(target.name.clone(), (func_ref, target.params.clone()));
         }
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -681,6 +722,40 @@ mod tests {
     fn two_unit(source: &str, helper: &str) -> Vec<ScalarFn> {
         parse_linked_native(source, &[("twice".into(), "twice".into(), helper.into())])
             .expect("parse declared helper graph")
+    }
+
+    #[test]
+    fn named_actuals_run_through_real_linked_native_code() {
+        let prefix = "fnc f(int a,int b):int{return a*10+b;} ";
+        for (call, expected) in [
+            ("f(b:2,a:4)", 42), ("f(b=2,a=4)", 42),
+            ("f(b:2,a=4)", 42), ("f(b=2,a:4)", 42),
+            ("f(4,b=2)", 42), ("f(b=4,a=2)", 24),
+            ("f(b=2,a=f(b:3,a=1)-9)", 42),
+        ] {
+            let source = format!("{prefix}pub fnc main():int{{return {call};}}");
+            let program = parse_linked_native(&source, &[]).unwrap();
+            validate(&program).unwrap();
+            assert_eq!(compile(&program).unwrap().run(&[]), Ok(expected), "{call}");
+            assert!(render_ir(&program).unwrap().contains("call "));
+        }
+    }
+
+    #[test]
+    fn named_actuals_reject_invalid_slots_before_codegen() {
+        let prefix = "fnc f(int a,int b):int{return a*10+b;} ";
+        for (call, diagnostic) in [
+            ("f(a=4,a:2)", "E_LINK_NAMED_DUP"),
+            ("f(4,a=2)", "E_LINK_NAMED_DUP"),
+            ("f(z=4,b:2)", "E_LINK_NAMED_UNKNOWN"),
+            ("f(a=4,2)", "E_LINK_NAMED_ORDER"),
+            ("f(b=true,a=4)", "E_LINK_ARGUMENT_TYPE"),
+            ("f(a:=4,b=2)", "E_LINK_PAIR_UNSUPPORTED"),
+        ] {
+            let source = format!("{prefix}pub fnc main():int{{return {call};}}");
+            let outcome = parse_linked_native(&source, &[]).and_then(|p| validate(&p));
+            assert_eq!(outcome.unwrap_err(), diagnostic, "{call}");
+        }
     }
 
     #[test]

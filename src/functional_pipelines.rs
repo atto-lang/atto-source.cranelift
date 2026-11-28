@@ -40,13 +40,15 @@ pub(crate) enum Raw {
     Sub(Box<Raw>, Box<Raw>),
     Mul(Box<Raw>, Box<Raw>),
     Call(String, Vec<Raw>),
+    // Call-operand metadata; never admitted as an ordinary expression.
+    NamedActual(String, Box<Raw>),
     Tuple(Vec<Raw>),
     TuplePattern(Vec<Raw>, Vec<Option<String>>, Box<Raw>),
 }
 impl Raw {
     fn requires_tuple_lowering(&self) -> bool {
         match self {
-            Self::Tuple(_) | Self::TuplePattern(_, _, _) => true,
+            Self::Tuple(_) | Self::TuplePattern(_, _, _) | Self::NamedActual(_, _) => true,
             Self::Literal(_) | Self::Bool(_) | Self::Name(_) => false,
             Self::Not(v) => v.requires_tuple_lowering(),
             Self::Add(a, b)
@@ -84,7 +86,7 @@ fn has_named_boolean_call(expr: &Raw) -> bool {
         Raw::Call(name, args) => {
             matches!(name.as_str(), "And" | "Or" | "Xor") || args.iter().any(has_named_boolean_call)
         }
-        Raw::Not(v) => has_named_boolean_call(v),
+        Raw::Not(v) | Raw::NamedActual(_, v) => has_named_boolean_call(v),
         Raw::Add(a, b)
         | Raw::Sub(a, b)
         | Raw::Mul(a, b)
@@ -317,7 +319,20 @@ impl Parser {
         let mut args = Vec::new();
         if self.peek() != ")" {
             loop {
-                args.push(self.expr(0, depth + 1, None)?);
+                let label = if self.tokens.get(self.at + 1).is_some_and(|s| s == ":" || s == "=") {
+                    let name = self.name()?;
+                    let colon = self.eat(":");
+                    if !colon { self.need("=")?; }
+                    if colon && self.peek() == "=" {
+                        return Err("E_LINK_PAIR_UNSUPPORTED".into());
+                    }
+                    Some(name)
+                } else { None };
+                let value = self.expr(0, depth + 1, None)?;
+                args.push(match label {
+                    Some(name) => Raw::NamedActual(name, Box::new(value)),
+                    None => value,
+                });
                 if args.len() > self.max_arity {
                     return Err("E_PIPE_ARITY_LIMIT".into());
                 }
@@ -686,6 +701,7 @@ impl Lower<'_> {
         }
         self.budget -= 1;
         Ok(match raw {
+            Raw::NamedActual(_, _) => return Err("E_PIPE_NAMED_REQUIRES_LINKED_NATIVE".into()),
             Raw::Tuple(_) | Raw::TuplePattern(_, _, _) => {
                 return Err("E_PIPE_TUPLE_REQUIRES_LINKED_NATIVE".into());
             }

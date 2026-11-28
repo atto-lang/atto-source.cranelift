@@ -33,7 +33,7 @@ fn guest(mode: &str, source: &str, args: &[&str]) -> Output {
 }
 
 #[test]
-fn local_const_and_val_have_distinct_native_semantics() {
+fn local_const_and_val_execute_native_values() {
     for (source, args, answer) in [
         (
             "fnc main():int{const x=40+2;return x;}",
@@ -102,20 +102,46 @@ fn local_const_and_val_have_distinct_native_semantics() {
 }
 
 #[test]
-fn runtime_const_and_type_first_parameter_must_fail_before_ir() {
+fn runtime_const_and_type_first_bindings_are_eager() {
+    for (source,args,expected) in [
+        ("fnc main(a:int):int{const x=a+1;return x;}", &["41"][..], b"42\n".as_slice()),
+        ("fnc main(a:int):int{int x=a+1;return x;}", &["41"][..], b"42\n".as_slice()),
+        ("fnc main(a:int):int{val y=a+1;const x=y+1;return x;}", &["40"][..], b"42\n".as_slice()),
+        ("fnc main(a:int):int{const x: int=a;return x;}", &["42"][..], b"42\n".as_slice()),
+        ("fnc main():int{const mut int x=1;return x;}", &[][..], b"1\n".as_slice()),
+        ("fnc main():int{const x=Integer.pow(2,3);return x;}", &[][..], b"8\n".as_slice()),
+        ("fnc main(a:int):int{const int x=a;return x;}", &["42"][..], b"42\n".as_slice()),
+        ("fnc main(a:int):int{int x=a;return x;}", &["42"][..], b"42\n".as_slice()),
+    ] {
+        for mode in ["check","ir"] {
+            let out=guest(mode,source,&[]);
+            assert!(out.status.success(),"{mode}: {source}: {}",String::from_utf8_lossy(&out.stderr));
+        }
+        let out=guest("run",source,args);
+        assert!(out.status.success(),"{source}: {}",String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.stdout,expected);
+    }
     for source in [
-        "fnc main(a:int):int{const x=a+1;return x;}",
-        "fnc main(a:int):int{int x=a+1;return x;}",
-        "fnc main(a:int):int{val y=a+1;const x=y+1;return x;}",
+        "fnc main(a:int):int{const x=a+1;return 42;}",
+        "fnc main(a:int):int{int x=a+1;return 42;}",
+        "fnc main(a:int):int{const mut int x=a+1;return 42;}",
+    ] {
+        let out=guest("run",source,&["9223372036854775807"]);
+        assert_eq!(out.status.code(),Some(1),"{source}");
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("overflow"));
+    }
+}
+
+#[test]
+fn invalid_fixed_bindings_fail_before_ir() {
+    for source in [
         "fnc main():int{const x=9223372036854775807+1;return 0;}",
         "fnc main():int{int x=9223372036854775807+1;return 0;}",
         "fnc main():int{const x: int=9223372036854775807+1;return x;}",
-        "fnc main(a:int):int{const x: int=a;return x;}",
-        "fnc main():int{const mut int x=1;return x;}",
         "fnc main():int{mut int x=1;return x;}",
         "fnc main():int{val mut int x=1;return x;}",
         "fnc main():int{val x=1;x=2;return x;}",
-        "fnc main():int{const x=Integer.pow(2,3);return x;}",
         "fnc main():int{val y=y+1;return y;}",
         "fnc main():int{const x=x+1;return x;}",
         "fnc main(a:int):int{val a=2;return a;}",
@@ -183,28 +209,12 @@ fn binding_budget_and_comment_inertness() {
 fn cross_backend_const_diagnostic_classes_are_stable() {
     let cases = [
         (
-            "fnc main(a:int):int{const int x=a;return x;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
-            "fnc main(a:int):int{int x=a;return x;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
-            "fnc main(a:int):int{const x: int=a;return x;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
-            "fnc main():int{const x=Integer.pow(2,3);return x;}",
-            "E_NON_CONST_INITIALIZER",
-        ),
-        (
             "fnc main():int{const x=9223372036854775807+1;return x;}",
             "E_CONST_OVERFLOW",
         ),
         (
-            "fnc main():int{const mut int x=0;return x;}",
-            "E_CONST_MUT_UNSUPPORTED",
+            "fnc main():int{const mut int x=0;x=1;return x;}",
+            "E_IMMUTABLE_REBIND",
         ),
         ("fnc main():int{mut int x=0;return x;}", "E_MUT_QUALIFIER"),
         (

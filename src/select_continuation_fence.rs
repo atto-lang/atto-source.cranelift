@@ -317,86 +317,183 @@ mod tests {
 
     #[test]
     fn multi_owner_close_and_drop_wait_for_physical_unwind() {
-        use std::sync::Barrier;
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
         const OWNERS: usize = 64;
+        const LIMIT: Duration = Duration::from_secs(10);
         for round in 0..10 {
-            let mut owners: Vec<_> = (0..OWNERS)
-                .map(|_| Some(Fence::new(1, 2).unwrap()))
-                .collect();
-            let pending: Vec<_> = owners
-                .iter()
-                .map(|owner| owner.as_ref().unwrap().register(1).unwrap())
-                .collect();
-            let executing: Vec<_> = owners
-                .iter()
-                .map(|owner| {
-                    let owner = owner.as_ref().unwrap();
-                    let ticket = owner.register(1).unwrap();
-                    owner.claim(&ticket).unwrap()
-                })
-                .collect();
-            let entered = Barrier::new(OWNERS + 1);
-            let release = Barrier::new(OWNERS + 1);
             std::thread::scope(|scope| {
+                let mut owners = Vec::with_capacity(OWNERS);
+                let mut pending = Vec::with_capacity(OWNERS);
+                let mut releases = Vec::with_capacity(OWNERS);
                 let mut workers = Vec::with_capacity(OWNERS);
-                for execution in executing {
-                    let entered = &entered;
-                    let release = &release;
+                let (entered_tx, entered_rx) = sync_channel(OWNERS);
+                for index in 0..OWNERS {
+                    let fence = Fence::new(1, 2).unwrap();
+                    let ticket = fence.register(1).unwrap();
+                    let execution = fence.claim(&ticket).unwrap();
+                    pending.push(fence.register(1).unwrap());
+                    owners.push(Some(fence));
+                    let (release_tx, release_rx) = sync_channel(1);
+                    releases.push(release_tx);
+                    let entered = entered_tx.clone();
                     workers.push(scope.spawn(move || {
                         let result = std::panic::catch_unwind(move || {
-                            let lease = execution;
-                            entered.wait();
-                            release.wait();
-                            assert_eq!(lease.generation(), 1);
-                            panic!("expected callback failure");
+                            let _lease = execution;
+                            entered.send(index).unwrap();
+                            release_rx.recv_timeout(LIMIT).unwrap();
+                            if (index + round) % 2 == 0 {
+                                panic!("expected callback failure");
+                            }
                         });
-                        let failure = result.unwrap_err();
-                        assert_eq!(
-                            failure.downcast_ref::<&str>().copied(),
-                            Some("expected callback failure")
-                        );
+                        if (index + round) % 2 == 0 {
+                            let failure = result.unwrap_err();
+                            assert_eq!(failure.downcast_ref::<&str>().copied(),
+                                       Some("expected callback failure"));
+                        } else {
+                            result.unwrap();
+                        }
                     }));
                 }
-                entered.wait();
-                for i in 0..OWNERS {
-                    let owner = owners[i].as_ref().unwrap();
-                    assert_eq!(owner.counts(), (1, 1));
-                    assert!(matches!(owner.register(1), Err(AdmissionError::Capacity)));
-                    assert_eq!(owner.advance(1), Ok(false));
-                    if let Some(neighbor) = owners[(i + 1) % OWNERS].as_ref() {
-                        assert!(neighbor.claim(&pending[i]).is_none());
-                    }
-                    if (i + round) % 2 == 0 {
-                        drop(owners[i].take());
-                    } else {
-                        assert!(owner.close());
-                        assert!(!owner.retirement_ready());
-                        assert_eq!(owner.counts(), (0, 1));
-                        assert!(owner.claim(&pending[i]).is_none());
-                    }
-                    assert!(!pending[i].close());
+                let mut seen = [false; OWNERS];
+                for _ in 0..OWNERS {
+                    let index = entered_rx.recv_timeout(LIMIT).unwrap();
+                    assert!(!seen[index]);
+                    seen[index] = true;
                 }
-                release.wait();
-                for worker in workers.into_iter().rev() {
+                for index in 0..OWNERS {
+                    let fence = owners[index].as_ref().unwrap();
+                    assert_eq!(fence.counts(), (1, 1));
+                    assert!(matches!(fence.register(1), Err(AdmissionError::Capacity)));
+                    assert_eq!(fence.advance(1), Ok(false));
+                    assert!(fence.claim(&pending[(index + 1) % OWNERS]).is_none());
+                    if (index + round) % 2 == 0 {
+                        drop(owners[index].take());
+                    } else {
+                        assert!(fence.close());
+                        assert!(!fence.retirement_ready());
+                        assert_eq!(fence.counts(), (0, 1));
+                        assert!(fence.claim(&pending[index]).is_none());
+                    }
+                    assert!(!pending[index].close());
+                }
+                for (index, (release, worker)) in releases.into_iter().zip(workers).enumerate().rev()
+                {
+                    release.send(()).unwrap();
                     worker.join().unwrap();
+                    if let Some(fence) = &owners[index] {
+                        assert!(fence.retirement_ready());
+                        assert_eq!(fence.counts(), (0, 0));
+                    }
+                    if let Some(peer) = index.checked_sub(1).and_then(|i| owners[i].as_ref()) {
+                        assert_eq!(peer.counts(), (0, 1));
+                        assert!(!peer.retirement_ready());
+                    }
+                    let fresh = Fence::new(2, 2).unwrap();
+                    assert!(fresh.claim(&pending[index]).is_none());
+                    let ticket = fresh.register(2).unwrap();
+                    let lease = fresh.claim(&ticket).unwrap();
+                    drop(lease);
+                    assert!(fresh.close());
+                    assert!(fresh.retirement_ready());
                 }
             });
-            for (owner, stale) in owners.iter().zip(pending.iter()) {
-                if let Some(owner) = owner {
-                    assert!(owner.retirement_ready());
-                    assert_eq!(owner.counts(), (0, 0));
-                }
-                let fresh = Fence::new(2, 1).unwrap();
-                assert!(fresh.claim(stale).is_none());
-                assert!(!stale.close());
-                let next = fresh.register(2).unwrap();
-                let lease = fresh.claim(&next).unwrap();
-                assert_eq!(lease.generation(), 2);
-                drop(lease);
-                assert!(fresh.close());
-                assert!(fresh.retirement_ready());
-            }
         }
         println!("CRANELIFT_MULTI_OWNER_RETIREMENT_PASS owners=640");
+    }
+
+    #[test]
+    fn hundred_thousand_claim_cancel_schedules() {
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        const ROUNDS: u64 = 100_000;
+        const LIMIT: Duration = Duration::from_secs(10);
+        let fence = Arc::new(Fence::new(1, 1).unwrap());
+        std::thread::scope(|scope| {
+            let (claim_tx, claim_rx) = sync_channel::<(Ticket, u32)>(1);
+            let (cancel_tx, cancel_rx) = sync_channel::<(Ticket, u32)>(1);
+            let (claimed_tx, claimed_rx) = sync_channel(1);
+            let (cancelled_tx, cancelled_rx) = sync_channel(1);
+            let claimant = Arc::clone(&fence);
+            let a = scope.spawn(move || {
+                while let Ok((ticket, delay)) = claim_rx.recv() {
+                    for _ in 0..delay {
+                        std::hint::spin_loop();
+                    }
+                    claimed_tx.send(claimant.claim(&ticket)).unwrap();
+                }
+            });
+            let b = scope.spawn(move || {
+                while let Ok((ticket, delay)) = cancel_rx.recv() {
+                    for _ in 0..delay {
+                        std::hint::spin_loop();
+                    }
+                    cancelled_tx.send(ticket.close()).unwrap();
+                }
+            });
+            let mut seed = 0x1234_5678_u32;
+            let mut claims = 0;
+            let mut cancellations = 0;
+            for generation in 1..=ROUNDS {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let ticket = fence.register(generation).unwrap();
+                // Explicitly exercise both ordered winners before randomized
+                // contention. Do not rely on thread scheduling luck for coverage.
+                let (execution, cancelled) = if generation == 1 {
+                    claim_tx.send((ticket.clone(), 0)).unwrap();
+                    let execution = claimed_rx.recv_timeout(LIMIT).unwrap();
+                    cancel_tx.send((ticket.clone(), 0)).unwrap();
+                    (execution, cancelled_rx.recv_timeout(LIMIT).unwrap())
+                } else if generation == 2 {
+                    cancel_tx.send((ticket.clone(), 0)).unwrap();
+                    let cancelled = cancelled_rx.recv_timeout(LIMIT).unwrap();
+                    claim_tx.send((ticket.clone(), 0)).unwrap();
+                    (claimed_rx.recv_timeout(LIMIT).unwrap(), cancelled)
+                } else {
+                    if generation % 2 == 0 {
+                        claim_tx.send((ticket.clone(), seed & 31)).unwrap();
+                        cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                    } else {
+                        cancel_tx.send((ticket.clone(), (seed >> 5) & 31)).unwrap();
+                        claim_tx.send((ticket.clone(), seed & 31)).unwrap();
+                    }
+                    (claimed_rx.recv_timeout(LIMIT).unwrap(),
+                     cancelled_rx.recv_timeout(LIMIT).unwrap())
+                };
+                assert_ne!(execution.is_some(), cancelled);
+                assert!(fence.claim(&ticket).is_none());
+                assert!(!ticket.close());
+                if let Some(lease) = execution {
+                    claims += 1;
+                    assert_eq!(lease.generation(), generation);
+                    assert_eq!(fence.counts(), (0, 1));
+                    assert_eq!(fence.advance(generation), Ok(false));
+                    assert!(matches!(
+                        fence.register(generation),
+                        Err(AdmissionError::Capacity)
+                    ));
+                    drop(lease);
+                } else {
+                    cancellations += 1;
+                }
+                assert_eq!(fence.counts(), (0, 0));
+                assert_eq!(fence.advance(generation), Ok(true));
+            }
+            drop(claim_tx);
+            drop(cancel_tx);
+            a.join().unwrap();
+            b.join().unwrap();
+            assert_eq!(claims + cancellations, ROUNDS);
+            assert!(claims > 0 && cancellations > 0);
+            println!(
+                "CLAIM_CANCEL_STRESS_PASS rounds={ROUNDS} claims={claims} cancellations={cancellations}"
+            );
+        });
+        assert!(fence.close());
+        assert!(fence.retirement_ready());
     }
 }
