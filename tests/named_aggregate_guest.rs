@@ -72,6 +72,8 @@ fn actual_named_aggregate_guests_and_rejections() {
         "const Record r=(a:=40,b=2,);return r.a+r.b;",
         "const Record r=();const Record s={};const Tuple t=();return 42;",
         "const Tuple t=(42,);return t[0];",
+        "const Tuple t=(42);return t[0];",
+        "const Tuple<infer T> t=(1);const Tuple<T> u=(42,);return u[0];",
         "const Record<infer R> r={a:1};const Record<R> s=(a:=42);return s.a;",
     ] {
         let guest=run("run",body);
@@ -79,7 +81,6 @@ fn actual_named_aggregate_guests_and_rejections() {
         assert_eq!(guest.stdout,b"42\n");
     }
     for (body,diagnostic) in [
-        ("const Tuple t=(1);","E_TUPLE_ARITY"),
         ("const Record r={a:=1,a:2};","E_DUPLICATE_FIELD"),
         ("const Record r={a : = 1};","bool/int literal required"),
         ("const Record<infer R> R=(a=1);","duplicate aggregate local"),
@@ -112,6 +113,7 @@ fn actual_named_aggregate_guests_and_rejections() {
         ("const Record<infer R> r={a:1};const Record<R> s=();return 0;", "E_TYPE_MISMATCH"),
         ("const Record<infer R> r=();const Record<R> s={a:1};return 0;", "E_TYPE_MISMATCH"),
         ("const Tuple<infer T> t=(1,2);const Tuple<T> u=();return 0;", "E_TYPE_MISMATCH"),
+        ("const Tuple<infer T> t=(1,2);const Tuple<T> u=(42);return 0;", "E_TYPE_MISMATCH"),
         ("const t=();return t[0];", "E_NO_FIELD"),
         ("const Record r=();return r.a;", "E_NO_FIELD"),
         ("const struct s={};return 0;", "E_EMPTY_AGGREGATE"),
