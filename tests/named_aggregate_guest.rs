@@ -105,7 +105,7 @@ fn actual_named_aggregate_guests_and_rejections() {
     ] {
         let guest=run("run",body);
         assert!(guest.status.success(),"{body}: {:?}",guest);
-        assert_eq!(guest.stdout,b"42\\n");
+        assert_eq!(guest.stdout,b"42\n");
     }
     for (body,diagnostic) in [
         ("const Record<infer R> r=();const Tuple<R> t=();return 0;", "E_AGGREGATE_KIND"),
