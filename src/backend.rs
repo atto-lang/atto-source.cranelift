@@ -1334,12 +1334,12 @@ mod native_named_signed64_differential {
     #[test]
     fn checked_sequence_jit_matches_reference_and_rejects_forged_ast() {
         for expression in [
-            "seq(42)",
-            "seq(1,2,42)",
+            "seq! (42)",
+            "seq! (1,2,42)",
             "(> 1,2,42)",
-            "seq(1, (> 2,42))",
-            "seq(1,Integer.bitAnd(7,3),42)",
-            "seq(1,2)+40",
+            "seq! (1, (> 2,42))",
+            "seq! (1,Integer.bitAnd(7,3),42)",
+            "seq! (1,2)+40",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             let parsed = crate::frontend::parse(&source).expect("valid sequence");
@@ -1349,9 +1349,9 @@ mod native_named_signed64_differential {
             assert_eq!(compiled.run(&[]), Ok(42), "{source}");
         }
         for (expression, error) in [
-            ("seq(9223372036854775807+1,42)", "i64 arithmetic overflow"),
+            ("seq! (9223372036854775807+1,42)", "i64 arithmetic overflow"),
             ("(> 9223372036854775807+1,42)", "i64 arithmetic overflow"),
-            ("seq(Integer.rem(8,0),42)", "integer divisor zero"),
+            ("seq! (Integer.rem(8,0),42)", "integer divisor zero"),
             ("(> Integer.mod(8,0),42)", "integer divisor zero"),
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
@@ -1527,7 +1527,7 @@ mod integrated_local_sequence_native_tests {
     #[test]
     fn combined_runtime_local_and_constexpr_seq_emit_checked_native_code() {
         let program = crate::frontend::parse(
-            "fnc main(a:int):int{val live=seq(1,a+1);const answer=seq(1,40+2);return seq(live,answer);}"
+            "fnc main(a:int):int{val live=seq! (1,a+1);const answer=seq! (1,40+2);return seq! (live,answer);}"
         ).expect("integrated source must parse");
         let ir = render_ir(&program).expect("validate CLIF");
         let native = compile(&program).expect("compile real native guest");
@@ -1545,7 +1545,7 @@ mod integrated_local_sequence_native_tests {
     #[test]
     fn unused_runtime_sequence_must_still_trap() {
         let program =
-            crate::frontend::parse("fnc main(a:int):int{val ignored=seq(a+1,42);return 42;}")
+            crate::frontend::parse("fnc main(a:int):int{val ignored=seq! (a+1,42);return 42;}")
                 .expect("checked runtime initializer should parse");
         let native = compile(&program).expect("native checked guest");
         assert_eq!(native.run(&[1]), Ok(42));

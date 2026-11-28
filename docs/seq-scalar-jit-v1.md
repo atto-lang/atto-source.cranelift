@@ -6,9 +6,11 @@ AttoLang compiler or a sandbox for untrusted actor/tenant code.
 Accepted scalar subset:
 
 ```atto
-pub fnc main(): int { return seq(1, 2, 42); }
+pub fnc main(): int { return seq! (1, 2, 42); }
+pub fnc main(): int { return seq 1, 2, 42; }
+pub fnc main(): int { return seq! 1, 2, 42; }
 pub fnc main(): int { return (> 1, 2, 42); }
-pub fnc main(): int { return seq(1, (> 2, 42)); }
+pub fnc main(): int { return seq! (1, (> 2, 42)); }
 ```
 
 Each element is a checked signed-i64 expression evaluated **in source order**.
@@ -18,6 +20,8 @@ checked native failure status**. The last value is the expression result.
 Nested and single-element sequences are supported. Ordinary `(1,2)` is NOT a
 sequence and is rejected by this scalar frontend. A sequence can contain no
 more than 16 expressions; existing AST node/depth/source budgets apply.
+
+2026-11-27 grammar revision: contiguous `seq!` selects the delimited sequence; ordinary `seq(...)` and `seq (...)` are calls and are rejected in this scalar profile, not executed as sequences. Bare sequences are admitted at the normal scalar main return boundary only. Caret return and warnings, general callable admission and other bare sequence contexts remain unimplemented.
 
 Boundaries: no local declaration/assignment inside a sequence, no owned state,
 actors, suspension, `defer`, host filesystem/network capabilities,
