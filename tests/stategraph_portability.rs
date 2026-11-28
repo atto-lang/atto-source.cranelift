@@ -47,7 +47,7 @@ fn unsupported(source: &str) {
     assert_eq!(
         out.status.code(),
         Some(1),
-        "unsupported source must be rejected by the compiler with exit code 1"
+        "unsupported source must be rejected by the compiler with exit code 1: {source}"
     );
     assert!(
         out.stdout.is_empty(),
@@ -79,6 +79,8 @@ fn stategraph_common_checked_scalar_native_jit() {
         &["-2", "2"],
         "2\n",
     );
+    // Ordinary linked scalar calls now have real native support. This does not admit StateGraph itself.
+    accepted("fnc increment(int x):int{return x+1;} fnc main():int{return increment(41);}", &[], "42\n");
     let overflow = execute(
         "fnc main(steps:int,delta:int):int{return steps+delta*2;}",
         &["0", "9223372036854775807"],
@@ -124,7 +126,7 @@ fn stategraph_unimplemented_features_are_explicitly_rejected() {
         "fnc main():int{val Result<int,String> x = Ok(42);return x.unwrap();}",
         "import module stategraph from \"./stategraph\";fnc main():int{return 42;}",
         "define isolated actor Coordinator as state { steps:int=0; } end",
-        "fnc increment(int x):int{return x+1;} fnc main():int{return increment(41);}",
+
     ];
     for source in blockers {
         unsupported(source);
