@@ -343,7 +343,7 @@ fn run() -> Result<(), String> {
     }
     // Complete typed placement grammar, retaining the shared source envelope.
     if matches!(mode.as_str(), "run" | "ir" | "check" | "emit-object")
-        && source.contains("Storage") && source.contains("RawPointer")
+        && ((source.contains("Storage") && source.contains("RawPointer")) || (source.contains("struct") && source.contains("constructor")))
         && let Ok(plan)=frontend::point_placement::parse(source)
     {
         return backend::placement_command(&plan,&mode,&values);
