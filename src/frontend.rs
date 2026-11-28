@@ -3001,7 +3001,11 @@ pub fn parse(text: &str) -> Result<Program, String> {
     let parser = Parser::new(text)?;
     // A private function before main selects the existing bounded typed
     // helper grammar, not an unchecked retry after an authoritative denial.
-    if parser.current == Token::Word("fnc") && !parser.next_significant_word_is("main") {
+    if parser.current == Token::Word("fnc")
+        && !parser.next_significant_word_is("main")
+        && !parser.next_significant_word_is("actor")
+        && !parser.next_significant_word_is("isoactor")
+    {
         return quantity_scalar::parse_plain_helpers(parser);
     }
     let original = parser.program();
