@@ -684,3 +684,52 @@ int main(void){for(int i=0;i<100;i++){int64_t out=-1;assert(oreslang_scalar_entr
         }
     }
 }
+
+#[test]
+fn binding_arrow_scalar_ssa_guest() {
+    for body in [
+        "let b=21; let a <- b; return a+b;",
+        "let b=21; let int a <- b; return a+b;",
+        "let a=0; let b=21; set a <- b; return a+b;",
+        "let a=0; set a <- 21+21; return a;",
+        "let a=21; let a <- a; return a+a;",
+        "let a=21; let b <- a; set a=42; return b+b;",
+        "let a=1; let a <- 42; return a;",
+        "let a <- 42; return a;",
+    ] {
+        let src = format!("fnc main():int{{{body}}}");
+        for mode in ["check", "run", "ir", "emit-object"] {
+            let out = run_source(&src, mode);
+            assert!(out.status.success(), "{mode}: {src}: {}", String::from_utf8_lossy(&out.stderr));
+            if mode == "run" { assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42"); }
+            if mode == "check" { assert!(out.stdout.is_empty()); }
+            if mode == "ir" || mode == "emit-object" { assert!(!out.stdout.is_empty()); }
+        }
+    }
+}
+
+#[test]
+fn binding_arrow_rejects_unproved_and_noncontextual_forms() {
+    for body in [
+        "const a <- 42; return a;",
+        "int a <- 42; return a;",
+        "val a <- 42; return a;",
+        "let a=0; set! a <- 42; return a;",
+        "let a=0; a <- 42; return a;",
+        "let a=42; set a <- a; return a;",
+        "set missing <- 42; return 0;",
+        "let a <- missing; return a;",
+        "let a <- true; return a;",
+        "let a < - 42; return a;",
+        "let a </*comment*/- 42; return a;",
+        "let a • 42; return a;",
+        "let a <- new Box(); return 0;",
+        "let a=42; return a; // <- only in comment\n",
+    ] {
+        let src = format!("fnc main():int{{{body}}}");
+        for mode in ["check", "run", "ir", "emit-object"] {
+            let out = run_source(&src, mode);
+            assert!(!out.status.success() && out.stdout.is_empty(), "{mode}: {src}");
+        }
+    }
+}
