@@ -7,7 +7,7 @@
 //! after all checked arguments, helpers and local initializers succeed.
 //! This JIT MUST NEVER be described as a hostile-tenant memory sandbox.
 use crate::backend::Compiled;
-use crate::functional_pipelines::{Fn as ScalarFn, Raw, ScalarType};
+use crate::functional_pipelines::{Fn as ScalarFn, Raw, ScalarType, NAMED_STAGE};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::instructions::BlockArg;
 use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Value, types};
@@ -21,6 +21,8 @@ const MAX_CALL_DEPTH: usize = 16;
 const MAX_EXPR_DEPTH: usize = 32;
 const MAX_EXPR_NODES: usize = 4096;
 const MAX_LOCALS: usize = 4;
+const NAMED_DEPTH: &str = "$named_depth";
+const MAX_NAMED_EDGES: i64 = 1024;
 
 // Only the linked typed scalar profile supports these reductions. Ordinary
 // linked declarations take precedence; no array or untyped truthiness lowering.
@@ -204,19 +206,54 @@ fn cycle_visit(
     Ok(())
 }
 
+// Recheck the hidden graph independently of the source parser. This exception
+// to ordinary cycle denial is available only for one exact closed unary
+// graph, never for user-named recursive functions or imported cycles.
+fn validate_named_graph(program: &[ScalarFn]) -> Result<bool, String> {
+    if !program.iter().any(|f| f.name == NAMED_STAGE) { return Ok(false); }
+    if program.len()!=2 {return Err("E_NAMED_STAGE_GRAPH".into());}
+    let main=&program[0];let helper=&program[1];
+    if main.name!="main" || !main.public || helper.name!=NAMED_STAGE || helper.public
+        || !main.params.is_empty() || !main.param_types.is_empty()
+        || !main.locals.is_empty() || !helper.locals.is_empty()
+        || helper.params.len()!=1 || helper.param_types.as_slice()!=[ScalarType::Int]
+        || main.return_type!=ScalarType::Int || helper.return_type!=ScalarType::Int
+        || helper.params[0].starts_with('$')
+        || !matches!(&main.result,Raw::Call(n,args) if n==NAMED_STAGE && matches!(args.as_slice(),[Raw::Literal(_)]))
+    {return Err("E_NAMED_STAGE_GRAPH".into());}
+    fn closed(e:&Raw,param:&str,depth:usize,nodes:&mut usize,match_allowed:bool)->bool{
+        *nodes+=1;
+        if depth>MAX_EXPR_DEPTH||*nodes>256{return false;}
+        match e {
+            Raw::Literal(_)=>true,
+            Raw::Name(n)=>n==param,
+            Raw::Add(a,b)|Raw::Sub(a,b)|Raw::Mul(a,b)=>
+                closed(a,param,depth+1,nodes,false)&&closed(b,param,depth+1,nodes,false),
+            Raw::Call(n,args)=>n==NAMED_STAGE&&args.len()==1&&closed(&args[0],param,depth+1,nodes,false),
+            Raw::If(c,y,n) if match_allowed=>
+                matches!(c.as_ref(),Raw::Eq(a,b) if matches!(a.as_ref(),Raw::Name(s) if s==param)&&matches!(b.as_ref(),Raw::Literal(_)))
+                &&closed(y,param,depth+1,nodes,false)&&closed(n,param,depth+1,nodes,true),
+            _=>false,
+        }
+    }
+    if !closed(&helper.result,&helper.params[0],0,&mut 0,true){return Err("E_NAMED_STAGE_GRAPH".into());}
+    Ok(true)
+}
+
 /// Complete graph validation precedes IR emission, including *dormant*
 /// helpers; rejected sources never allocate executable code or print CLIF.
 pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
     if program.is_empty() || program.len() > MAX_FUNCTIONS {
         return Err("E_LINK_FUNCTION_BUDGET".into());
     }
+    let named = validate_named_graph(program)?;
     let mut names = HashMap::new();
     for (i, func) in program.iter().enumerate() {
         if names.insert(func.name.clone(), i).is_some() {
             return Err("E_LINK_DUP_FUNCTION".into());
         }
         if func.params.len() != func.param_types.len()
-            || func.params.len() > 4
+            || func.params.len() > crate::functional_pipelines::LINKED_MAX_ARITY
             || func.locals.len() > MAX_LOCALS
         {
             return Err("E_LINK_FUNCTION_ARITY_OR_LOCAL_BUDGET".into());
@@ -265,6 +302,7 @@ pub fn validate(program: &[ScalarFn]) -> Result<(), String> {
         if actual != func.return_type {
             return Err("E_LINK_RETURN_TYPE".into());
         }
+        if named && func.name == NAMED_STAGE { dependencies.retain(|n|n!=NAMED_STAGE); }
         edges.push(dependencies);
     }
     let mut states = vec![0; program.len()];
@@ -419,6 +457,22 @@ fn emit_expr(
             // The helper has an independent native function body, not an
             // expanded/inlined syntax tree. A parameter may be read repeatedly
             // without re-evaluating any argument.
+            if name == NAMED_STAGE {
+                // Arguments are evaluated first, exactly once. Only the
+                // compiler-created helper can hold the private depth slot.
+                let next = if let Some(current) = scope.get(NAMED_DEPTH).copied() {
+                    let limit = builder.ins().icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual,current,MAX_NAMED_EDGES);
+                    let status = builder.ins().iconst(types::I32,6);
+                    let continuation = builder.create_block();
+                    builder.ins().brif(limit,failure,&[BlockArg::Value(status)],continuation,&[]);
+                    builder.switch_to_block(continuation);
+                    builder.seal_block(continuation);
+                    builder.ins().iadd_imm(current,1)
+                } else {
+                    builder.ins().iconst(types::I64,0)
+                };
+                values.push(next);
+            }
             let invocation = builder.ins().call(func_ref, &values);
             let results = builder.inst_results(invocation);
             if results.len() != 2 {
@@ -479,7 +533,7 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
             if is_entry {
                 None
             } else {
-                Some(function.params.len())
+                Some(function.params.len()+if function.name==NAMED_STAGE {1} else {0})
             },
         );
         let symbol = if is_entry {
@@ -503,7 +557,7 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
         let mut ctx = module.make_context();
         ctx.func.signature = signatures[&function.name].clone();
         // Imports are declared before any body is emitted, supporting
-        // call-graph forward references while disallowing recursive cycles.
+        // call-graph forward references and the separately validated named self edge.
         let mut refs = HashMap::new();
         for target in program.iter().filter(|f| f.name != "main") {
             let func_id = ids[&target.name];
@@ -524,6 +578,7 @@ fn prepare(program: &[ScalarFn]) -> Result<Prepared, String> {
         for (position, name) in function.params.iter().enumerate() {
             scope.insert(name.clone(), params[position]);
         }
+        if function.name==NAMED_STAGE { scope.insert(NAMED_DEPTH.into(),params[function.params.len()]); }
         // Native parameters and val initializers are SSA values; every
         // initializer executes exactly once in the original lexical order.
         for (name, initializer) in &function.locals {

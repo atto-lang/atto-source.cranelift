@@ -24,6 +24,9 @@ mod owned_bytes_v1;
 mod state_region;
 #[allow(dead_code)]
 mod supervisor_stop;
+// Host-only proxy mailbox tickets; never guest-exposed or a transport ABI.
+pub mod proxy_receipt_gate_v1;
+pub mod proxy_mailbox_ticket_v1;
 pub mod uhl1;
 use std::io::{Read, Write};
 
@@ -285,6 +288,21 @@ fn run() -> Result<(), String> {
         return Err("source exceeds 1 MiB limit".into());
     }
     let source = std::str::from_utf8(&bytes).map_err(|_| "source is not valid UTF-8")?;
+    if frontend::native_readonly::selected(source) {
+        if !values.is_empty() || path.extension().and_then(|x| x.to_str()) != Some("atto") {
+            return Err("E_NATIVE_READONLY: expected .atto and zero runtime arguments".into());
+        }
+        let plan = frontend::native_readonly::parse(source)?;
+        return match mode.as_str() {
+            "check" => Ok(()),
+            "run" => { println!("{}", backend::native_readonly::compile(&plan)?.run(&[])?); Ok(()) },
+            "emit-object" => {
+                let object = backend::native_readonly::object(&plan)?;
+                std::io::stdout().lock().write_all(&object).map_err(|e|e.to_string())
+            }
+            _ => Err("E_NATIVE_READONLY: unsupported command mode".into()),
+        };
+    }
     if mode == "emit-counted-static-ready-object" {
         if !values.is_empty() || path.extension().and_then(|x| x.to_str()) != Some("atto") {
             return Err("E_COUNTED_STATIC_READY: expected .atto and no runtime arguments".into());
@@ -347,6 +365,11 @@ fn run() -> Result<(), String> {
             .lock()
             .write_all(&object)
             .map_err(|e| e.to_string());
+    }
+    if path.extension().and_then(|ext| ext.to_str()) == Some("atto")
+        && let Some(functions) = functional_pipelines::parse_named_recursive(source)?
+    {
+        return run_linked_native(&mode, &values, &functions);
     }
     let linked_source = has_real_import_header(source);
     if linked_source {

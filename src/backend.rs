@@ -874,11 +874,12 @@ fn prepare_ir_inner(
                 Step::Bind|Step::Detach=>{}
             }
         }
-        // Checked runtime addition; the static verifier still rejects known
-        // overflowing literal-only prefixes. Failure leaves the output untouched.
-        let mut result=copies[plan.result[0]];
-        for &i in &plan.result[1..] {
-            let (sum,overflow)=b.ins().sadd_overflow(result,copies[i]);
+        // Checked runtime arithmetic; known overflowing prefixes are rejected
+        // statically, and runtime failure leaves the output untouched.
+        let mut result=copies[plan.result[0].0];
+        for &(i,subtract) in &plan.result[1..] {
+            let (sum,overflow)=if subtract{b.ins().ssub_overflow(result,copies[i])}
+                else{b.ins().sadd_overflow(result,copies[i])};
             let next=b.create_block();
             b.ins().brif(overflow,failure,&[],next,&[]);
             b.switch_to_block(next);b.seal_block(next);result=sum;
@@ -1035,6 +1036,8 @@ impl Compiled {
             Err("integer divisor zero".into())
         } else if status == 3 {
             Err("negative integer exponent".into())
+        } else if status == 6 {
+            Err("E_STACK".into())
         } else if status == 7 {
             Err("E_REFINEMENT_VIOLATION".into())
         } else if status == 8 {
@@ -1333,12 +1336,12 @@ mod native_named_signed64_differential {
     #[test]
     fn checked_sequence_jit_matches_reference_and_rejects_forged_ast() {
         for expression in [
-            "seq(42)",
-            "seq(1,2,42)",
+            "seq! (42)",
+            "seq! (1,2,42)",
             "(> 1,2,42)",
-            "seq(1, (> 2,42))",
-            "seq(1,Integer.bitAnd(7,3),42)",
-            "seq(1,2)+40",
+            "seq! (1, (> 2,42))",
+            "seq! (1,Integer.bitAnd(7,3),42)",
+            "seq! (1,2)+40",
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
             let parsed = crate::frontend::parse(&source).expect("valid sequence");
@@ -1348,9 +1351,9 @@ mod native_named_signed64_differential {
             assert_eq!(compiled.run(&[]), Ok(42), "{source}");
         }
         for (expression, error) in [
-            ("seq(9223372036854775807+1,42)", "i64 arithmetic overflow"),
+            ("seq! (9223372036854775807+1,42)", "i64 arithmetic overflow"),
             ("(> 9223372036854775807+1,42)", "i64 arithmetic overflow"),
-            ("seq(Integer.rem(8,0),42)", "integer divisor zero"),
+            ("seq! (Integer.rem(8,0),42)", "integer divisor zero"),
             ("(> Integer.mod(8,0),42)", "integer divisor zero"),
         ] {
             let source = format!("fnc main():int{{return {expression};}}");
@@ -1526,7 +1529,7 @@ mod integrated_local_sequence_native_tests {
     #[test]
     fn combined_runtime_local_and_constexpr_seq_emit_checked_native_code() {
         let program = crate::frontend::parse(
-            "fnc main(a:int):int{val live=seq(1,a+1);const answer=seq(1,40+2);return seq(live,answer);}"
+            "fnc main(a:int):int{val live=seq! (1,a+1);const answer=seq! (1,40+2);return seq! (live,answer);}"
         ).expect("integrated source must parse");
         let ir = render_ir(&program).expect("validate CLIF");
         let native = compile(&program).expect("compile real native guest");
@@ -1544,7 +1547,7 @@ mod integrated_local_sequence_native_tests {
     #[test]
     fn unused_runtime_sequence_must_still_trap() {
         let program =
-            crate::frontend::parse("fnc main(a:int):int{val ignored=seq(a+1,42);return 42;}")
+            crate::frontend::parse("fnc main(a:int):int{val ignored=seq! (a+1,42);return 42;}")
                 .expect("checked runtime initializer should parse");
         let native = compile(&program).expect("native checked guest");
         assert_eq!(native.run(&[1]), Ok(42));
@@ -1983,3 +1986,33 @@ int main(void) {
         }
     }
 }
+
+
+#[cfg(test)]
+mod incoming_scalar_ssa_evidence {
+    use super::{compile, emit_object, render_ir};
+    use crate::frontend::parse;
+
+    #[test]
+    fn scalar_incoming_values_do_not_materialize_binding_slots() {
+        let program = parse("fnc main(a:int,b:int):int{val x=a+1;return x+b;}")
+            .expect("closed copied scalar source");
+        let ir = render_ir(&program).expect("verified CLIF");
+        assert!(!ir.contains("stack_slot"), "{ir}");
+        assert!(!ir.contains("stack_store"), "{ir}");
+        assert!(!ir.contains("stack_load"), "{ir}");
+        let guest = compile(&program).expect("real native JIT");
+        assert_eq!(guest.run(&[20, 21]), Ok(42));
+        assert!(guest.run(&[i64::MAX, 0]).is_err());
+        assert_eq!(guest.run(&[20, 21]), Ok(42));
+        assert!(!emit_object(&program).expect("native AOT object").is_empty());
+    }
+
+    #[test]
+    fn unmarked_scalar_formal_is_not_an_assignable_slot() {
+        assert!(parse("fnc main(a:int):int{a=a+2;return a;}").is_err());
+    }
+}
+
+#[path = "backend/native_readonly.rs"]
+pub(crate) mod native_readonly;
