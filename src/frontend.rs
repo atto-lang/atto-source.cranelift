@@ -1999,7 +1999,7 @@ impl<'a> Parser<'a> {
         // Root typed integer transfer pilot. Leave the existing unsupported
         // inferred let path and actor capability diagnostic untouched.
         if self.current == Token::Word("let") && self.next_significant_word_is("int") {
-            let mut writable = BTreeSet::new();
+            let mut writable = std::collections::BTreeSet::<String>::new();
             let mut saw_arrow = false;
             while matches!(self.current, Token::Word("let" | "set")) {
                 let fresh = self.take(Token::Word("let"))?;
