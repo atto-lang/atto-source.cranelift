@@ -1172,7 +1172,6 @@ impl<'a> Parser<'a> {
         let close = Token::Punct(if brace { b'}' } else { b')' });
         self.expect(Token::Punct(if brace { b'{' } else { b'(' }))?;
         let mut fields = std::collections::BTreeMap::new();
-        let mut comma = false;
         if kind == "struct" && self.current == close {
             return Err("E_EMPTY_AGGREGATE: empty Struct not admitted".into());
         }
@@ -1194,11 +1193,7 @@ impl<'a> Parser<'a> {
             }
             if fields.contains_key(&key) { return Err("E_DUPLICATE_FIELD: duplicate field".into()); }
             fields.insert(key, self.aggregate_literal_field()?);
-            comma = self.take(Token::Punct(b','))?;
-            if !comma { break; }
-        }
-        if kind == "Tuple" && fields.len() == 1 && !comma {
-            return Err("E_TUPLE_ARITY: singleton tuple requires trailing comma".into());
+            if !self.take(Token::Punct(b','))? { break; }
         }
         self.expect(close)?;
         self.expect(Token::Punct(b';'))?;
