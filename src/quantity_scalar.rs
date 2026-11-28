@@ -3,7 +3,7 @@
 use super::{
     Expr, LoopStep, MAX_DEPTH, Parser, Program, Token, integer_digits, validate_ast_depth,
 };
-type Dim = [i8; 8];
+type Dim = [i16; 8];
 type GuardFacts = (Expr, Vec<(String, Binding)>, Vec<(String, Binding)>);
 type LoopPlan = (Expr, Vec<LoopStep>, Vec<(String, Binding)>);
 const SCALAR: Dim = [0; 8];
@@ -269,6 +269,8 @@ struct BranchTail<'a> {
 struct Quantities<'a> {
     p: Parser<'a>,
     dimensions: Vec<String>,
+    dimension_vectors: Vec<Dim>,
+    base_dimensions: usize,
     units: Vec<(String, usize, Scale)>,
     refinements: Vec<(String, Refinement)>,
     bindings: Vec<(String, Binding)>,
@@ -304,6 +306,11 @@ impl<'a> Quantities<'a> {
         }
         Err("E_UNIT_SCALE: expected positive i64 factor".into())
     }
+    fn read_declared_dimension(&mut self) -> Result<Dim, String> {
+        let name=self.p.name()?;
+        let index=self.dimensions.iter().position(|n|n==&name).ok_or("E_UNIT_NAME: unknown or forward dimension")?;
+        Ok(self.dimension_vectors[index])
+    }
     fn declarations(&mut self) -> Result<(), String> {
         while self.p.take(Token::Word("define"))? {
             if self.units.len() + self.dimensions.len() >= 128 {
@@ -315,10 +322,32 @@ impl<'a> Quantities<'a> {
             }
             let name = self.declaration_name()?;
             if dimension {
-                if self.dimensions.len() == 8 {
-                    return Err("E_UNIT_LIMIT: dimensions".into());
+                let mut vector = SCALAR;
+                if self.p.take(Token::Punct(b'='))? {
+                    if self.strict { return Err("E_VERIFY_UNSUPPORTED: compound dimension pilot is not strict-profile admitted".into()); }
+                    vector = self.read_declared_dimension()?;
+                    let mut factors = 1;
+                    loop {
+                        let divide = if self.p.take(Token::Punct(b'/'))? { true }
+                            else if self.p.take(Token::Punct(b'*'))? { false } else { break };
+                        factors += 1;
+                        if factors > 128 { return Err("E_UNIT_LIMIT: compound dimension factor budget exceeded".into()); }
+                        let rhs = self.read_declared_dimension()?;
+                        for (i,d) in vector.iter_mut().enumerate() {
+                            *d += if divide {-rhs[i]} else {rhs[i]};
+                            if !(-64..=64).contains(d) {return Err("E_UNIT_LIMIT: exponent".into());}
+                        }
+                    }
+                    if vector == SCALAR || self.dimension_vectors.contains(&vector) {
+                        return Err("E_UNIT_DIMENSION: equal or empty vectors require explicit nominal kind admission".into());
+                    }
+                } else {
+                    if self.base_dimensions == vector.len() {return Err("E_UNIT_LIMIT: dimensions".into());}
+                    vector[self.base_dimensions]=1;
+                    self.base_dimensions+=1;
                 }
                 self.dimensions.push(name);
+                self.dimension_vectors.push(vector);
             } else {
                 self.p.expect(Token::Punct(b':'))?;
                 let target = self.p.name()?;
@@ -469,7 +498,7 @@ impl<'a> Quantities<'a> {
                     .iter()
                     .find(|(n, _, _)| n == &name)
                     .ok_or("E_UNIT_NAME: unknown refinement unit")?;
-                dim[*i] = 1;
+                dim = self.dimension_vectors[*i];
                 scale = *s;
             }
             self.p.expect(Token::Punct(b';'))?;
@@ -497,7 +526,7 @@ impl<'a> Quantities<'a> {
             .iter()
             .find(|(n, _, _)| n == &name)
             .ok_or("E_UNIT_NAME: unknown or unsupported unit")?;
-        value.dim[*index] = 1;
+        value.dim = self.dimension_vectors[*index];
         value.scale = *scale;
         Ok(())
     }
@@ -583,8 +612,7 @@ impl<'a> Quantities<'a> {
                         .iter()
                         .find(|(n, _, _)| n == &name)
                         .ok_or("E_UNIT_NAME: unknown conversion target")?;
-                    let mut dim = SCALAR;
-                    dim[*index] = 1;
+                    let dim = self.dimension_vectors[*index];
                     if value.dim != dim {
                         return Err("E_UNIT_DIMENSION: conversion dimensions differ".into());
                     }
@@ -1184,7 +1212,7 @@ impl<'a> Quantities<'a> {
                 .iter()
                 .find(|(u, _, _)| u == &name)
                 .ok_or("E_UNIT_NAME: contract unit")?;
-            dim[*index] = 1;
+            dim = self.dimension_vectors[*index];
             scale = *s;
         }
         if dim != w.dim {
@@ -2030,7 +2058,7 @@ impl<'a> Quantities<'a> {
                     } else {
                         *d - rhs.dim[i]
                     };
-                    if !(-32..=32).contains(&n) {
+                    if !(-64..=64).contains(&n) {
                         return Err("E_UNIT_LIMIT: exponent".into());
                     }
                     *d = n;
@@ -2083,6 +2111,8 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
     let mut q = Quantities {
         p,
         dimensions: Vec::new(),
+        dimension_vectors: Vec::new(),
+        base_dimensions: 0,
         units: Vec::new(),
         refinements: Vec::new(),
         bindings: Vec::new(),
