@@ -1720,7 +1720,7 @@ impl<'a> Parser<'a> {
             Token::Word("state") => Some("state container"),
             Token::Word(
                 kind @ ("actor" | "supervisor" | "singleton" | "grain" | "model" | "enum" | "class"
-                | "struct" | "record" | "interface" | "trait" | "protocol" | "service"),
+                | "struct" | "record" | "interface" | "trait" | "contract" | "protocol" | "service"),
             ) => Some(kind),
             _ => None,
         };
