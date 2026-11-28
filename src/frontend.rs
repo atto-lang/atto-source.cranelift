@@ -4375,7 +4375,14 @@ end"#;
         let parsed = parse("fnc main(a:int):int{const c=2;val v=a+c;return v;}").unwrap();
         assert_eq!(parsed.locals.len(), 1);
         assert_eq!(parsed.result, Expr::Local(0));
-        assert!(parse("fnc main(a:int):int{int c=a;return c;}").is_err());
+        // Ordinary local const is eager, not constexpr-only (#228 / spec #307).
+        let implicit = parse("fnc main(a:int):int{int c=a;return c;}").unwrap();
+        let explicit = parse("fnc main(a:int):int{const int c=a;return c;}").unwrap();
+        assert_eq!(implicit.locals, vec![Expr::Param(0)]);
+        assert_eq!(implicit.locals, explicit.locals);
+        assert_eq!(implicit.result, explicit.result);
+        assert_eq!(implicit.result, Expr::Local(0));
+        assert!(parse("fnc main(a:int):int{int c=a;const c=2;return c;}").is_err());
     }
 
     #[test]
