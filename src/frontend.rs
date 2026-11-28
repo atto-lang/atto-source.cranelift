@@ -1953,7 +1953,7 @@ impl<'a> Parser<'a> {
                 // Scalar const mut is the same fixed binding as val.
                 kind = "val";
             }
-            let typed = kind == "int" || self.take(Token::Word("int"))?;
+            let mut typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if matches!(name.as_str(), "sync" | "task" | "yield") {
                 return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
@@ -1969,11 +1969,26 @@ impl<'a> Parser<'a> {
             }
             if !typed && (self.take(Token::Punct(b':'))? || self.take(Token::Word("as"))?) {
                 self.expect(Token::Word("int"))?;
+                typed = true;
             }
             if self.bindings.len() + self.named_aggregate_locals.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
+            // Only a complete empty literal in an untyped const binding
+            // defaults to Tuple. Existing grouped scalar expressions, typed
+            // scalar locals and other aggregate syntax keep their paths.
+            if kind == "const" && !typed && self.current == Token::Punct(b'(')
+                && self.next_significant_word_is(")")
+            {
+                self.expect(Token::Punct(b'('))?;
+                self.expect(Token::Punct(b')'))?;
+                self.expect(Token::Punct(b';'))?;
+                self.named_aggregate_locals.insert(name, NamedAggregate {
+                    kind: "Tuple", fields: Default::default(),
+                });
+                continue;
+            }
             let initializer = self.expr(0, 0)?;
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
