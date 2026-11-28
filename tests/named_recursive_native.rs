@@ -44,7 +44,9 @@ fn named_recursive_native_guests_and_denials() {
     // Exponential fixture deliberately not run. IR alone is not guest proof.
     for (source,code) in [
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {return v+x;};}","E_NAMED_STAGE_CLOSED_INT"),
-        ("pub fnc main(): int {return 1 |> fnc f(int v): int {return f(v,v);};}","E_NAMED_STAGE_CLOSED_INT"),
+        // Unary stage argument parsing rejects excess arity before closed-body validation.
+        ("pub fnc main(): int {return 1 |> fnc f(int v): int {return f(v,v);};}","E_PIPE_ARITY_LIMIT"),
+        ("pub fnc main(): int {return 1 |> fnc f(int v): int {return f();};}","E_NAMED_STAGE_CLOSED_INT"),
         ("pub fnc main(): int {return 1 |> fnc f(int f): int {return f;};}","E_NAMED_STAGE_NAME"),
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {^ match v over on 0 -> 0 end};}","E_NAMED_STAGE_NONEXHAUSTIVE"),
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {^ match v over on 0 -> 0, on 0 -> 1, on _ -> 2 end};}","E_NAMED_STAGE_DUP_PATTERN"),
