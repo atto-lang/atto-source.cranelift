@@ -701,6 +701,40 @@ mod tests {
     }
 
     #[test]
+    fn named_actuals_run_through_real_linked_native_code() {
+        let prefix = "fnc f(int a,int b):int{return a*10+b;} ";
+        for (call, expected) in [
+            ("f(b:2,a:4)", 42), ("f(b=2,a=4)", 42),
+            ("f(b:2,a=4)", 42), ("f(b=2,a:4)", 42),
+            ("f(4,b=2)", 42), ("f(b=4,a=2)", 24),
+            ("f(b=2,a=f(b:3,a=1)-9)", 42),
+        ] {
+            let source = format!("{prefix}pub fnc main():int{{return {call};}}");
+            let program = parse_linked_native(&source, &[]).unwrap();
+            validate(&program).unwrap();
+            assert_eq!(compile(&program).unwrap().run(&[]), Ok(expected), "{call}");
+            assert!(render_ir(&program).unwrap().contains("call "));
+        }
+    }
+
+    #[test]
+    fn named_actuals_reject_invalid_slots_before_codegen() {
+        let prefix = "fnc f(int a,int b):int{return a*10+b;} ";
+        for (call, diagnostic) in [
+            ("f(a=4,a:2)", "E_LINK_NAMED_DUP"),
+            ("f(4,a=2)", "E_LINK_NAMED_DUP"),
+            ("f(z=4,b:2)", "E_LINK_NAMED_UNKNOWN"),
+            ("f(a=4,2)", "E_LINK_NAMED_ORDER"),
+            ("f(b=true,a=4)", "E_LINK_ARGUMENT_TYPE"),
+            ("f(a:=4,b=2)", "E_LINK_PAIR_UNSUPPORTED"),
+        ] {
+            let source = format!("{prefix}pub fnc main():int{{return {call};}}");
+            let outcome = parse_linked_native(&source, &[]).and_then(|p| validate(&p));
+            assert_eq!(outcome.unwrap_err(), diagnostic, "{call}");
+        }
+    }
+
+    #[test]
     fn independent_native_helper_reuses_parameter_without_repeating_argument() {
         let funcs = two_unit(
             "pub fnc main(): int { return twice(21); }",
