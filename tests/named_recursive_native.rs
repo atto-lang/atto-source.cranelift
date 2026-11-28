@@ -44,7 +44,8 @@ fn named_recursive_native_guests_and_denials() {
     // Exponential fixture deliberately not run. IR alone is not guest proof.
     for (source,code) in [
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {return v+x;};}","E_NAMED_STAGE_CLOSED_INT"),
-        ("pub fnc main(): int {return 1 |> fnc f(int v): int {return f(v,v);};}","E_NAMED_STAGE_CLOSED_INT"),
+        // The unary parser rejects excess call operands before lexical closure checking.
+        ("pub fnc main(): int {return 1 |> fnc f(int v): int {return f(v,v);};}","E_PIPE_ARITY_LIMIT"),
         ("pub fnc main(): int {return 1 |> fnc f(int f): int {return f;};}","E_NAMED_STAGE_NAME"),
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {^ match v over on 0 -> 0 end};}","E_NAMED_STAGE_NONEXHAUSTIVE"),
         ("pub fnc main(): int {return 1 |> fnc f(int v): int {^ match v over on 0 -> 0, on 0 -> 1, on _ -> 2 end};}","E_NAMED_STAGE_DUP_PATTERN"),
@@ -56,7 +57,7 @@ fn named_recursive_native_guests_and_denials() {
             let denied=run(mode,source);
             assert_eq!(denied.status.code(),Some(1),"{:?}",denied);
             assert!(denied.stdout.is_empty());
-            assert_eq!(String::from_utf8(denied.stderr).unwrap(),format!("orescranelift: {code}\n"));
+            assert_eq!(String::from_utf8(denied.stderr).unwrap(),format!("orescranelift: {code}\n"),"{mode}: {source}");
         }
     }
     for mode in ["emit-object","isolate","run-traced"] {
