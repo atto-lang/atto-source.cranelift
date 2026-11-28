@@ -213,8 +213,8 @@ fn cross_backend_const_diagnostic_classes_are_stable() {
             "E_CONST_OVERFLOW",
         ),
         (
-            "fnc main():int{const mut int x=0;return x;}",
-            "E_CONST_MUT_UNSUPPORTED",
+            "fnc main():int{const mut int x=0;x=1;return x;}",
+            "E_IMMUTABLE_REBIND",
         ),
         ("fnc main():int{mut int x=0;return x;}", "E_MUT_QUALIFIER"),
         (
