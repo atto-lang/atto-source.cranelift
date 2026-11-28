@@ -275,6 +275,7 @@ struct Quantities<'a> {
     refinements: Vec<(String, Refinement)>,
     bindings: Vec<(String, Binding)>,
     strict: bool,
+    plain_helpers: bool,
     guarded: bool,
     locals: Vec<Expr>,
     helpers: Vec<(String, Helper)>,
@@ -976,8 +977,13 @@ impl<'a> Quantities<'a> {
             .ok_or_else(|| "E_UNIT_NAME: unknown annotation".into())
     }
     fn binding_name(&self, name: &str) -> Result<(), String> {
-        if !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-            || matches!(
+        let valid_start = if self.plain_helpers {
+            super::identifier_start_width(name, 0) != 0
+                && !super::is_java_v1_reserved_parameter_name(name)
+        } else {
+            name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        };
+        if !valid_start || matches!(
                 name,
                 "using"
                     | "dimension"
@@ -2108,6 +2114,12 @@ impl<'a> Quantities<'a> {
     }
 }
 pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String> {
+    parse_mode_inner(p, strict, false)
+}
+pub(super) fn parse_plain_helpers(p: Parser<'_>) -> Result<Program, String> {
+    parse_mode_inner(p, false, true)
+}
+fn parse_mode_inner(p: Parser<'_>, strict: bool, plain_helpers: bool) -> Result<Program, String> {
     let mut q = Quantities {
         p,
         dimensions: Vec::new(),
@@ -2117,13 +2129,16 @@ pub(super) fn parse_mode(p: Parser<'_>, strict: bool) -> Result<Program, String>
         refinements: Vec::new(),
         bindings: Vec::new(),
         strict,
+        plain_helpers,
         guarded: false,
         locals: Vec::new(),
         helpers: Vec::new(),
         arrays: Vec::new(),
     };
-    q.declarations()?;
-    q.refinement_declarations()?;
+    if !plain_helpers {
+        q.declarations()?;
+        q.refinement_declarations()?;
+    }
     if strict && q.refinements.is_empty() {
         return Err("E_VERIFY_UNSUPPORTED: strict typed quantity profile required".into());
     }

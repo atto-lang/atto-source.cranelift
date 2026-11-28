@@ -2988,7 +2988,13 @@ pub fn parse(text: &str) -> Result<Program, String> {
     {
         return Ok(program);
     }
-    let original = Parser::new(text)?.program();
+    let parser = Parser::new(text)?;
+    // A private function before main selects the existing bounded typed
+    // helper grammar, not an unchecked retry after an authoritative denial.
+    if parser.current == Token::Word("fnc") && !parser.next_significant_word_is("main") {
+        return quantity_scalar::parse_plain_helpers(parser);
+    }
+    let original = parser.program();
     // Only a complete, independently typed closed Option program can enter
     // the fused scalar lowering. Preserve all ordinary parser denials otherwise.
     if original.is_err()
