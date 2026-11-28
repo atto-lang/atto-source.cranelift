@@ -138,11 +138,17 @@ fn inspect_expression(
             .get(name)
             .copied()
             .ok_or_else(|| "E_LINK_UNBOUND_IDENTIFIER".into()),
-        Raw::Add(a, b) | Raw::Sub(a, b) | Raw::Mul(a, b) => {
+        Raw::Add(a, b) | Raw::Sub(a, b) | Raw::Mul(a, b) | Raw::BitAnd(a, b) => {
             if child(a)? != Int || child(b)? != Int {
                 return Err("E_LINK_INTEGER_OPERANDS".into());
             }
             Ok(Int)
+        }
+        Raw::Lt(a, b) | Raw::Le(a, b) | Raw::Gt(a, b) | Raw::Ge(a, b) => {
+            if child(a)? != Int || child(b)? != Int {
+                return Err("E_LINK_INTEGER_OPERANDS".into());
+            }
+            Ok(Bool)
         }
         Raw::Eq(a, b) | Raw::Ne(a, b) => {
             let lhs = child(a)?;
@@ -397,6 +403,24 @@ fn emit_expr(
         Raw::Not(inner) => {
             let v = emit_expr(inner, builder, scope, refs, failure, depth + 1)?;
             let flag = builder.ins().icmp_imm_s(IntCC::Equal, v, 0);
+            Ok(builder.ins().uextend(types::I64, flag))
+        }
+        Raw::BitAnd(a, b) => {
+            let lhs = emit_expr(a, builder, scope, refs, failure, depth + 1)?;
+            let rhs = emit_expr(b, builder, scope, refs, failure, depth + 1)?;
+            Ok(builder.ins().band(lhs, rhs))
+        }
+        Raw::Lt(a, b) | Raw::Le(a, b) | Raw::Gt(a, b) | Raw::Ge(a, b) => {
+            let lhs = emit_expr(a, builder, scope, refs, failure, depth + 1)?;
+            let rhs = emit_expr(b, builder, scope, refs, failure, depth + 1)?;
+            let cc = match expr {
+                Raw::Lt(_, _) => IntCC::SignedLessThan,
+                Raw::Le(_, _) => IntCC::SignedLessThanOrEqual,
+                Raw::Gt(_, _) => IntCC::SignedGreaterThan,
+                Raw::Ge(_, _) => IntCC::SignedGreaterThanOrEqual,
+                _ => unreachable!(),
+            };
+            let flag = builder.ins().icmp(cc, lhs, rhs);
             Ok(builder.ins().uextend(types::I64, flag))
         }
         Raw::Eq(a, b) | Raw::Ne(a, b) | Raw::Xor(a, b) => {

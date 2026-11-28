@@ -26,6 +26,11 @@ pub(crate) enum Raw {
     Not(Box<Raw>),
     Eq(Box<Raw>, Box<Raw>),
     Ne(Box<Raw>, Box<Raw>),
+    BitAnd(Box<Raw>, Box<Raw>),
+    Lt(Box<Raw>, Box<Raw>),
+    Le(Box<Raw>, Box<Raw>),
+    Gt(Box<Raw>, Box<Raw>),
+    Ge(Box<Raw>, Box<Raw>),
     And(Box<Raw>, Box<Raw>),
     Or(Box<Raw>, Box<Raw>),
     Xor(Box<Raw>, Box<Raw>),
@@ -51,6 +56,11 @@ impl Raw {
             | Self::Mul(a, b)
             | Self::Eq(a, b)
             | Self::Ne(a, b)
+            | Self::BitAnd(a, b)
+            | Self::Lt(a, b)
+            | Self::Le(a, b)
+            | Self::Gt(a, b)
+            | Self::Ge(a, b)
             | Self::And(a, b)
             | Self::Or(a, b)
             | Self::Xor(a, b) => a.requires_tuple_lowering() || b.requires_tuple_lowering(),
@@ -82,6 +92,11 @@ fn has_named_boolean_call(expr: &Raw) -> bool {
         | Raw::Mul(a, b)
         | Raw::Eq(a, b)
         | Raw::Ne(a, b)
+        | Raw::BitAnd(a, b)
+        | Raw::Lt(a, b)
+        | Raw::Le(a, b)
+        | Raw::Gt(a, b)
+        | Raw::Ge(a, b)
         | Raw::And(a, b)
         | Raw::Or(a, b)
         | Raw::Xor(a, b) => has_named_boolean_call(a) || has_named_boolean_call(b),
@@ -166,9 +181,11 @@ fn lex(text: &str) -> Result<Vec<String>, String> {
             || bytes[i..].starts_with(b"||")
             || bytes[i..].starts_with(b"==")
             || bytes[i..].starts_with(b"!=")
+            || bytes[i..].starts_with(b"<=")
+            || bytes[i..].starts_with(b">=")
         {
             i += 2;
-        } else if b"(){}:,;+-*=!|^".contains(&bytes[i]) {
+        } else if b"(){}:,;+-*=!|^&<>".contains(&bytes[i]) {
             i += 1;
         } else {
             return Err("E_PIPE_LEX_UNSUPPORTED".into());
@@ -395,8 +412,10 @@ impl Parser {
             let op = self.peek().to_owned();
             let bp = match op.as_str() {
                 "*" => 20,
-                "+" | "-" => 10,
-                "eq" | "neq" | "==" | "!=" => 9,
+                "+" | "-" => 14,
+                "<" | "<=" | ">" | ">=" => 13,
+                "eq" | "neq" | "==" | "!=" => 12,
+                "&" => 11,
                 "and" | "&&" => 8,
                 "xor" => 7,
                 "or" | "||" => 6,
@@ -417,6 +436,26 @@ impl Parser {
                     Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
                 ),
                 "*" => Raw::Mul(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "&" => Raw::BitAnd(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "<" => Raw::Lt(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                "<=" => Raw::Le(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                ">" => Raw::Gt(
+                    Box::new(lhs),
+                    Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
+                ),
+                ">=" => Raw::Ge(
                     Box::new(lhs),
                     Box::new(self.expr(bp + 1, depth + 1, pipe.as_deref())?),
                 ),
@@ -671,6 +710,11 @@ impl Lower<'_> {
             | Raw::Not(_)
             | Raw::Eq(_, _)
             | Raw::Ne(_, _)
+            | Raw::BitAnd(_, _)
+            | Raw::Lt(_, _)
+            | Raw::Le(_, _)
+            | Raw::Gt(_, _)
+            | Raw::Ge(_, _)
             | Raw::And(_, _)
             | Raw::Or(_, _)
             | Raw::Xor(_, _)
