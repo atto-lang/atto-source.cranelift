@@ -2013,3 +2013,6 @@ mod incoming_scalar_ssa_evidence {
         assert!(parse("fnc main(a:int):int{a=a+2;return a;}").is_err());
     }
 }
+
+#[path = "backend/native_readonly.rs"]
+pub(crate) mod native_readonly;

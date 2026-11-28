@@ -4776,3 +4776,6 @@ mod canonical_stdout_scalar_admission_tests {
         assert!(parse("fnc main():int{return 42; /* process.stdout.write(42) */}").is_ok());
     }
 }
+
+#[path = "frontend/native_readonly.rs"]
+pub(crate) mod native_readonly;
