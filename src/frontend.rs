@@ -1172,7 +1172,6 @@ impl<'a> Parser<'a> {
         let close = Token::Punct(if brace { b'}' } else { b')' });
         self.expect(Token::Punct(if brace { b'{' } else { b'(' }))?;
         let mut fields = std::collections::BTreeMap::new();
-        let mut comma = false;
         if kind == "struct" && self.current == close {
             return Err("E_EMPTY_AGGREGATE: empty Struct not admitted".into());
         }
@@ -1194,11 +1193,7 @@ impl<'a> Parser<'a> {
             }
             if fields.contains_key(&key) { return Err("E_DUPLICATE_FIELD: duplicate field".into()); }
             fields.insert(key, self.aggregate_literal_field()?);
-            comma = self.take(Token::Punct(b','))?;
-            if !comma { break; }
-        }
-        if kind == "Tuple" && fields.len() == 1 && !comma {
-            return Err("E_TUPLE_ARITY: singleton tuple requires trailing comma".into());
+            if !self.take(Token::Punct(b','))? { break; }
         }
         self.expect(close)?;
         self.expect(Token::Punct(b';'))?;
@@ -1953,7 +1948,7 @@ impl<'a> Parser<'a> {
                 // Scalar const mut is the same fixed binding as val.
                 kind = "val";
             }
-            let typed = kind == "int" || self.take(Token::Word("int"))?;
+            let mut typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
             if matches!(name.as_str(), "sync" | "task" | "yield") {
                 return Err("E_PIPE_NAME: reserved authority/scheduler binding".into());
@@ -1969,11 +1964,26 @@ impl<'a> Parser<'a> {
             }
             if !typed && (self.take(Token::Punct(b':'))? || self.take(Token::Word("as"))?) {
                 self.expect(Token::Word("int"))?;
+                typed = true;
             }
             if self.bindings.len() + self.named_aggregate_locals.len() >= MAX_LOCALS {
                 return Err("local binding count exceeds 64".into());
             }
             self.expect(Token::Punct(b'='))?;
+            // Only a complete empty literal in an untyped const binding
+            // defaults to Tuple. Existing grouped scalar expressions, typed
+            // scalar locals and other aggregate syntax keep their paths.
+            if kind == "const" && !typed && self.current == Token::Punct(b'(')
+                && self.next_significant_word_is(")")
+            {
+                self.expect(Token::Punct(b'('))?;
+                self.expect(Token::Punct(b')'))?;
+                self.expect(Token::Punct(b';'))?;
+                self.named_aggregate_locals.insert(name, NamedAggregate {
+                    kind: "Tuple", fields: Default::default(),
+                });
+                continue;
+            }
             let initializer = self.expr(0, 0)?;
             self.expect(Token::Punct(b';'))?;
             validate_ast_depth(&initializer)?;
