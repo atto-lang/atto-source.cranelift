@@ -1925,11 +1925,10 @@ impl<'a> Parser<'a> {
                     .into(),
             );
         }
-        // This is deliberately a bounded, flat scalar subset. Local const
-        // and type-first int require constexpr; val may be runtime-dependent.
+        // Ordinary fixed scalar locals admit eager runtime initialization.
         // The file/module define-const environment exception is not local.
         loop {
-            let kind = match self.current {
+            let mut kind = match self.current {
                 Token::Word("const") => "const",
                 Token::Word("int") => "int",
                 Token::Word("val") => "val",
@@ -1947,13 +1946,12 @@ impl<'a> Parser<'a> {
             }
             self.next()?;
             if self.current == Token::Word("mut") {
-                // const mut on scalar int is never a writable variable,
-                // and val mut requires a typed referent/loan backend.
-                return if kind == "val" {
-                    Err("E_MUT_BACKEND_UNSUPPORTED: no scalar referent mutability lowering".into())
-                } else {
-                    Err("E_CONST_MUT_UNSUPPORTED: scalar const mut requires a non-scalar owned referent".into())
-                };
+                if kind != "const" {
+                    return Err("E_MUT_BACKEND_UNSUPPORTED: duplicate or unsupported scalar qualifier".into());
+                }
+                self.next()?;
+                // Scalar const mut is the same fixed binding as val.
+                kind = "val";
             }
             let typed = kind == "int" || self.take(Token::Word("int"))?;
             let name = self.name()?;
@@ -1969,7 +1967,7 @@ impl<'a> Parser<'a> {
             {
                 return Err("invalid, reserved or duplicate local identifier".into());
             }
-            if !typed && self.take(Token::Punct(b':'))? {
+            if !typed && (self.take(Token::Punct(b':'))? || self.take(Token::Word("as"))?) {
                 self.expect(Token::Word("int"))?;
             }
             if self.bindings.len() + self.named_aggregate_locals.len() >= MAX_LOCALS {
@@ -1982,7 +1980,13 @@ impl<'a> Parser<'a> {
             let constant = if kind == "val" {
                 None
             } else {
-                Some(eval_const_i64(&initializer)?)
+                match eval_const_i64(&initializer) {
+                    Ok(value) => Some(value),
+                    // A nonconstant value uses the same checked runtime
+                    // lowering as val. Never suppress a proven arithmetic error.
+                    Err(message) if message.starts_with("E_NON_CONST_INITIALIZER:") => None,
+                    Err(message) => return Err(message),
+                }
             };
             let runtime_slot = self.local_initializers.len();
             if constant.is_none() {
@@ -2453,9 +2457,9 @@ pub(crate) fn validate_ast_depth(root: &Expr) -> Result<(), String> {
     Ok(())
 }
 
-// Only typed, deterministic scalar expressions may initialize local const.
-// Unlike static define const, a local cannot observe the process environment.
-// This evaluator deliberately refuses function calls, including Integer.*.
+// Optional deterministic scalar folding for ordinary const locals.
+// This evaluator deliberately refuses to fold function calls, including Integer.*.
+// Nonconstant expressions remain subject to the ordinary runtime verifier.
 fn eval_const_i64(expr: &Expr) -> Result<i64, String> {
     match expr {
         Expr::Choose(_,_,_) | Expr::Compare(_,_,_) => Err("E_NON_CONST_INITIALIZER: strict guard is not constexpr".into()),
