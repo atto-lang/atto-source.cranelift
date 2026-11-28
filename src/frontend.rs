@@ -775,7 +775,7 @@ impl<'a> Parser<'a> {
                 return Err("E_ACTOR_MEMORY_GUEST_UNSUPPORTED: class allocation requires actor-owned heap, typed Ref32 and ownership lowering".into());
             }
             if self.current == Token::Word("unsafe") {
-                return Err("unsafe source is not supported".into());
+                return Err(format!("E_UNSAFE_UNSUPPORTED: unsafe effects and native grants are unavailable at byte {start}"));
             }
             // Match requires a typed CFG and exhaustive pattern lowering.
             if !self.closed_option_profile && self.current == Token::Word("match") {
